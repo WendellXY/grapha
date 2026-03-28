@@ -68,9 +68,26 @@ fn walk_node(
                 let node_id = graph_node.id.clone();
                 result.nodes.push(graph_node);
 
-                // Walk function body for nested items
+                // Emit TypeRef edge for non-primitive return types
+                if let Some(return_type_node) = node.child_by_field_name("return_type") {
+                    if let Ok(return_text) = return_type_node.utf8_text(source) {
+                        // Strip leading "->" and whitespace
+                        let type_name = return_text.trim_start_matches("->").trim();
+                        if !type_name.is_empty() && !is_primitive(type_name) && type_name != "Self" {
+                            let target_id = make_id(file, module_path, type_name);
+                            result.edges.push(Edge {
+                                source: node_id.clone(),
+                                target: target_id,
+                                kind: EdgeKind::TypeRef,
+                            });
+                        }
+                    }
+                }
+
+                // Walk function body for nested items and call expressions
                 if let Some(body) = node.child_by_field_name("body") {
                     walk_children(body, source, file, module_path, Some(&node_id), result);
+                    extract_calls(body, source, file, module_path, &node_id, result);
                 }
             }
         }
@@ -130,6 +147,23 @@ fn walk_node(
                 let node_id = graph_node.id.clone();
                 result.nodes.push(graph_node);
 
+                // Emit Inherits edges for supertrait bounds (e.g. `trait Child: Base`)
+                if let Some(bounds) = node.child_by_field_name("bounds") {
+                    let mut cursor = bounds.walk();
+                    for child in bounds.named_children(&mut cursor) {
+                        if child.kind() == "type_identifier" {
+                            if let Ok(bound_name) = child.utf8_text(source) {
+                                let target_id = make_id(file, module_path, bound_name);
+                                result.edges.push(Edge {
+                                    source: node_id.clone(),
+                                    target: target_id,
+                                    kind: EdgeKind::Inherits,
+                                });
+                            }
+                        }
+                    }
+                }
+
                 if let Some(body) = node.child_by_field_name("body") {
                     walk_children(body, source, file, module_path, Some(&node_id), result);
                 }
@@ -147,6 +181,22 @@ fn walk_node(
                     });
                 }
                 let node_id = graph_node.id.clone();
+
+                // Emit Implements edge if this is `impl Trait for Type`
+                // The source is the type being implemented, target is the trait
+                if let Some(trait_node) = node.child_by_field_name("trait") {
+                    if let Ok(trait_name) = trait_node.utf8_text(source) {
+                        let type_name = &graph_node.name;
+                        let type_id = make_id(file, module_path, type_name);
+                        let trait_id = make_id(file, module_path, trait_name);
+                        result.edges.push(Edge {
+                            source: type_id,
+                            target: trait_id,
+                            kind: EdgeKind::Implements,
+                        });
+                    }
+                }
+
                 result.nodes.push(graph_node);
 
                 if let Some(body) = node.child_by_field_name("body") {
@@ -175,6 +225,15 @@ fn walk_node(
                     new_path.push(mod_name);
                     walk_children(body, source, file, &new_path, Some(&node_id), result);
                 }
+            }
+        }
+        "use_declaration" => {
+            if let Ok(use_text) = node.utf8_text(source) {
+                result.edges.push(Edge {
+                    source: file.to_string(),
+                    target: use_text.to_string(),
+                    kind: EdgeKind::Uses,
+                });
             }
         }
         _ => {
@@ -392,6 +451,52 @@ fn extract_struct_fields(
     }
 }
 
+/// Returns true if the type name is a Rust primitive.
+fn is_primitive(name: &str) -> bool {
+    matches!(
+        name,
+        "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+            | "f32" | "f64" | "char" | "str" | "()"
+    )
+}
+
+/// Recursively scan a node tree for `call_expression` nodes, emitting Calls edges.
+fn extract_calls(
+    node: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    module_path: &[String],
+    caller_id: &str,
+    result: &mut ExtractionResult,
+) {
+    if node.kind() == "call_expression" {
+        if let Some(function_node) = node.child_by_field_name("function") {
+            if let Ok(fn_text) = function_node.utf8_text(source) {
+                // Skip macro calls (names ending with '!')
+                if !fn_text.ends_with('!') {
+                    // Only handle simple identifiers (not method calls, paths, etc.)
+                    let callee_name = fn_text.trim();
+                    if !callee_name.is_empty() {
+                        let target_id = make_id(file, module_path, callee_name);
+                        result.edges.push(Edge {
+                            source: caller_id.to_string(),
+                            target: target_id,
+                            kind: EdgeKind::Calls,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Recurse into all children
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        extract_calls(child, source, file, module_path, caller_id, result);
+    }
+}
+
 /// Extract enum_variant children from an enum body.
 fn extract_enum_variants(
     body: tree_sitter::Node,
@@ -596,5 +701,72 @@ mod tests {
         let result = extract("pub(crate) fn internal() {}");
         let node = find_node(&result, "internal");
         assert_eq!(node.visibility, Visibility::Crate);
+    }
+
+    #[test]
+    fn extracts_calls_edges() {
+        let result = extract(
+            r#"
+            fn helper() {}
+            fn main() {
+                helper();
+            }
+            "#,
+        );
+        assert!(has_edge(
+            &result,
+            "test.rs::main",
+            "test.rs::helper",
+            EdgeKind::Calls,
+        ));
+    }
+
+    #[test]
+    fn extracts_use_edges() {
+        let result = extract("use std::collections::HashMap;");
+        assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Uses));
+    }
+
+    #[test]
+    fn extracts_implements_edge() {
+        let result = extract(
+            r#"
+            trait Drawable { fn draw(&self); }
+            struct Circle;
+            impl Drawable for Circle {
+                fn draw(&self) {}
+            }
+            "#,
+        );
+        assert!(result.edges.iter().any(|e| e.kind == EdgeKind::Implements));
+    }
+
+    #[test]
+    fn extracts_type_ref_edges() {
+        let result = extract(
+            r#"
+            struct Config { debug: bool }
+            fn make_config() -> Config {
+                Config { debug: true }
+            }
+            "#,
+        );
+        assert!(result.edges.iter().any(|e| e.kind == EdgeKind::TypeRef));
+    }
+
+    #[test]
+    fn extracts_inherits_edge_for_supertraits() {
+        let result = extract(
+            r#"
+            trait Base {}
+            trait Child: Base {}
+            "#,
+        );
+        assert!(has_edge(
+            &result,
+            "test.rs::Child",
+            "test.rs::Base",
+            EdgeKind::Inherits,
+        ));
     }
 }
