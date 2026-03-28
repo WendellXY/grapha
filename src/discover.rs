@@ -15,12 +15,11 @@ pub fn discover_files(path: &Path, extensions: &[&str]) -> anyhow::Result<Vec<Pa
     for entry in walker {
         let entry = entry?;
         let p = entry.path();
-        if p.is_file() {
-            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                if extensions.iter().any(|e| *e == ext) {
-                    files.push(p.to_path_buf());
-                }
-            }
+        if p.is_file()
+            && let Some(ext) = p.extension().and_then(|e| e.to_str())
+            && extensions.contains(&ext)
+        {
+            files.push(p.to_path_buf());
         }
     }
 

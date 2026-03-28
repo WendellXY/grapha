@@ -28,14 +28,7 @@ impl LanguageExtractor for RustExtractor {
         let mut result = ExtractionResult::new();
         let file_str = file_path.to_string_lossy().to_string();
 
-        walk_node(
-            tree.root_node(),
-            source,
-            &file_str,
-            &[],
-            None,
-            &mut result,
-        );
+        walk_node(tree.root_node(), source, &file_str, &[], None, &mut result);
 
         Ok(result)
     }
@@ -55,9 +48,7 @@ fn walk_node(
 ) {
     match node.kind() {
         "function_item" | "function_signature_item" => {
-            if let Some(graph_node) =
-                extract_function(node, source, file, module_path)
-            {
+            if let Some(graph_node) = extract_function(node, source, file, module_path) {
                 if let Some(pid) = parent_id {
                     result.edges.push(Edge {
                         source: pid.to_string(),
@@ -69,18 +60,18 @@ fn walk_node(
                 result.nodes.push(graph_node);
 
                 // Emit TypeRef edge for non-primitive return types
-                if let Some(return_type_node) = node.child_by_field_name("return_type") {
-                    if let Ok(return_text) = return_type_node.utf8_text(source) {
-                        // Strip leading "->" and whitespace
-                        let type_name = return_text.trim_start_matches("->").trim();
-                        if !type_name.is_empty() && !is_primitive(type_name) && type_name != "Self" {
-                            let target_id = make_id(file, module_path, type_name);
-                            result.edges.push(Edge {
-                                source: node_id.clone(),
-                                target: target_id,
-                                kind: EdgeKind::TypeRef,
-                            });
-                        }
+                if let Some(return_type_node) = node.child_by_field_name("return_type")
+                    && let Ok(return_text) = return_type_node.utf8_text(source)
+                {
+                    // Strip leading "->" and whitespace
+                    let type_name = return_text.trim_start_matches("->").trim();
+                    if !type_name.is_empty() && !is_primitive(type_name) && type_name != "Self" {
+                        let target_id = make_id(file, module_path, type_name);
+                        result.edges.push(Edge {
+                            source: node_id.clone(),
+                            target: target_id,
+                            kind: EdgeKind::TypeRef,
+                        });
                     }
                 }
 
@@ -108,7 +99,15 @@ fn walk_node(
 
                 // Extract fields from the struct body
                 if let Some(body) = node.child_by_field_name("body") {
-                    extract_struct_fields(body, source, file, module_path, &node_id, &node_name, result);
+                    extract_struct_fields(
+                        body,
+                        source,
+                        file,
+                        module_path,
+                        &node_id,
+                        &node_name,
+                        result,
+                    );
                 }
             }
         }
@@ -129,7 +128,15 @@ fn walk_node(
 
                 // Extract variants from the enum body
                 if let Some(body) = node.child_by_field_name("body") {
-                    extract_enum_variants(body, source, file, module_path, &node_id, &node_name, result);
+                    extract_enum_variants(
+                        body,
+                        source,
+                        file,
+                        module_path,
+                        &node_id,
+                        &node_name,
+                        result,
+                    );
                 }
             }
         }
@@ -151,15 +158,15 @@ fn walk_node(
                 if let Some(bounds) = node.child_by_field_name("bounds") {
                     let mut cursor = bounds.walk();
                     for child in bounds.named_children(&mut cursor) {
-                        if child.kind() == "type_identifier" {
-                            if let Ok(bound_name) = child.utf8_text(source) {
-                                let target_id = make_id(file, module_path, bound_name);
-                                result.edges.push(Edge {
-                                    source: node_id.clone(),
-                                    target: target_id,
-                                    kind: EdgeKind::Inherits,
-                                });
-                            }
+                        if child.kind() == "type_identifier"
+                            && let Ok(bound_name) = child.utf8_text(source)
+                        {
+                            let target_id = make_id(file, module_path, bound_name);
+                            result.edges.push(Edge {
+                                source: node_id.clone(),
+                                target: target_id,
+                                kind: EdgeKind::Inherits,
+                            });
                         }
                     }
                 }
@@ -170,9 +177,7 @@ fn walk_node(
             }
         }
         "impl_item" => {
-            if let Some(graph_node) =
-                extract_impl_item(node, source, file, module_path)
-            {
+            if let Some(graph_node) = extract_impl_item(node, source, file, module_path) {
                 if let Some(pid) = parent_id {
                     result.edges.push(Edge {
                         source: pid.to_string(),
@@ -184,17 +189,17 @@ fn walk_node(
 
                 // Emit Implements edge if this is `impl Trait for Type`
                 // The source is the type being implemented, target is the trait
-                if let Some(trait_node) = node.child_by_field_name("trait") {
-                    if let Ok(trait_name) = trait_node.utf8_text(source) {
-                        let type_name = &graph_node.name;
-                        let type_id = make_id(file, module_path, type_name);
-                        let trait_id = make_id(file, module_path, trait_name);
-                        result.edges.push(Edge {
-                            source: type_id,
-                            target: trait_id,
-                            kind: EdgeKind::Implements,
-                        });
-                    }
+                if let Some(trait_node) = node.child_by_field_name("trait")
+                    && let Ok(trait_name) = trait_node.utf8_text(source)
+                {
+                    let type_name = &graph_node.name;
+                    let type_id = make_id(file, module_path, type_name);
+                    let trait_id = make_id(file, module_path, trait_name);
+                    result.edges.push(Edge {
+                        source: type_id,
+                        target: trait_id,
+                        kind: EdgeKind::Implements,
+                    });
                 }
 
                 result.nodes.push(graph_node);
@@ -268,11 +273,7 @@ fn make_id(file: &str, module_path: &[String], name: &str) -> String {
 }
 
 /// Extract the text of a named child field.
-fn field_text<'a>(
-    node: tree_sitter::Node<'a>,
-    field: &str,
-    source: &'a [u8],
-) -> Option<String> {
+fn field_text<'a>(node: tree_sitter::Node<'a>, field: &str, source: &'a [u8]) -> Option<String> {
     node.child_by_field_name(field)
         .and_then(|n| n.utf8_text(source).ok())
         .map(|s| s.to_string())
@@ -455,9 +456,24 @@ fn extract_struct_fields(
 fn is_primitive(name: &str) -> bool {
     matches!(
         name,
-        "bool" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
-            | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
-            | "f32" | "f64" | "char" | "str" | "()"
+        "bool"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+            | "char"
+            | "str"
+            | "()"
     )
 }
 
@@ -470,22 +486,21 @@ fn extract_calls(
     caller_id: &str,
     result: &mut ExtractionResult,
 ) {
-    if node.kind() == "call_expression" {
-        if let Some(function_node) = node.child_by_field_name("function") {
-            if let Ok(fn_text) = function_node.utf8_text(source) {
-                // Skip macro calls (names ending with '!')
-                if !fn_text.ends_with('!') {
-                    // Only handle simple identifiers (not method calls, paths, etc.)
-                    let callee_name = fn_text.trim();
-                    if !callee_name.is_empty() {
-                        let target_id = make_id(file, module_path, callee_name);
-                        result.edges.push(Edge {
-                            source: caller_id.to_string(),
-                            target: target_id,
-                            kind: EdgeKind::Calls,
-                        });
-                    }
-                }
+    if node.kind() == "call_expression"
+        && let Some(function_node) = node.child_by_field_name("function")
+        && let Ok(fn_text) = function_node.utf8_text(source)
+    {
+        // Skip macro calls (names ending with '!')
+        if !fn_text.ends_with('!') {
+            // Only handle simple identifiers (not method calls, paths, etc.)
+            let callee_name = fn_text.trim();
+            if !callee_name.is_empty() {
+                let target_id = make_id(file, module_path, callee_name);
+                result.edges.push(Edge {
+                    source: caller_id.to_string(),
+                    target: target_id,
+                    kind: EdgeKind::Calls,
+                });
             }
         }
     }
@@ -578,9 +593,15 @@ mod tests {
     fn extracts_async_unsafe_metadata() {
         let result = extract("pub async fn fetch() {} unsafe fn danger() {}");
         let fetch = find_node(&result, "fetch");
-        assert_eq!(fetch.metadata.get("async").map(|s| s.as_str()), Some("true"));
+        assert_eq!(
+            fetch.metadata.get("async").map(|s| s.as_str()),
+            Some("true")
+        );
         let danger = find_node(&result, "danger");
-        assert_eq!(danger.metadata.get("unsafe").map(|s| s.as_str()), Some("true"));
+        assert_eq!(
+            danger.metadata.get("unsafe").map(|s| s.as_str()),
+            Some("true")
+        );
     }
 
     #[test]

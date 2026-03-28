@@ -20,6 +20,7 @@ impl ExtractionResult {
 }
 
 pub trait LanguageExtractor {
+    #[allow(dead_code)]
     fn language(&self) -> &str;
     fn file_extensions(&self) -> &[&str];
     fn extract(&self, source: &[u8], file_path: &Path) -> anyhow::Result<ExtractionResult>;
