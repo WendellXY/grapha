@@ -1,4 +1,9 @@
+use std::collections::HashMap;
 use std::path::Path;
+
+use tree_sitter::Parser;
+
+use crate::graph::{Edge, EdgeKind, Node, NodeKind, Span, Visibility};
 
 use super::{ExtractionResult, LanguageExtractor};
 
@@ -13,7 +18,577 @@ impl LanguageExtractor for RustExtractor {
         &["rs"]
     }
 
-    fn extract(&self, _source: &[u8], _file_path: &Path) -> anyhow::Result<ExtractionResult> {
-        Ok(ExtractionResult::new())
+    fn extract(&self, source: &[u8], file_path: &Path) -> anyhow::Result<ExtractionResult> {
+        let mut parser = Parser::new();
+        parser.set_language(&tree_sitter_rust::LANGUAGE.into())?;
+        let tree = parser
+            .parse(source, None)
+            .ok_or_else(|| anyhow::anyhow!("tree-sitter failed to parse source"))?;
+
+        let mut result = ExtractionResult::new();
+        let file_str = file_path.to_string_lossy().to_string();
+
+        walk_node(
+            tree.root_node(),
+            source,
+            &file_str,
+            &[],
+            None,
+            &mut result,
+        );
+
+        Ok(result)
+    }
+}
+
+/// Recursively walk a tree-sitter node, extracting symbols and edges.
+///
+/// `module_path` tracks the logical nesting (module names) for ID generation.
+/// `parent_id` is the node ID of the enclosing symbol, used to emit Contains edges.
+fn walk_node(
+    node: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    module_path: &[String],
+    parent_id: Option<&str>,
+    result: &mut ExtractionResult,
+) {
+    match node.kind() {
+        "function_item" | "function_signature_item" => {
+            if let Some(graph_node) =
+                extract_function(node, source, file, module_path)
+            {
+                if let Some(pid) = parent_id {
+                    result.edges.push(Edge {
+                        source: pid.to_string(),
+                        target: graph_node.id.clone(),
+                        kind: EdgeKind::Contains,
+                    });
+                }
+                let node_id = graph_node.id.clone();
+                result.nodes.push(graph_node);
+
+                // Walk function body for nested items
+                if let Some(body) = node.child_by_field_name("body") {
+                    walk_children(body, source, file, module_path, Some(&node_id), result);
+                }
+            }
+        }
+        "struct_item" => {
+            if let Some(graph_node) =
+                extract_named_item(node, source, file, module_path, NodeKind::Struct)
+            {
+                if let Some(pid) = parent_id {
+                    result.edges.push(Edge {
+                        source: pid.to_string(),
+                        target: graph_node.id.clone(),
+                        kind: EdgeKind::Contains,
+                    });
+                }
+                let node_id = graph_node.id.clone();
+                result.nodes.push(graph_node);
+
+                // Extract fields from the struct body
+                if let Some(body) = node.child_by_field_name("body") {
+                    extract_struct_fields(body, source, file, module_path, &node_id, result);
+                }
+            }
+        }
+        "enum_item" => {
+            if let Some(graph_node) =
+                extract_named_item(node, source, file, module_path, NodeKind::Enum)
+            {
+                if let Some(pid) = parent_id {
+                    result.edges.push(Edge {
+                        source: pid.to_string(),
+                        target: graph_node.id.clone(),
+                        kind: EdgeKind::Contains,
+                    });
+                }
+                let node_id = graph_node.id.clone();
+                result.nodes.push(graph_node);
+
+                // Extract variants from the enum body
+                if let Some(body) = node.child_by_field_name("body") {
+                    extract_enum_variants(body, source, file, module_path, &node_id, result);
+                }
+            }
+        }
+        "trait_item" => {
+            if let Some(graph_node) =
+                extract_named_item(node, source, file, module_path, NodeKind::Trait)
+            {
+                if let Some(pid) = parent_id {
+                    result.edges.push(Edge {
+                        source: pid.to_string(),
+                        target: graph_node.id.clone(),
+                        kind: EdgeKind::Contains,
+                    });
+                }
+                let node_id = graph_node.id.clone();
+                result.nodes.push(graph_node);
+
+                if let Some(body) = node.child_by_field_name("body") {
+                    walk_children(body, source, file, module_path, Some(&node_id), result);
+                }
+            }
+        }
+        "impl_item" => {
+            if let Some(graph_node) =
+                extract_impl_item(node, source, file, module_path)
+            {
+                if let Some(pid) = parent_id {
+                    result.edges.push(Edge {
+                        source: pid.to_string(),
+                        target: graph_node.id.clone(),
+                        kind: EdgeKind::Contains,
+                    });
+                }
+                let node_id = graph_node.id.clone();
+                result.nodes.push(graph_node);
+
+                if let Some(body) = node.child_by_field_name("body") {
+                    walk_children(body, source, file, module_path, Some(&node_id), result);
+                }
+            }
+        }
+        "mod_item" => {
+            if let Some(graph_node) =
+                extract_named_item(node, source, file, module_path, NodeKind::Module)
+            {
+                if let Some(pid) = parent_id {
+                    result.edges.push(Edge {
+                        source: pid.to_string(),
+                        target: graph_node.id.clone(),
+                        kind: EdgeKind::Contains,
+                    });
+                }
+                let mod_name = graph_node.name.clone();
+                let node_id = graph_node.id.clone();
+                result.nodes.push(graph_node);
+
+                // Walk the module body with extended module_path
+                if let Some(body) = node.child_by_field_name("body") {
+                    let mut new_path = module_path.to_vec();
+                    new_path.push(mod_name);
+                    walk_children(body, source, file, &new_path, Some(&node_id), result);
+                }
+            }
+        }
+        _ => {
+            // For any other node kind, just walk its children
+            walk_children(node, source, file, module_path, parent_id, result);
+        }
+    }
+}
+
+/// Walk all named children of a node.
+fn walk_children(
+    node: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    module_path: &[String],
+    parent_id: Option<&str>,
+    result: &mut ExtractionResult,
+) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        walk_node(child, source, file, module_path, parent_id, result);
+    }
+}
+
+/// Build a node ID from file, module path, and name.
+fn make_id(file: &str, module_path: &[String], name: &str) -> String {
+    if module_path.is_empty() {
+        format!("{}::{}", file, name)
+    } else {
+        format!("{}::{}::{}", file, module_path.join("::"), name)
+    }
+}
+
+/// Extract the text of a named child field.
+fn field_text<'a>(
+    node: tree_sitter::Node<'a>,
+    field: &str,
+    source: &'a [u8],
+) -> Option<String> {
+    node.child_by_field_name(field)
+        .and_then(|n| n.utf8_text(source).ok())
+        .map(|s| s.to_string())
+}
+
+/// Extract visibility from a node by checking for a `visibility_modifier` child.
+fn extract_visibility(node: tree_sitter::Node, source: &[u8]) -> Visibility {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "visibility_modifier" {
+            let text = child.utf8_text(source).unwrap_or("");
+            if text.contains("pub(crate)") {
+                return Visibility::Crate;
+            } else if text.starts_with("pub") {
+                return Visibility::Public;
+            }
+        }
+    }
+    Visibility::Private
+}
+
+/// Extract metadata (async, unsafe) from the `function_modifiers` named child.
+///
+/// tree-sitter-rust wraps these keywords in a `function_modifiers` node.
+/// The keywords themselves are anonymous tokens with kinds `"async"` / `"unsafe"`.
+fn extract_function_metadata(node: tree_sitter::Node, _source: &[u8]) -> HashMap<String, String> {
+    let mut meta = HashMap::new();
+
+    // Check direct children for function_modifiers node
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "function_modifiers" {
+            let mut mod_cursor = child.walk();
+            for modifier in child.children(&mut mod_cursor) {
+                match modifier.kind() {
+                    "async" => {
+                        meta.insert("async".to_string(), "true".to_string());
+                    }
+                    "unsafe" => {
+                        meta.insert("unsafe".to_string(), "true".to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    meta
+}
+
+/// Extract a function_item or function_signature_item into a Node.
+fn extract_function(
+    node: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    module_path: &[String],
+) -> Option<Node> {
+    let name = field_text(node, "name", source)?;
+    let id = make_id(file, module_path, &name);
+    let visibility = extract_visibility(node, source);
+    let metadata = extract_function_metadata(node, source);
+    let start = node.start_position();
+    let end = node.end_position();
+
+    Some(Node {
+        id,
+        kind: NodeKind::Function,
+        name,
+        file: file.into(),
+        span: Span {
+            start: [start.row, start.column],
+            end: [end.row, end.column],
+        },
+        visibility,
+        metadata,
+    })
+}
+
+/// Extract a named symbol (struct, enum, trait, module) into a Node.
+fn extract_named_item(
+    node: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    module_path: &[String],
+    kind: NodeKind,
+) -> Option<Node> {
+    let name = field_text(node, "name", source)?;
+    let id = make_id(file, module_path, &name);
+    let visibility = extract_visibility(node, source);
+    let start = node.start_position();
+    let end = node.end_position();
+
+    Some(Node {
+        id,
+        kind,
+        name,
+        file: file.into(),
+        span: Span {
+            start: [start.row, start.column],
+            end: [end.row, end.column],
+        },
+        visibility,
+        metadata: HashMap::new(),
+    })
+}
+
+/// Extract an impl_item into a Node.
+/// The node name is the type being implemented (e.g. `Foo`).
+/// The ID uses `impl_{TypeName}` to avoid collisions with the type node.
+fn extract_impl_item(
+    node: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    module_path: &[String],
+) -> Option<Node> {
+    let type_name = field_text(node, "type", source)?;
+    let impl_name = format!("impl_{}", type_name);
+    let id = make_id(file, module_path, &impl_name);
+    let start = node.start_position();
+    let end = node.end_position();
+
+    Some(Node {
+        id,
+        kind: NodeKind::Impl,
+        name: type_name,
+        file: file.into(),
+        span: Span {
+            start: [start.row, start.column],
+            end: [end.row, end.column],
+        },
+        visibility: Visibility::Private,
+        metadata: HashMap::new(),
+    })
+}
+
+/// Extract field_declaration children from a struct body.
+fn extract_struct_fields(
+    body: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    module_path: &[String],
+    parent_id: &str,
+    result: &mut ExtractionResult,
+) {
+    let mut cursor = body.walk();
+    for child in body.named_children(&mut cursor) {
+        if child.kind() == "field_declaration"
+            && let Some(name) = field_text(child, "name", source)
+        {
+            let id = make_id(file, module_path, &name);
+            let visibility = extract_visibility(child, source);
+            let start = child.start_position();
+            let end = child.end_position();
+
+            result.edges.push(Edge {
+                source: parent_id.to_string(),
+                target: id.clone(),
+                kind: EdgeKind::Contains,
+            });
+
+            result.nodes.push(Node {
+                id,
+                kind: NodeKind::Field,
+                name,
+                file: file.into(),
+                span: Span {
+                    start: [start.row, start.column],
+                    end: [end.row, end.column],
+                },
+                visibility,
+                metadata: HashMap::new(),
+            });
+        }
+    }
+}
+
+/// Extract enum_variant children from an enum body.
+fn extract_enum_variants(
+    body: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    module_path: &[String],
+    parent_id: &str,
+    result: &mut ExtractionResult,
+) {
+    let mut cursor = body.walk();
+    for child in body.named_children(&mut cursor) {
+        if child.kind() == "enum_variant"
+            && let Some(name) = field_text(child, "name", source)
+        {
+            let id = make_id(file, module_path, &name);
+            let start = child.start_position();
+            let end = child.end_position();
+
+            result.edges.push(Edge {
+                source: parent_id.to_string(),
+                target: id.clone(),
+                kind: EdgeKind::Contains,
+            });
+
+            result.nodes.push(Node {
+                id,
+                kind: NodeKind::Variant,
+                name,
+                file: file.into(),
+                span: Span {
+                    start: [start.row, start.column],
+                    end: [end.row, end.column],
+                },
+                visibility: Visibility::Public,
+                metadata: HashMap::new(),
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::{EdgeKind, NodeKind, Visibility};
+
+    fn extract(source: &str) -> ExtractionResult {
+        let extractor = RustExtractor;
+        extractor
+            .extract(source.as_bytes(), Path::new("test.rs"))
+            .unwrap()
+    }
+
+    fn find_node<'a>(result: &'a ExtractionResult, name: &str) -> &'a crate::graph::Node {
+        result
+            .nodes
+            .iter()
+            .find(|n| n.name == name)
+            .unwrap_or_else(|| panic!("node '{}' not found", name))
+    }
+
+    fn has_edge(result: &ExtractionResult, source: &str, target: &str, kind: EdgeKind) -> bool {
+        result
+            .edges
+            .iter()
+            .any(|e| e.source == source && e.target == target && e.kind == kind)
+    }
+
+    #[test]
+    fn extracts_function() {
+        let result = extract("pub fn greet(name: &str) -> String { format!(\"hi {}\", name) }");
+        let node = find_node(&result, "greet");
+        assert_eq!(node.kind, NodeKind::Function);
+        assert_eq!(node.visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn extracts_async_unsafe_metadata() {
+        let result = extract("pub async fn fetch() {} unsafe fn danger() {}");
+        let fetch = find_node(&result, "fetch");
+        assert_eq!(fetch.metadata.get("async").map(|s| s.as_str()), Some("true"));
+        let danger = find_node(&result, "danger");
+        assert_eq!(danger.metadata.get("unsafe").map(|s| s.as_str()), Some("true"));
+    }
+
+    #[test]
+    fn extracts_struct_with_fields() {
+        let result = extract(
+            r#"
+            pub struct Config {
+                pub debug: bool,
+                name: String,
+            }
+            "#,
+        );
+        let config = find_node(&result, "Config");
+        assert_eq!(config.kind, NodeKind::Struct);
+        assert_eq!(config.visibility, Visibility::Public);
+
+        let debug = find_node(&result, "debug");
+        assert_eq!(debug.kind, NodeKind::Field);
+        assert_eq!(debug.visibility, Visibility::Public);
+
+        let name = find_node(&result, "name");
+        assert_eq!(name.kind, NodeKind::Field);
+        assert_eq!(name.visibility, Visibility::Private);
+
+        assert!(has_edge(&result, &config.id, &debug.id, EdgeKind::Contains));
+        assert!(has_edge(&result, &config.id, &name.id, EdgeKind::Contains));
+    }
+
+    #[test]
+    fn extracts_enum_with_variants() {
+        let result = extract(
+            r#"
+            pub enum Color {
+                Red,
+                Green,
+                Blue,
+            }
+            "#,
+        );
+        let color = find_node(&result, "Color");
+        assert_eq!(color.kind, NodeKind::Enum);
+
+        let red = find_node(&result, "Red");
+        assert_eq!(red.kind, NodeKind::Variant);
+
+        assert!(has_edge(&result, &color.id, &red.id, EdgeKind::Contains));
+    }
+
+    #[test]
+    fn extracts_trait() {
+        let result = extract(
+            r#"
+            pub trait Drawable {
+                fn draw(&self);
+            }
+            "#,
+        );
+        let drawable = find_node(&result, "Drawable");
+        assert_eq!(drawable.kind, NodeKind::Trait);
+        assert_eq!(drawable.visibility, Visibility::Public);
+
+        let draw = find_node(&result, "draw");
+        assert_eq!(draw.kind, NodeKind::Function);
+
+        assert!(has_edge(
+            &result,
+            &drawable.id,
+            &draw.id,
+            EdgeKind::Contains
+        ));
+    }
+
+    #[test]
+    fn extracts_impl_block() {
+        let result = extract(
+            r#"
+            struct Foo;
+            impl Foo {
+                pub fn new() -> Self { Foo }
+            }
+            "#,
+        );
+        let impl_node = result
+            .nodes
+            .iter()
+            .find(|n| n.kind == NodeKind::Impl)
+            .expect("impl node not found");
+        assert_eq!(impl_node.name, "Foo");
+
+        let new_fn = find_node(&result, "new");
+        assert!(has_edge(
+            &result,
+            &impl_node.id,
+            &new_fn.id,
+            EdgeKind::Contains
+        ));
+    }
+
+    #[test]
+    fn extracts_module() {
+        let result = extract(
+            r#"
+            pub mod utils {
+                pub fn helper() {}
+            }
+            "#,
+        );
+        let utils = find_node(&result, "utils");
+        assert_eq!(utils.kind, NodeKind::Module);
+        assert_eq!(utils.visibility, Visibility::Public);
+
+        let helper = find_node(&result, "helper");
+        assert!(has_edge(&result, &utils.id, &helper.id, EdgeKind::Contains));
+    }
+
+    #[test]
+    fn extracts_pub_crate_visibility() {
+        let result = extract("pub(crate) fn internal() {}");
+        let node = find_node(&result, "internal");
+        assert_eq!(node.visibility, Visibility::Crate);
     }
 }
