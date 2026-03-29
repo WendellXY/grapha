@@ -54,6 +54,7 @@ fn walk_node(
                         source: pid.to_string(),
                         target: graph_node.id.clone(),
                         kind: EdgeKind::Contains,
+                        confidence: 1.0,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -71,6 +72,7 @@ fn walk_node(
                             source: node_id.clone(),
                             target: target_id,
                             kind: EdgeKind::TypeRef,
+                            confidence: 0.85,
                         });
                     }
                 }
@@ -91,6 +93,7 @@ fn walk_node(
                         source: pid.to_string(),
                         target: graph_node.id.clone(),
                         kind: EdgeKind::Contains,
+                        confidence: 1.0,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -120,6 +123,7 @@ fn walk_node(
                         source: pid.to_string(),
                         target: graph_node.id.clone(),
                         kind: EdgeKind::Contains,
+                        confidence: 1.0,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -149,6 +153,7 @@ fn walk_node(
                         source: pid.to_string(),
                         target: graph_node.id.clone(),
                         kind: EdgeKind::Contains,
+                        confidence: 1.0,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -166,6 +171,7 @@ fn walk_node(
                                 source: node_id.clone(),
                                 target: target_id,
                                 kind: EdgeKind::Inherits,
+                                confidence: 0.9,
                             });
                         }
                     }
@@ -183,6 +189,7 @@ fn walk_node(
                         source: pid.to_string(),
                         target: graph_node.id.clone(),
                         kind: EdgeKind::Contains,
+                        confidence: 1.0,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -199,6 +206,7 @@ fn walk_node(
                         source: type_id,
                         target: trait_id,
                         kind: EdgeKind::Implements,
+                        confidence: 0.9,
                     });
                 }
 
@@ -218,6 +226,7 @@ fn walk_node(
                         source: pid.to_string(),
                         target: graph_node.id.clone(),
                         kind: EdgeKind::Contains,
+                        confidence: 1.0,
                     });
                 }
                 let mod_name = graph_node.name.clone();
@@ -238,6 +247,7 @@ fn walk_node(
                     source: file.to_string(),
                     target: use_text.to_string(),
                     kind: EdgeKind::Uses,
+                    confidence: 0.7,
                 });
             }
         }
@@ -434,6 +444,7 @@ fn extract_struct_fields(
                 source: parent_id.to_string(),
                 target: id.clone(),
                 kind: EdgeKind::Contains,
+                confidence: 1.0,
             });
 
             result.nodes.push(Node {
@@ -500,6 +511,7 @@ fn extract_calls(
                     source: caller_id.to_string(),
                     target: target_id,
                     kind: EdgeKind::Calls,
+                    confidence: 0.8,
                 });
             }
         }
@@ -536,6 +548,7 @@ fn extract_enum_variants(
                 source: parent_id.to_string(),
                 target: id.clone(),
                 kind: EdgeKind::Contains,
+                confidence: 1.0,
             });
 
             result.nodes.push(Node {

@@ -51,14 +51,15 @@ pub struct Node {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Edge {
     pub source: String,
     pub target: String,
     pub kind: EdgeKind,
+    pub confidence: f64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Graph {
     pub version: String,
     pub nodes: Vec<Node>,
@@ -120,6 +121,18 @@ mod tests {
     }
 
     #[test]
+    fn edge_serializes_with_confidence() {
+        let edge = Edge {
+            source: "a".to_string(),
+            target: "b".to_string(),
+            kind: EdgeKind::Calls,
+            confidence: 0.95,
+        };
+        let json = serde_json::to_string(&edge).unwrap();
+        assert!(json.contains("\"confidence\":0.95"));
+    }
+
+    #[test]
     fn full_graph_round_trips() {
         let graph = Graph {
             version: "0.1.0".to_string(),
@@ -135,7 +148,12 @@ mod tests {
                 visibility: Visibility::Private,
                 metadata: HashMap::new(),
             }],
-            edges: vec![],
+            edges: vec![Edge {
+                source: "src/main.rs::main".to_string(),
+                target: "src/main.rs::helper".to_string(),
+                kind: EdgeKind::Calls,
+                confidence: 0.8,
+            }],
         };
         let json = serde_json::to_string(&graph).unwrap();
         let deserialized: Graph = serde_json::from_str(&json).unwrap();

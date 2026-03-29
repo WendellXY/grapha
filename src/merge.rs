@@ -71,6 +71,7 @@ mod tests {
                 source: "a::main".to_string(),
                 target: "nonexistent::foo".to_string(),
                 kind: EdgeKind::Calls,
+                confidence: 1.0,
             }],
         };
         let graph = merge(vec![r1]);
@@ -88,6 +89,7 @@ mod tests {
                 source: "a::main".to_string(),
                 target: "a::helper".to_string(),
                 kind: EdgeKind::Calls,
+                confidence: 1.0,
             }],
         };
         let graph = merge(vec![r1]);
@@ -102,6 +104,7 @@ mod tests {
                 source: "a::main".to_string(),
                 target: "b::helper".to_string(),
                 kind: EdgeKind::Calls,
+                confidence: 1.0,
             }],
         };
         let r2 = ExtractionResult {
@@ -120,6 +123,7 @@ mod tests {
                 source: "a.rs".to_string(),
                 target: "use std::collections::HashMap;".to_string(),
                 kind: EdgeKind::Uses,
+                confidence: 1.0,
             }],
         };
         let graph = merge(vec![r1]);
