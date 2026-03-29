@@ -5,7 +5,9 @@ mod extract;
 mod filter;
 mod graph;
 mod merge;
+mod query;
 mod resolve;
+mod store;
 
 use std::path::PathBuf;
 
