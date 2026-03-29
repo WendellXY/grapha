@@ -1,3 +1,4 @@
+mod changes;
 mod compress;
 mod discover;
 mod error;
@@ -18,6 +19,7 @@ use clap::{Parser, Subcommand};
 use extract::LanguageExtractor;
 use extract::rust::RustExtractor;
 use extract::swift::SwiftExtractor;
+use store::Store;
 
 #[derive(Parser)]
 #[command(
@@ -56,6 +58,36 @@ enum Commands {
         /// Storage directory (default: .grapha/ in project root)
         #[arg(long)]
         store_dir: Option<PathBuf>,
+    },
+    /// Query symbol context (callers, callees, implementors)
+    Context {
+        /// Symbol name or ID
+        symbol: String,
+        /// Project directory (reads from .grapha/)
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Analyze blast radius of changing a symbol
+    Impact {
+        /// Symbol name or ID
+        symbol: String,
+        /// Maximum traversal depth
+        #[arg(long, default_value = "3")]
+        depth: usize,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Search symbols by name or file
+    Search {
+        /// Search query
+        query: String,
+        /// Max results
+        #[arg(long, default_value = "20")]
+        limit: usize,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
     },
 }
 
@@ -172,6 +204,49 @@ fn main() -> anyhow::Result<()> {
                 graph.edges.len(),
                 store_path.display()
             );
+        }
+        Commands::Context { symbol, path } => {
+            let db_path = path.join(".grapha/grapha.db");
+            let s = store::sqlite::SqliteStore::new(db_path);
+            let graph = s
+                .load()
+                .context("no index found — run `grapha index` first")?;
+            let result = query::context::query_context(&graph, &symbol)
+                .ok_or_else(|| anyhow::anyhow!("symbol not found: {symbol}"))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Commands::Impact {
+            symbol,
+            depth,
+            path,
+        } => {
+            let db_path = path.join(".grapha/grapha.db");
+            let s = store::sqlite::SqliteStore::new(db_path);
+            let graph = s
+                .load()
+                .context("no index found — run `grapha index` first")?;
+            let result = query::impact::query_impact(&graph, &symbol, depth)
+                .ok_or_else(|| anyhow::anyhow!("symbol not found: {symbol}"))?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Commands::Search {
+            query: q,
+            limit,
+            path,
+        } => {
+            let search_index_path = path.join(".grapha/search_index");
+            let index = if search_index_path.exists() {
+                tantivy::Index::open_in_dir(&search_index_path)?
+            } else {
+                let db_path = path.join(".grapha/grapha.db");
+                let s = store::sqlite::SqliteStore::new(db_path);
+                let graph = s
+                    .load()
+                    .context("no index found — run `grapha index` first")?;
+                search::build_index(&graph, &search_index_path)?
+            };
+            let results = search::search(&index, &q, limit)?;
+            println!("{}", serde_json::to_string_pretty(&results)?);
         }
     }
 

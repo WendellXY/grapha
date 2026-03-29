@@ -146,3 +146,54 @@ fn index_json_format() {
 
     assert!(store_dir.join("graph.json").exists());
 }
+
+#[test]
+fn context_command_returns_symbol_info() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+
+    // First, index
+    grapha()
+        .args([
+            "index",
+            "tests/fixtures/simple.rs",
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Then query context
+    grapha()
+        .args([
+            "context",
+            "default_config",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"name\": \"default_config\""));
+}
+
+#[test]
+fn search_command_finds_symbols() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+
+    grapha()
+        .args([
+            "index",
+            "tests/fixtures/simple.rs",
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    grapha()
+        .args(["search", "Config", "-p", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Config"));
+}
