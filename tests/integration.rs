@@ -84,6 +84,17 @@ fn invalid_filter_shows_error() {
 }
 
 #[test]
+fn compact_flag_produces_grouped_output() {
+    grapha()
+        .args(["tests/fixtures/simple.rs", "--compact"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"files\""))
+        .stdout(predicate::str::contains("\"symbols\""))
+        .stdout(predicate::str::contains("\"span\""));
+}
+
+#[test]
 fn output_contains_version() {
     grapha()
         .arg("tests/fixtures/simple.rs")

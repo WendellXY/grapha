@@ -33,6 +33,10 @@ struct Cli {
     /// Filter node kinds (comma-separated: fn,struct,enum,trait,impl,mod,field,variant)
     #[arg(long)]
     filter: Option<String>,
+
+    /// Output in compact grouped format (optimized for LLM consumption)
+    #[arg(long)]
+    compact: bool,
 }
 
 fn extractor_for_path(path: &std::path::Path) -> Option<Box<dyn LanguageExtractor>> {
@@ -83,9 +87,18 @@ fn main() -> anyhow::Result<()> {
         graph = filter::filter_graph(graph, &kinds);
     }
 
-    let json = match &cli.output {
-        Some(_) => serde_json::to_string(&graph)?,
-        None => serde_json::to_string_pretty(&graph)?,
+    let json = if cli.compact {
+        let pruned = compress::prune::prune(graph, false);
+        let grouped = compress::group::group(&pruned);
+        match &cli.output {
+            Some(_) => serde_json::to_string(&grouped)?,
+            None => serde_json::to_string_pretty(&grouped)?,
+        }
+    } else {
+        match &cli.output {
+            Some(_) => serde_json::to_string(&graph)?,
+            None => serde_json::to_string_pretty(&graph)?,
+        }
     };
 
     match cli.output {
