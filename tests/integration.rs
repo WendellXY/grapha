@@ -177,6 +177,62 @@ fn context_command_returns_symbol_info() {
 }
 
 #[test]
+fn changes_command_runs_on_clean_repo() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+
+    // Initialize a git repo
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Configure git user for commits
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Create a Rust file and commit it
+    std::fs::write(dir.path().join("main.rs"), "pub fn hello() {}").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    // Index it
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    // Run changes — should succeed with no changes
+    grapha()
+        .args(["changes", "-p", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"changed_count\": 0"));
+}
+
+#[test]
 fn search_command_finds_symbols() {
     let dir = tempfile::tempdir().unwrap();
     let store_dir = dir.path().join(".grapha");

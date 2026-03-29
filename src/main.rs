@@ -78,6 +78,15 @@ enum Commands {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
     },
+    /// Detect code changes and analyze their impact
+    Changes {
+        /// Scope: "unstaged", "staged", "all", or a git ref (e.g., "main")
+        #[arg(default_value = "all")]
+        scope: String,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
     /// Search symbols by name or file
     Search {
         /// Search query
@@ -228,6 +237,15 @@ fn main() -> anyhow::Result<()> {
             let result = query::impact::query_impact(&graph, &symbol, depth)
                 .ok_or_else(|| anyhow::anyhow!("symbol not found: {symbol}"))?;
             println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Commands::Changes { scope, path } => {
+            let db_path = path.join(".grapha/grapha.db");
+            let s = store::sqlite::SqliteStore::new(db_path);
+            let graph = s
+                .load()
+                .context("no index found — run `grapha index` first")?;
+            let report = changes::detect_changes(&path, &graph, &scope)?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Commands::Search {
             query: q,
