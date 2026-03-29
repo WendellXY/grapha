@@ -1,3 +1,4 @@
+mod compress;
 mod discover;
 mod error;
 mod extract;
