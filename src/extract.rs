@@ -4,6 +4,7 @@ use crate::graph::{Edge, Node};
 use crate::resolve::Import;
 
 pub mod rust;
+pub mod swift;
 
 #[derive(Debug, Clone)]
 pub struct ExtractionResult {
