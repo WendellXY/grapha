@@ -7,6 +7,7 @@ pub struct GraphaConfig {
     #[serde(default)]
     pub classifiers: Vec<ClassifierRule>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub entry_points: Vec<EntryPointRule>,
 }
 
@@ -18,6 +19,7 @@ pub struct ClassifierRule {
     pub operation: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Deserialize)]
 pub struct EntryPointRule {
     pub language: String,

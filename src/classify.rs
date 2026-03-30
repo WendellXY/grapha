@@ -16,8 +16,11 @@ pub struct Classification {
 
 #[derive(Debug, Clone)]
 pub struct ClassifyContext {
+    #[allow(dead_code)]
     pub source_node: String,
+    #[allow(dead_code)]
     pub file: PathBuf,
+    #[allow(dead_code)]
     pub arguments: Vec<String>,
 }
 

@@ -571,10 +571,10 @@ fn find_enclosing_condition(node: tree_sitter::Node, source: &[u8]) -> Option<St
                 return None;
             }
             "match_arm" => {
-                if let Some(pat) = parent.child_by_field_name("pattern") {
-                    if let Ok(pat_text) = pat.utf8_text(source) {
-                        return Some(format!("match {}", pat_text.trim()));
-                    }
+                if let Some(pat) = parent.child_by_field_name("pattern")
+                    && let Ok(pat_text) = pat.utf8_text(source)
+                {
+                    return Some(format!("match {}", pat_text.trim()));
                 }
                 return None;
             }
@@ -589,10 +589,10 @@ fn find_enclosing_condition(node: tree_sitter::Node, source: &[u8]) -> Option<St
 /// Check if a call node is at an async boundary (await or inside spawn).
 fn detect_async_boundary(node: tree_sitter::Node, source: &[u8]) -> Option<bool> {
     // Check if parent is await_expression
-    if let Some(parent) = node.parent() {
-        if parent.kind() == "await_expression" {
-            return Some(true);
-        }
+    if let Some(parent) = node.parent()
+        && parent.kind() == "await_expression"
+    {
+        return Some(true);
     }
     // Check if inside a tokio::spawn or std::thread::spawn call
     let mut current = node.parent();
@@ -600,14 +600,13 @@ fn detect_async_boundary(node: tree_sitter::Node, source: &[u8]) -> Option<bool>
         if parent.kind() == "function_item" || parent.kind() == "function_signature_item" {
             break;
         }
-        if parent.kind() == "call_expression" {
-            if let Some(func) = parent.child_by_field_name("function") {
-                if let Ok(func_text) = func.utf8_text(source) {
-                    let trimmed = func_text.trim();
-                    if trimmed.contains("spawn") {
-                        return Some(true);
-                    }
-                }
+        if parent.kind() == "call_expression"
+            && let Some(func) = parent.child_by_field_name("function")
+            && let Ok(func_text) = func.utf8_text(source)
+        {
+            let trimmed = func_text.trim();
+            if trimmed.contains("spawn") {
+                return Some(true);
             }
         }
         current = parent.parent();

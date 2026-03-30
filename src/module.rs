@@ -93,26 +93,26 @@ fn discover_swift_packages(root: &Path, modules: &mut HashMap<String, Vec<PathBu
 
     for entry in walker.flatten() {
         let path = entry.path();
-        if path.file_name().and_then(|n| n.to_str()) == Some("Package.swift") {
-            if let Some(pkg_dir) = path.parent() {
-                let module_name = pkg_dir
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("unknown")
-                    .to_string();
+        if path.file_name().and_then(|n| n.to_str()) == Some("Package.swift")
+            && let Some(pkg_dir) = path.parent()
+        {
+            let module_name = pkg_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
 
-                let sources_dir = pkg_dir.join("Sources");
-                let source_dir = if sources_dir.is_dir() {
-                    sources_dir
-                } else {
-                    pkg_dir.to_path_buf()
-                };
+            let sources_dir = pkg_dir.join("Sources");
+            let source_dir = if sources_dir.is_dir() {
+                sources_dir
+            } else {
+                pkg_dir.to_path_buf()
+            };
 
-                modules
-                    .entry(module_name)
-                    .or_default()
-                    .push(source_dir);
-            }
+            modules
+                .entry(module_name)
+                .or_default()
+                .push(source_dir);
         }
     }
 }
@@ -172,13 +172,13 @@ fn expand_workspace_member(
         // Glob pattern like "crates/*" — expand by listing directory
         let prefix = pattern.trim_end_matches('*').trim_end_matches('/');
         let parent_dir = root.join(prefix);
-        if parent_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&parent_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        add_cargo_member(root, &path, modules);
-                    }
+        if parent_dir.is_dir()
+            && let Ok(entries) = std::fs::read_dir(&parent_dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    add_cargo_member(root, &path, modules);
                 }
             }
         }

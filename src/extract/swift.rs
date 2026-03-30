@@ -284,6 +284,7 @@ fn extract_struct_or_class(
 }
 
 /// Walk children with hints about parent conformances for entry point detection.
+#[allow(clippy::too_many_arguments)]
 fn walk_children_with_hints(
     node: tree_sitter::Node,
     source: &[u8],
@@ -298,18 +299,18 @@ fn walk_children_with_hints(
     for child in node.named_children(&mut cursor) {
         if child.kind() == "property_declaration" && parent_conforms_to_view {
             // Check if this is the `body` property
-            if let Some(prop_name) = find_pattern_name(child, source) {
-                if prop_name == "body" {
-                    extract_property_as_entry_point(
-                        child,
-                        source,
-                        file,
-                        module_path,
-                        parent_id,
-                        result,
-                    );
-                    continue;
-                }
+            if let Some(prop_name) = find_pattern_name(child, source)
+                && prop_name == "body"
+            {
+                extract_property_as_entry_point(
+                    child,
+                    source,
+                    file,
+                    module_path,
+                    parent_id,
+                    result,
+                );
+                continue;
             }
         }
         if child.kind() == "function_declaration" && parent_is_observable {
@@ -783,12 +784,12 @@ fn has_swift_attribute(node: tree_sitter::Node, source: &[u8], attr_name: &str) 
         if child.kind() == "modifiers" {
             let mut mod_cursor = child.walk();
             for modifier in child.named_children(&mut mod_cursor) {
-                if modifier.kind() == "attribute" {
-                    if let Ok(text) = modifier.utf8_text(source) {
-                        let trimmed = text.trim_start_matches('@');
-                        if trimmed == attr_name {
-                            return true;
-                        }
+                if modifier.kind() == "attribute"
+                    && let Ok(text) = modifier.utf8_text(source)
+                {
+                    let trimmed = text.trim_start_matches('@');
+                    if trimmed == attr_name {
+                        return true;
                     }
                 }
             }
@@ -802,12 +803,11 @@ fn collect_inheritance_names(node: tree_sitter::Node, source: &[u8]) -> Vec<Stri
     let mut names = Vec::new();
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        if child.kind() == "inheritance_specifier" {
-            if let Some(name) =
+        if child.kind() == "inheritance_specifier"
+            && let Some(name) =
                 find_user_type_name(child, source).or_else(|| type_identifier_text(child, source))
-            {
-                names.push(name);
-            }
+        {
+            names.push(name);
         }
     }
     names
@@ -826,41 +826,38 @@ fn find_enclosing_swift_condition(node: tree_sitter::Node, source: &[u8]) -> Opt
                     return cond.utf8_text(source).ok().map(|s| s.trim().to_string());
                 }
                 // Fallback: get text between "if" and "{"
-                if let Ok(text) = parent.utf8_text(source) {
-                    if let Some(if_pos) = text.find("if") {
-                        if let Some(brace_pos) = text.find('{') {
-                            let cond = text[if_pos + 2..brace_pos].trim();
-                            if !cond.is_empty() {
-                                return Some(cond.to_string());
-                            }
-                        }
+                if let Ok(text) = parent.utf8_text(source)
+                    && let Some(if_pos) = text.find("if")
+                    && let Some(brace_pos) = text.find('{')
+                {
+                    let cond = text[if_pos + 2..brace_pos].trim();
+                    if !cond.is_empty() {
+                        return Some(cond.to_string());
                     }
                 }
                 return None;
             }
             "guard_statement" => {
-                if let Ok(text) = parent.utf8_text(source) {
-                    if let Some(guard_pos) = text.find("guard") {
-                        if let Some(else_pos) = text.find("else") {
-                            let cond = text[guard_pos + 5..else_pos].trim();
-                            if !cond.is_empty() {
-                                return Some(format!("guard {}", cond));
-                            }
-                        }
+                if let Ok(text) = parent.utf8_text(source)
+                    && let Some(guard_pos) = text.find("guard")
+                    && let Some(else_pos) = text.find("else")
+                {
+                    let cond = text[guard_pos + 5..else_pos].trim();
+                    if !cond.is_empty() {
+                        return Some(format!("guard {}", cond));
                     }
                 }
                 return None;
             }
             "switch_entry" => {
                 // Get the case pattern text
-                if let Ok(text) = parent.utf8_text(source) {
-                    if let Some(case_pos) = text.find("case") {
-                        if let Some(colon_pos) = text.find(':') {
-                            let pattern = text[case_pos + 4..colon_pos].trim();
-                            if !pattern.is_empty() {
-                                return Some(format!("case {}", pattern));
-                            }
-                        }
+                if let Ok(text) = parent.utf8_text(source)
+                    && let Some(case_pos) = text.find("case")
+                    && let Some(colon_pos) = text.find(':')
+                {
+                    let pattern = text[case_pos + 4..colon_pos].trim();
+                    if !pattern.is_empty() {
+                        return Some(format!("case {}", pattern));
                     }
                 }
                 return None;
@@ -876,28 +873,28 @@ fn find_enclosing_swift_condition(node: tree_sitter::Node, source: &[u8]) -> Opt
 /// Check if a Swift call node is at an async boundary.
 fn detect_swift_async_boundary(node: tree_sitter::Node, source: &[u8]) -> Option<bool> {
     // Check if parent is await_expression
-    if let Some(parent) = node.parent() {
-        if parent.kind() == "await_expression" {
-            return Some(true);
-        }
+    if let Some(parent) = node.parent()
+        && parent.kind() == "await_expression"
+    {
+        return Some(true);
     }
     // Check if inside a Task { } block
     let mut current = node.parent();
     while let Some(parent) = current {
         if parent.kind() == "function_declaration" || parent.kind() == "closure_expression" {
             // Check if the closure is an argument to Task { } or DispatchQueue.async
-            if let Some(gp) = parent.parent() {
-                if gp.kind() == "call_expression" {
-                    if let Some(fn_name) = simple_identifier_text(gp, source) {
-                        if fn_name == "Task" {
-                            return Some(true);
-                        }
-                    }
-                    if let Ok(text) = gp.utf8_text(source) {
-                        if text.contains("DispatchQueue") && text.contains("async") {
-                            return Some(true);
-                        }
-                    }
+            if let Some(gp) = parent.parent()
+                && gp.kind() == "call_expression"
+            {
+                if let Some(fn_name) = simple_identifier_text(gp, source)
+                    && fn_name == "Task"
+                {
+                    return Some(true);
+                }
+                if let Ok(text) = gp.utf8_text(source)
+                    && text.contains("DispatchQueue") && text.contains("async")
+                {
+                    return Some(true);
                 }
             }
             break;
@@ -946,22 +943,22 @@ fn extract_calls(
     caller_id: &str,
     result: &mut ExtractionResult,
 ) {
-    if node.kind() == "call_expression" {
-        if let Some(fn_name) = simple_identifier_text(node, source) {
-            let target_id = make_id(file, module_path, &fn_name);
-            let condition = find_enclosing_swift_condition(node, source);
-            let async_boundary = detect_swift_async_boundary(node, source);
-            result.edges.push(Edge {
-                source: caller_id.to_string(),
-                target: target_id,
-                kind: EdgeKind::Calls,
-                confidence: 0.8,
-                direction: None,
-                operation: None,
-                condition,
-                async_boundary,
-            });
-        }
+    if node.kind() == "call_expression"
+        && let Some(fn_name) = simple_identifier_text(node, source)
+    {
+        let target_id = make_id(file, module_path, &fn_name);
+        let condition = find_enclosing_swift_condition(node, source);
+        let async_boundary = detect_swift_async_boundary(node, source);
+        result.edges.push(Edge {
+            source: caller_id.to_string(),
+            target: target_id,
+            kind: EdgeKind::Calls,
+            confidence: 0.8,
+            direction: None,
+            operation: None,
+            condition,
+            async_boundary,
+        });
     }
 
     // Recurse into all children

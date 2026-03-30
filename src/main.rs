@@ -8,6 +8,7 @@ mod extract;
 mod filter;
 mod graph;
 mod merge;
+#[allow(dead_code)]
 mod module;
 mod progress;
 mod query;
