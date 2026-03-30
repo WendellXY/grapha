@@ -853,7 +853,8 @@ fn find_enclosing_swift_condition(node: tree_sitter::Node, source: &[u8]) -> Opt
                 // Get the case pattern text
                 if let Ok(text) = parent.utf8_text(source)
                     && let Some(case_pos) = text.find("case")
-                    && let Some(colon_pos) = text.find(':')
+                    && let Some(colon_pos) = text[case_pos..].find(':').map(|p| case_pos + p)
+                    && colon_pos > case_pos + 4
                 {
                     let pattern = text[case_pos + 4..colon_pos].trim();
                     if !pattern.is_empty() {
