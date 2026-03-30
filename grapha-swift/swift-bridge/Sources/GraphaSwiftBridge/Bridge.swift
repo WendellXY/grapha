@@ -1,12 +1,24 @@
 import Foundation
 
+// MARK: - Reader Storage
+
+// Store readers in a dictionary to avoid Unmanaged ARC issues across FFI
+nonisolated(unsafe) private var _readers: [Int: IndexStoreReader] = [:]
+nonisolated(unsafe) private var _nextHandle: Int = 1
+nonisolated(unsafe) private let _readerLock = NSLock()
+
 // MARK: - Index Store
 
 @_cdecl("grapha_indexstore_open")
 public func indexstoreOpen(_ path: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
     let pathStr = String(cString: path)
     guard let reader = IndexStoreReader(storePath: pathStr) else { return nil }
-    return Unmanaged.passRetained(reader).toOpaque()
+    _readerLock.lock()
+    let handle = _nextHandle
+    _nextHandle += 1
+    _readers[handle] = reader
+    _readerLock.unlock()
+    return UnsafeMutableRawPointer(bitPattern: handle)
 }
 
 @_cdecl("grapha_indexstore_extract")
@@ -14,18 +26,22 @@ public func indexstoreExtract(
     _ handle: UnsafeMutableRawPointer,
     _ filePath: UnsafePointer<CChar>
 ) -> UnsafePointer<CChar>? {
-    let reader = Unmanaged<IndexStoreReader>.fromOpaque(handle).takeUnretainedValue()
+    let key = Int(bitPattern: handle)
+    _readerLock.lock()
+    let reader = _readers[key]
+    _readerLock.unlock()
+    guard let reader else { return nil }
     let file = String(cString: filePath)
-    guard let json = reader.extractFile(file) else {
-        return nil
-    }
-    let cStr = strdup(json)
-    return cStr.map { UnsafePointer($0) }
+    guard let json = reader.extractFile(file) else { return nil }
+    return strdup(json).map { UnsafePointer($0) }
 }
 
 @_cdecl("grapha_indexstore_close")
 public func indexstoreClose(_ handle: UnsafeMutableRawPointer) {
-    Unmanaged<IndexStoreReader>.fromOpaque(handle).release()
+    let key = Int(bitPattern: handle)
+    _readerLock.lock()
+    _readers.removeValue(forKey: key)
+    _readerLock.unlock()
 }
 
 // MARK: - SwiftSyntax

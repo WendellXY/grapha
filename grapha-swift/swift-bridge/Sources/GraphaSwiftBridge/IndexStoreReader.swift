@@ -92,6 +92,8 @@ private final class RelCollector: @unchecked Sendable {
 
 // MARK: - Callback State (file-level to avoid captures in @convention(c) callbacks)
 // These are used as temporary storage during synchronous _apply_f iterations.
+// Protected by _cbLock for thread safety.
+nonisolated(unsafe) private var _cbLock = NSLock()
 nonisolated(unsafe) private var _cbStore: indexstore_t? = nil
 nonisolated(unsafe) private var _cbSearchPath: String = ""
 nonisolated(unsafe) private var _cbSearchFileName: String = ""
@@ -121,6 +123,9 @@ final class IndexStoreReader: @unchecked Sendable {
     // MARK: - Public
 
     func extractFile(_ filePath: String) -> String? {
+        _cbLock.lock()
+        defer { _cbLock.unlock() }
+
         let resolved = resolvePath(filePath)
 
         guard let (unitName, moduleName) = findUnit(forFile: resolved) else { return nil }
@@ -328,24 +333,32 @@ private func extractRelationEdges(
 // MARK: - Symbol Kind Mapping
 
 private func mapSymbolKind(_ raw: UInt64) -> String? {
+    // Values from LLVM IndexStore SymbolKind enum:
+    // 0=Unknown 1=Module 2=Namespace 3=NamespaceAlias 4=Macro
+    // 5=Enum 6=Struct 7=Class 8=Protocol 9=Extension 10=Union 11=TypeAlias
+    // 12=Function 13=Variable 14=Field 15=EnumConstant
+    // 16=InstanceMethod 17=ClassMethod 18=StaticMethod
+    // 19=InstanceProperty 20=ClassProperty 21=StaticProperty
+    // 22=Constructor 23=Destructor
     switch raw {
-    case 4: return "struct"      // class
-    case 5: return "struct"      // struct
-    case 6: return "enum"        // enum
-    case 7: return "protocol"    // protocol
-    case 8: return "extension"   // extension
-    case 10: return "type_alias" // typealias
-    case 11: return "function"   // free function
-    case 13: return "field"      // field
-    case 15: return "variant"    // enum constant
-    case 17: return "function"   // instance method
-    case 18: return "function"   // class method
-    case 19: return "function"   // static method
-    case 20: return "property"   // instance property
-    case 21: return "property"   // class property
-    case 22: return "property"   // static property
-    case 25: return "function"   // constructor
-    case 26: return "function"   // destructor
+    case 5:  return "enum"
+    case 6:  return "struct"
+    case 7:  return "struct"     // Class → struct in grapha
+    case 8:  return "protocol"
+    case 9:  return "extension"
+    case 11: return "type_alias"
+    case 12: return "function"
+    case 13: return "property"   // Variable → property
+    case 14: return "field"
+    case 15: return "variant"
+    case 16: return "function"   // InstanceMethod
+    case 17: return "function"   // ClassMethod
+    case 18: return "function"   // StaticMethod
+    case 19: return "property"   // InstanceProperty
+    case 20: return "property"   // ClassProperty
+    case 21: return "property"   // StaticProperty
+    case 22: return "function"   // Constructor
+    case 23: return "function"   // Destructor
     default: return nil
     }
 }
