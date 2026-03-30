@@ -21,8 +21,6 @@ use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 use grapha_core::extract::LanguageExtractor;
-use extract::rust::RustExtractor;
-use grapha_swift::SwiftExtractor;
 use store::Store;
 
 #[derive(Parser)]
@@ -160,14 +158,6 @@ fn stamp_module(
     extract::ExtractionResult { nodes, ..result }
 }
 
-fn extractor_for_path(path: &Path) -> Option<Box<dyn LanguageExtractor>> {
-    let ext = path.extension()?.to_str()?;
-    match ext {
-        "rs" => Some(Box::new(RustExtractor)),
-        "swift" => Some(Box::new(SwiftExtractor)),
-        _ => None,
-    }
-}
 
 /// Run the extraction pipeline on a path, returning a merged graph.
 fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph::Graph> {
@@ -194,10 +184,10 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
     let mut results = Vec::new();
     let mut skipped = 0usize;
     for file in &files {
-        let extractor = match extractor_for_path(file) {
-            Some(e) => e,
-            None => continue,
-        };
+        let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !matches!(ext, "rs" | "swift") {
+            continue;
+        }
 
         let source =
             std::fs::read(file).with_context(|| format!("failed to read {}", file.display()))?;
@@ -212,7 +202,6 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
 
         let abs_file = std::fs::canonicalize(file).unwrap_or_else(|_| abs_root.join(relative));
         let file_module = module_map.module_for_file(&abs_file).or_else(|| {
-            // Fallback: use the first path component as the module name
             relative
                 .components()
                 .next()
@@ -220,7 +209,18 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
                 .map(|s| s.to_string())
         });
 
-        match extractor.extract(&source, relative) {
+        // Use language-specific extraction: Swift uses waterfall (index-store → SwiftSyntax → tree-sitter)
+        let extraction_result = match ext {
+            "swift" => grapha_swift::extract_swift(&source, relative, None, Some(&abs_root)),
+            "rs" => {
+                let extractor = extract::rust::RustExtractor;
+                use grapha_core::LanguageExtractor;
+                extractor.extract(&source, relative)
+            }
+            _ => continue,
+        };
+
+        match extraction_result {
             Ok(result) => {
                 let stamped = stamp_module(result, &file_module);
                 results.push(stamped);

@@ -4,7 +4,9 @@ import Foundation
 
 @_cdecl("grapha_indexstore_open")
 public func indexstoreOpen(_ path: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
-    return nil // Phase 3
+    let pathStr = String(cString: path)
+    guard let reader = IndexStoreReader(storePath: pathStr) else { return nil }
+    return Unmanaged.passRetained(reader).toOpaque()
 }
 
 @_cdecl("grapha_indexstore_extract")
@@ -12,12 +14,18 @@ public func indexstoreExtract(
     _ handle: UnsafeMutableRawPointer,
     _ filePath: UnsafePointer<CChar>
 ) -> UnsafePointer<CChar>? {
-    return nil // Phase 3
+    let reader = Unmanaged<IndexStoreReader>.fromOpaque(handle).takeUnretainedValue()
+    let file = String(cString: filePath)
+    guard let json = reader.extractFile(file) else {
+        return nil
+    }
+    let cStr = strdup(json)
+    return cStr.map { UnsafePointer($0) }
 }
 
 @_cdecl("grapha_indexstore_close")
 public func indexstoreClose(_ handle: UnsafeMutableRawPointer) {
-    // Phase 3
+    Unmanaged<IndexStoreReader>.fromOpaque(handle).release()
 }
 
 // MARK: - SwiftSyntax

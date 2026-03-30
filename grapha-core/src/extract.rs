@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::graph::{Edge, Node};
 use crate::resolve::Import;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ExtractionResult {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
