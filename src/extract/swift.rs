@@ -1154,9 +1154,6 @@ fn extract_calls(
     // Recurse into all children
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "ERROR" {
-            eprintln!("DEBUG ERROR node at line {} text={:?}", child.start_position().row, child.utf8_text(source).unwrap_or("").chars().take(80).collect::<String>());
-        }
         extract_calls(child, source, file, module_path, caller_id, result);
     }
 }
