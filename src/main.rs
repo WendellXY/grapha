@@ -213,7 +213,14 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<graph::Graph> {
         };
 
         let abs_file = std::fs::canonicalize(file).unwrap_or_else(|_| abs_root.join(relative));
-        let file_module = module_map.module_for_file(&abs_file);
+        let file_module = module_map.module_for_file(&abs_file).or_else(|| {
+            // Fallback: use the first path component as the module name
+            relative
+                .components()
+                .next()
+                .and_then(|c| c.as_os_str().to_str())
+                .map(|s| s.to_string())
+        });
 
         match extractor.extract(&source, relative) {
             Ok(result) => {
