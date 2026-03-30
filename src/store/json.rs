@@ -29,7 +29,6 @@ impl Store for JsonStore {
         let graph = serde_json::from_str(&content)?;
         Ok(graph)
     }
-
 }
 
 #[cfg(test)]

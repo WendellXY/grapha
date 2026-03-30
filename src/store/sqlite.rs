@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use rusqlite::Connection;
 
-use crate::graph::{Edge, EdgeKind, Graph, Node, NodeKind, Span, Visibility};
+use crate::graph::{Edge, EdgeKind, Graph, Node, NodeKind, NodeRole, Span, Visibility};
 use crate::store::Store;
 
 pub struct SqliteStore {
@@ -36,20 +36,30 @@ impl SqliteStore {
                 span_end_line     INTEGER NOT NULL,
                 span_end_col      INTEGER NOT NULL,
                 visibility TEXT NOT NULL,
-                metadata   TEXT NOT NULL
+                metadata   TEXT NOT NULL,
+                role       TEXT,
+                signature  TEXT,
+                doc_comment TEXT,
+                module     TEXT
             );
             CREATE TABLE IF NOT EXISTS edges (
                 source     TEXT NOT NULL,
                 target     TEXT NOT NULL,
                 kind       TEXT NOT NULL,
-                confidence REAL NOT NULL
+                confidence REAL NOT NULL,
+                direction  TEXT,
+                operation  TEXT,
+                condition  TEXT,
+                async_boundary INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
             CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
             CREATE INDEX IF NOT EXISTS idx_edges_kind   ON edges(kind);
             CREATE INDEX IF NOT EXISTS idx_nodes_name   ON nodes(name);
             CREATE INDEX IF NOT EXISTS idx_nodes_file   ON nodes(file);
-            CREATE INDEX IF NOT EXISTS idx_nodes_kind   ON nodes(kind);",
+            CREATE INDEX IF NOT EXISTS idx_nodes_kind   ON nodes(kind);
+            CREATE INDEX IF NOT EXISTS idx_nodes_role   ON nodes(role);
+            CREATE INDEX IF NOT EXISTS idx_nodes_module ON nodes(module);",
         )?;
         Ok(())
     }
@@ -92,10 +102,12 @@ impl Store for SqliteStore {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO nodes (id, kind, name, file,
                     span_start_line, span_start_col, span_end_line, span_end_col,
-                    visibility, metadata)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                    visibility, metadata, role, signature, doc_comment, module)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             )?;
             for node in &graph.nodes {
+                let role_json: Option<String> =
+                    node.role.as_ref().map(serde_json::to_string).transpose()?;
                 stmt.execute(rusqlite::params![
                     node.id,
                     enum_to_str(&node.kind)?,
@@ -107,6 +119,10 @@ impl Store for SqliteStore {
                     node.span.end[1] as i64,
                     enum_to_str(&node.visibility)?,
                     serde_json::to_string(&node.metadata)?,
+                    role_json,
+                    node.signature,
+                    node.doc_comment,
+                    node.module,
                 ])?;
             }
         }
@@ -114,15 +130,24 @@ impl Store for SqliteStore {
         // Insert edges
         {
             let mut stmt = tx.prepare(
-                "INSERT INTO edges (source, target, kind, confidence)
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO edges (source, target, kind, confidence,
+                    direction, operation, condition, async_boundary)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
             for edge in &graph.edges {
+                let direction_str: Option<String> =
+                    edge.direction.as_ref().map(enum_to_str).transpose()?;
+                let async_boundary_int: Option<i64> =
+                    edge.async_boundary.map(|b| if b { 1 } else { 0 });
                 stmt.execute(rusqlite::params![
                     edge.source,
                     edge.target,
                     enum_to_str(&edge.kind)?,
                     edge.confidence,
+                    direction_str,
+                    edge.operation,
+                    edge.condition,
+                    async_boundary_int,
                 ])?;
             }
         }
@@ -145,37 +170,56 @@ impl Store for SqliteStore {
             let mut stmt = conn.prepare(
                 "SELECT id, kind, name, file,
                         span_start_line, span_start_col, span_end_line, span_end_col,
-                        visibility, metadata
+                        visibility, metadata, role, signature, doc_comment, module
                  FROM nodes",
             )?;
             let rows = stmt.query_map([], |row| {
-                let kind_str: String = row.get(1)?;
-                let vis_str: String = row.get(8)?;
-                let meta_str: String = row.get(9)?;
-                let file_str: String = row.get(3)?;
                 Ok((
                     row.get::<_, String>(0)?,
-                    kind_str,
+                    row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
-                    file_str,
+                    row.get::<_, String>(3)?,
                     row.get::<_, i64>(4)?,
                     row.get::<_, i64>(5)?,
                     row.get::<_, i64>(6)?,
                     row.get::<_, i64>(7)?,
-                    vis_str,
-                    meta_str,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, String>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
                 ))
             })?;
 
             let mut nodes = Vec::new();
             for row in rows {
-                let (id, kind_str, name, file_str, sl, sc, el, ec, vis_str, meta_str) = row?;
+                let (
+                    id,
+                    kind_str,
+                    name,
+                    file_str,
+                    sl,
+                    sc,
+                    el,
+                    ec,
+                    vis_str,
+                    meta_str,
+                    role_str,
+                    signature,
+                    doc_comment,
+                    module,
+                ) = row?;
                 let kind: NodeKind = str_to_enum(&kind_str)
                     .map_err(|e| anyhow::anyhow!("invalid node kind '{kind_str}': {e}"))?;
                 let visibility: Visibility = str_to_enum(&vis_str)
                     .map_err(|e| anyhow::anyhow!("invalid visibility '{vis_str}': {e}"))?;
                 let metadata: std::collections::HashMap<String, String> =
                     serde_json::from_str(&meta_str)?;
+                let role: Option<NodeRole> = role_str
+                    .map(|s| serde_json::from_str(&s))
+                    .transpose()
+                    .map_err(|e| anyhow::anyhow!("invalid node role: {e}"))?;
                 nodes.push(Node {
                     id,
                     kind,
@@ -187,40 +231,62 @@ impl Store for SqliteStore {
                     },
                     visibility,
                     metadata,
-                    role: None,
-                    signature: None,
-                    doc_comment: None,
-                    module: None,
+                    role,
+                    signature,
+                    doc_comment,
+                    module,
                 });
             }
             nodes
         };
 
         let edges = {
-            let mut stmt = conn.prepare("SELECT source, target, kind, confidence FROM edges")?;
+            let mut stmt = conn.prepare(
+                "SELECT source, target, kind, confidence,
+                        direction, operation, condition, async_boundary
+                 FROM edges",
+            )?;
             let rows = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, f64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
                 ))
             })?;
 
             let mut edges = Vec::new();
             for row in rows {
-                let (source, target, kind_str, confidence) = row?;
+                let (
+                    source,
+                    target,
+                    kind_str,
+                    confidence,
+                    direction_str,
+                    operation,
+                    condition,
+                    async_boundary_int,
+                ) = row?;
                 let kind: EdgeKind = str_to_enum(&kind_str)
                     .map_err(|e| anyhow::anyhow!("invalid edge kind '{kind_str}': {e}"))?;
+                let direction = direction_str
+                    .map(|s| str_to_enum(&s))
+                    .transpose()
+                    .map_err(|e| anyhow::anyhow!("invalid flow direction: {e}"))?;
+                let async_boundary = async_boundary_int.map(|v| v != 0);
                 edges.push(Edge {
                     source,
                     target,
                     kind,
                     confidence,
-                    direction: None,
-                    operation: None,
-                    condition: None,
-                    async_boundary: None,
+                    direction,
+                    operation,
+                    condition,
+                    async_boundary,
                 });
             }
             edges
@@ -232,7 +298,6 @@ impl Store for SqliteStore {
             edges,
         })
     }
-
 }
 
 #[cfg(test)]
@@ -289,6 +354,179 @@ mod tests {
         );
         assert_eq!(loaded.edges.len(), 1);
         assert_eq!(loaded.edges[0].confidence, 0.85);
+    }
+
+    #[test]
+    fn sqlite_store_round_trips_dataflow_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grapha_dataflow.db");
+        let store = SqliteStore::new(path);
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                Node {
+                    id: "api::handler".to_string(),
+                    kind: NodeKind::Function,
+                    name: "handler".to_string(),
+                    file: "api.rs".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [10, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::new(),
+                    role: Some(NodeRole::EntryPoint),
+                    signature: Some("async fn handler(req: Request) -> Response".to_string()),
+                    doc_comment: Some("Handles incoming requests".to_string()),
+                    module: Some("api".to_string()),
+                },
+                Node {
+                    id: "db::query".to_string(),
+                    kind: NodeKind::Function,
+                    name: "query".to_string(),
+                    file: "db.rs".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [5, 0],
+                    },
+                    visibility: Visibility::Crate,
+                    metadata: HashMap::new(),
+                    role: Some(NodeRole::Terminal {
+                        kind: TerminalKind::Persistence,
+                    }),
+                    signature: Some("fn query(sql: &str) -> Vec<Row>".to_string()),
+                    doc_comment: None,
+                    module: Some("db".to_string()),
+                },
+                Node {
+                    id: "internal::helper".to_string(),
+                    kind: NodeKind::Function,
+                    name: "helper".to_string(),
+                    file: "internal.rs".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [3, 0],
+                    },
+                    visibility: Visibility::Private,
+                    metadata: HashMap::new(),
+                    role: Some(NodeRole::Internal),
+                    signature: None,
+                    doc_comment: None,
+                    module: None,
+                },
+            ],
+            edges: vec![
+                Edge {
+                    source: "api::handler".to_string(),
+                    target: "db::query".to_string(),
+                    kind: EdgeKind::Reads,
+                    confidence: 0.9,
+                    direction: Some(FlowDirection::Read),
+                    operation: Some("SELECT".to_string()),
+                    condition: Some("user.isActive".to_string()),
+                    async_boundary: Some(true),
+                },
+                Edge {
+                    source: "api::handler".to_string(),
+                    target: "db::query".to_string(),
+                    kind: EdgeKind::Writes,
+                    confidence: 0.85,
+                    direction: Some(FlowDirection::Write),
+                    operation: Some("INSERT".to_string()),
+                    condition: None,
+                    async_boundary: Some(false),
+                },
+                Edge {
+                    source: "api::handler".to_string(),
+                    target: "internal::helper".to_string(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.95,
+                    direction: Some(FlowDirection::Pure),
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                },
+            ],
+        };
+
+        store.save(&graph).unwrap();
+        let loaded = store.load().unwrap();
+
+        assert_eq!(loaded.version, "0.1.0");
+        assert_eq!(loaded.nodes.len(), 3);
+        assert_eq!(loaded.edges.len(), 3);
+
+        // Verify node dataflow fields
+        let api_node = loaded
+            .nodes
+            .iter()
+            .find(|n| n.id == "api::handler")
+            .unwrap();
+        assert_eq!(api_node.role, Some(NodeRole::EntryPoint));
+        assert_eq!(
+            api_node.signature.as_deref(),
+            Some("async fn handler(req: Request) -> Response")
+        );
+        assert_eq!(
+            api_node.doc_comment.as_deref(),
+            Some("Handles incoming requests")
+        );
+        assert_eq!(api_node.module.as_deref(), Some("api"));
+
+        let db_node = loaded.nodes.iter().find(|n| n.id == "db::query").unwrap();
+        assert_eq!(
+            db_node.role,
+            Some(NodeRole::Terminal {
+                kind: TerminalKind::Persistence,
+            })
+        );
+        assert_eq!(
+            db_node.signature.as_deref(),
+            Some("fn query(sql: &str) -> Vec<Row>")
+        );
+        assert_eq!(db_node.doc_comment, None);
+        assert_eq!(db_node.module.as_deref(), Some("db"));
+
+        let internal_node = loaded
+            .nodes
+            .iter()
+            .find(|n| n.id == "internal::helper")
+            .unwrap();
+        assert_eq!(internal_node.role, Some(NodeRole::Internal));
+        assert_eq!(internal_node.signature, None);
+        assert_eq!(internal_node.module, None);
+
+        // Verify edge dataflow fields
+        let read_edge = loaded
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Reads)
+            .unwrap();
+        assert_eq!(read_edge.direction, Some(FlowDirection::Read));
+        assert_eq!(read_edge.operation.as_deref(), Some("SELECT"));
+        assert_eq!(read_edge.condition.as_deref(), Some("user.isActive"));
+        assert_eq!(read_edge.async_boundary, Some(true));
+
+        let write_edge = loaded
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Writes)
+            .unwrap();
+        assert_eq!(write_edge.direction, Some(FlowDirection::Write));
+        assert_eq!(write_edge.operation.as_deref(), Some("INSERT"));
+        assert_eq!(write_edge.condition, None);
+        assert_eq!(write_edge.async_boundary, Some(false));
+
+        let call_edge = loaded
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Calls)
+            .unwrap();
+        assert_eq!(call_edge.direction, Some(FlowDirection::Pure));
+        assert_eq!(call_edge.operation, None);
+        assert_eq!(call_edge.condition, None);
+        assert_eq!(call_edge.async_boundary, None);
     }
 
     #[test]

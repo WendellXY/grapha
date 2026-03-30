@@ -187,7 +187,11 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<graph::Graph> {
     let graph = merge::merge(results);
     if verbose {
         progress::done(
-            &format!("merged → {} nodes, {} edges", graph.nodes.len(), graph.edges.len()),
+            &format!(
+                "merged → {} nodes, {} edges",
+                graph.nodes.len(),
+                graph.edges.len()
+            ),
             t,
         );
     }
@@ -265,7 +269,10 @@ fn main() -> anyhow::Result<()> {
                 other => anyhow::bail!("unknown store format: {other}"),
             };
             s.save(&graph)?;
-            progress::done(&format!("saved to {} ({})", store_path.display(), format), t);
+            progress::done(
+                &format!("saved to {} ({})", store_path.display(), format),
+                t,
+            );
 
             let t = Instant::now();
             let search_index_path = store_path.join("search_index");

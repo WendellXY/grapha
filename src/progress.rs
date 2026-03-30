@@ -21,11 +21,7 @@ pub fn done(msg: &str, start: Instant) {
     if elapsed.as_secs() >= 1 {
         eprintln!("  \x1b[32m✓\x1b[0m {} ({:.1}s)", msg, elapsed.as_secs_f64());
     } else {
-        eprintln!(
-            "  \x1b[32m✓\x1b[0m {} ({}ms)",
-            msg,
-            elapsed.as_millis()
-        );
+        eprintln!("  \x1b[32m✓\x1b[0m {} ({}ms)", msg, elapsed.as_millis());
     }
 }
 
