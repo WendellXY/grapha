@@ -2,7 +2,11 @@
 
 [中文文档](docs/README.CN.md)
 
-A lightweight code intelligence CLI that transforms source code into a normalized, graph-based representation optimized for LLM consumption. It parses via [tree-sitter](https://tree-sitter.github.io/), extracts symbols and relationships, then provides persistence, search, and impact analysis — giving agents fast, structured access to codebases at scale.
+Blazingly fast code intelligence for LLM agents.
+
+Grapha transforms source code into a normalized, graph-based representation optimized for LLM consumption. It parses via [tree-sitter](https://tree-sitter.github.io/), extracts symbols and relationships, then provides persistence, search, and impact analysis — giving agents structured access to codebases at scale.
+
+> **1,991 Swift files, 306k lines of code — indexed in 2.5 seconds, 146 MB peak memory.**
 
 ## Install
 
