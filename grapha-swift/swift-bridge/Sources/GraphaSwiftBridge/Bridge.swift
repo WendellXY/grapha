@@ -1,52 +1,44 @@
 import Foundation
+import Synchronization
 
 // MARK: - Reader Storage
 
-// Store readers in a dictionary to avoid Unmanaged ARC issues across FFI
-nonisolated(unsafe) private var _readers: [Int: IndexStoreReader] = [:]
-nonisolated(unsafe) private var _nextHandle: Int = 1
-nonisolated(unsafe) private let _readerLock = NSLock()
+private let _readers = Mutex<[Int: IndexStoreReader]>([:])
+private let _nextHandle = Atomic<Int>(1)
 
 // MARK: - Index Store
 
-@_cdecl("grapha_indexstore_open")
+@c(grapha_indexstore_open)
 public func indexstoreOpen(_ path: UnsafePointer<CChar>) -> UnsafeMutableRawPointer? {
     let pathStr = String(cString: path)
     guard let reader = IndexStoreReader(storePath: pathStr) else { return nil }
-    _readerLock.lock()
-    let handle = _nextHandle
-    _nextHandle += 1
-    _readers[handle] = reader
-    _readerLock.unlock()
+    let handle = _nextHandle.wrappingAdd(1, ordering: .relaxed).oldValue
+    _readers.withLock { $0[handle] = reader }
     return UnsafeMutableRawPointer(bitPattern: handle)
 }
 
-@_cdecl("grapha_indexstore_extract")
+@c(grapha_indexstore_extract)
 public func indexstoreExtract(
     _ handle: UnsafeMutableRawPointer,
     _ filePath: UnsafePointer<CChar>
 ) -> UnsafePointer<CChar>? {
     let key = Int(bitPattern: handle)
-    _readerLock.lock()
-    let reader = _readers[key]
-    _readerLock.unlock()
+    let reader = _readers.withLock { $0[key] }
     guard let reader else { return nil }
     let file = String(cString: filePath)
     guard let json = reader.extractFile(file) else { return nil }
     return strdup(json).map { UnsafePointer($0) }
 }
 
-@_cdecl("grapha_indexstore_close")
+@c(grapha_indexstore_close)
 public func indexstoreClose(_ handle: UnsafeMutableRawPointer) {
     let key = Int(bitPattern: handle)
-    _readerLock.lock()
-    _readers.removeValue(forKey: key)
-    _readerLock.unlock()
+    _ = _readers.withLock { $0.removeValue(forKey: key) }
 }
 
 // MARK: - SwiftSyntax
 
-@_cdecl("grapha_swiftsyntax_extract")
+@c(grapha_swiftsyntax_extract)
 public func swiftsyntaxExtract(
     _ source: UnsafePointer<CChar>,
     _ sourceLen: Int,
@@ -57,7 +49,7 @@ public func swiftsyntaxExtract(
 
 // MARK: - Memory
 
-@_cdecl("grapha_free_string")
+@c(grapha_free_string)
 public func freeString(_ ptr: UnsafeMutablePointer<CChar>) {
     ptr.deallocate()
 }

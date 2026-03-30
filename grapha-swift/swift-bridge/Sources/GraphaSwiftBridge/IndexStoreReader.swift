@@ -90,10 +90,13 @@ private final class RelCollector: @unchecked Sendable {
 // MARK: - IndexStoreReader
 
 
+import Synchronization
+
 // MARK: - Callback State (file-level to avoid captures in @convention(c) callbacks)
 // These are used as temporary storage during synchronous _apply_f iterations.
-// Protected by _cbLock for thread safety.
-nonisolated(unsafe) private var _cbLock = NSLock()
+// Protected by _cbLock for thread safety. The nonisolated(unsafe) globals are
+// required because @convention(c) callbacks cannot capture context.
+private let _cbLock = Mutex<Void>(())
 nonisolated(unsafe) private var _cbStore: indexstore_t? = nil
 nonisolated(unsafe) private var _cbFileIndex: [String: UnitInfo] = [:]
 nonisolated(unsafe) private var _cbSearchPath: String = ""
@@ -132,8 +135,8 @@ final class IndexStoreReader: @unchecked Sendable {
     // MARK: - Public
 
     func extractFile(_ filePath: String) -> String? {
-        _cbLock.lock()
-        defer { _cbLock.unlock() }
+        // Lock to protect the nonisolated(unsafe) callback globals
+        return _cbLock.withLock { _ -> String? in
 
         // Build the file index on first call (scans all units once)
         if fileIndex == nil {
@@ -141,7 +144,7 @@ final class IndexStoreReader: @unchecked Sendable {
         }
 
         let resolved = resolvePath(filePath)
-        let fileName = (filePath as NSString).lastPathComponent
+        let fileName = URL(fileURLWithPath: filePath).lastPathComponent
 
         // O(1) lookup instead of scanning 9,458 units
         let unitInfo = fileIndex?[resolved]
@@ -161,6 +164,7 @@ final class IndexStoreReader: @unchecked Sendable {
         )
 
         return buildJSON(nodes: Array(collector.nodes.values), edges: collector.edges)
+        } // withLock
     }
 
     // MARK: - File Index (built once)
