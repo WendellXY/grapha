@@ -8,6 +8,7 @@ mod extract;
 mod filter;
 mod graph;
 mod merge;
+mod module;
 mod progress;
 mod query;
 mod resolve;
