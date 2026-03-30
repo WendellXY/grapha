@@ -95,6 +95,7 @@ private final class RelCollector: @unchecked Sendable {
 // Protected by _cbLock for thread safety.
 nonisolated(unsafe) private var _cbLock = NSLock()
 nonisolated(unsafe) private var _cbStore: indexstore_t? = nil
+nonisolated(unsafe) private var _cbFileIndex: [String: UnitInfo] = [:]
 nonisolated(unsafe) private var _cbSearchPath: String = ""
 nonisolated(unsafe) private var _cbSearchFileName: String = ""
 nonisolated(unsafe) private var _cbMatchedUnit: String? = nil
@@ -105,8 +106,16 @@ nonisolated(unsafe) private var _cbRelEdges: [ExtractedEdge] = []
 nonisolated(unsafe) private var _cbRelSymbolUSR: String = ""
 nonisolated(unsafe) private var _cbRelRoles: UInt64 = 0
 
+/// Pre-built lookup: mainFile path → (unitName, moduleName)
+private struct UnitInfo {
+    let unitName: String
+    let moduleName: String?
+}
+
 final class IndexStoreReader: @unchecked Sendable {
     private let store: indexstore_t
+    /// Lazy file→unit index, built on first access
+    private var fileIndex: [String: UnitInfo]?
 
     init?(storePath: String) {
         var err: indexstore_error_t?
@@ -126,50 +135,62 @@ final class IndexStoreReader: @unchecked Sendable {
         _cbLock.lock()
         defer { _cbLock.unlock() }
 
-        let resolved = resolvePath(filePath)
+        // Build the file index on first call (scans all units once)
+        if fileIndex == nil {
+            fileIndex = buildFileIndex()
+        }
 
-        guard let (unitName, moduleName) = findUnit(forFile: resolved) else { return nil }
-        guard let recordName = findRecordName(inUnit: unitName) else { return nil }
+        let resolved = resolvePath(filePath)
+        let fileName = (filePath as NSString).lastPathComponent
+
+        // O(1) lookup instead of scanning 9,458 units
+        let unitInfo = fileIndex?[resolved]
+            ?? fileIndex?.values.first(where: { _ in
+                // Fallback: check by filename suffix
+                fileIndex?.keys.first(where: { $0.hasSuffix("/" + fileName) }).flatMap { fileIndex?[$0] } != nil
+            })
+            ?? findByFileName(fileName)
+
+        guard let unitInfo else { return nil }
+        guard let recordName = findRecordName(inUnit: unitInfo.unitName) else { return nil }
 
         let collector = readOccurrences(
             recordName: recordName,
-            fileName: (filePath as NSString).lastPathComponent,
-            moduleName: moduleName
+            fileName: fileName,
+            moduleName: unitInfo.moduleName
         )
 
         return buildJSON(nodes: Array(collector.nodes.values), edges: collector.edges)
     }
 
-    // MARK: - Unit Discovery
+    // MARK: - File Index (built once)
 
-    private func findUnit(forFile path: String) -> (unitName: String, module: String?)? {
+    private func buildFileIndex() -> [String: UnitInfo] {
         _cbStore = store
-        _cbSearchPath = path
-        _cbSearchFileName = (path as NSString).lastPathComponent
-        _cbMatchedUnit = nil
-        _cbMatchedModule = nil
-        
+        _cbFileIndex = [:]
+
         let cb: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, Int) -> Bool = {
             _, data, len in
             guard let data, let s = _cbStore else { return true }
             let unitName = String(decoding: UnsafeRawBufferPointer(start: data, count: len), as: UTF8.self)
             guard let reader = unitName.withCString({ indexstore_unit_reader_create(s, $0, nil) }) else { return true }
             defer { indexstore_unit_reader_dispose(reader) }
-            
+
             let mainFile = str(indexstore_unit_reader_get_main_file(reader))
-            if mainFile == _cbSearchPath || mainFile.hasSuffix("/" + _cbSearchFileName) {
-                let mod = str(indexstore_unit_reader_get_module_name(reader))
-                _cbMatchedUnit = unitName
-                _cbMatchedModule = mod.isEmpty ? nil : mod
-                return false
-            }
+            guard !mainFile.isEmpty, mainFile.hasSuffix(".swift") else { return true }
+            guard !mainFile.contains("/.build/") else { return true }
+
+            let mod = str(indexstore_unit_reader_get_module_name(reader))
+            _cbFileIndex[mainFile] = UnitInfo(unitName: unitName, moduleName: mod.isEmpty ? nil : mod)
             return true
         }
-        
+
         _ = indexstore_store_units_apply_f(store, 0, nil, cb)
-        
-        guard let unit = _cbMatchedUnit else { return nil }
-        return (unit, _cbMatchedModule)
+        return _cbFileIndex
+    }
+
+    private func findByFileName(_ fileName: String) -> UnitInfo? {
+        fileIndex?.first(where: { $0.key.hasSuffix("/" + fileName) })?.value
     }
     // MARK: - Record Discovery
 
