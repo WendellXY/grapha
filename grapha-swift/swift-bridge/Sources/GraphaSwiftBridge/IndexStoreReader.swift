@@ -90,10 +90,10 @@ private final class RelCollector: @unchecked Sendable {
 // MARK: - IndexStoreReader
 
 final class IndexStoreReader: @unchecked Sendable {
-    private let store: UnsafeMutableRawPointer
+    private let store: indexstore_t
 
     init?(storePath: String) {
-        var err: UnsafeMutableRawPointer?
+        var err: indexstore_error_t?
         guard let store = storePath.withCString({ indexstore_store_create($0, &err) }) else {
             return nil
         }
@@ -171,7 +171,7 @@ final class IndexStoreReader: @unchecked Sendable {
         let ctx = DepCollector()
         let ptr = Unmanaged.passUnretained(ctx).toOpaque()
 
-        let cb: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Bool = {
+        let cb: @convention(c) (UnsafeMutableRawPointer?, indexstore_unit_dependency_t?) -> Bool = {
             raw, dep in
             guard let raw, let dep else { return true }
             let c = Unmanaged<DepCollector>.fromOpaque(raw).takeUnretainedValue()
@@ -208,7 +208,7 @@ final class IndexStoreReader: @unchecked Sendable {
 
         let ptr = Unmanaged.passUnretained(collector).toOpaque()
 
-        let cb: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Bool = {
+        let cb: @convention(c) (UnsafeMutableRawPointer?, indexstore_occurrence_t?) -> Bool = {
             raw, occ in
             guard let raw, let occ else { return true }
             let c = Unmanaged<OccCollector>.fromOpaque(raw).takeUnretainedValue()
@@ -223,7 +223,7 @@ final class IndexStoreReader: @unchecked Sendable {
 
 // MARK: - Occurrence Processing
 
-private func processOccurrence(collector c: OccCollector, occ: UnsafeMutableRawPointer) {
+private func processOccurrence(collector c: OccCollector, occ: indexstore_occurrence_t) {
     let symbol = indexstore_occurrence_get_symbol(occ)!
     let roles = indexstore_occurrence_get_roles(occ)
     let usr = str(indexstore_symbol_get_usr(symbol))
@@ -251,14 +251,14 @@ private func processOccurrence(collector c: OccCollector, occ: UnsafeMutableRawP
 
 private func extractRelationEdges(
     collector c: OccCollector,
-    occ: UnsafeMutableRawPointer,
+    occ: indexstore_occurrence_t,
     symbolUSR: String,
     roles: UInt64
 ) {
     let ctx = RelCollector(symbolUSR: symbolUSR, roles: roles)
     let ptr = Unmanaged.passUnretained(ctx).toOpaque()
 
-    let cb: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Bool = {
+    let cb: @convention(c) (UnsafeMutableRawPointer?, indexstore_symbol_relation_t?) -> Bool = {
         raw, rel in
         guard let raw, let rel else { return true }
         let ctx = Unmanaged<RelCollector>.fromOpaque(raw).takeUnretainedValue()
