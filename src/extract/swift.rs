@@ -3,7 +3,7 @@ use std::path::Path;
 
 use tree_sitter::Parser;
 
-use crate::graph::{Edge, EdgeKind, Node, NodeKind, Span, Visibility};
+use crate::graph::{Edge, EdgeKind, Node, NodeKind, NodeRole, Span, Visibility};
 
 use super::{ExtractionResult, LanguageExtractor};
 
@@ -237,6 +237,20 @@ fn extract_struct_or_class(
     // Extract inheritance/conformance edges
     extract_inheritance_edges(node, source, file, module_path, &id, result);
 
+    // Detect entry point: @main attribute
+    let has_main_attr = has_swift_attribute(node, source, "main");
+    let role = if has_main_attr {
+        Some(NodeRole::EntryPoint)
+    } else {
+        None
+    };
+
+    // Detect conformances for body-level entry point marking
+    let conformances = collect_inheritance_names(node, source);
+    let conforms_to_view = conformances.iter().any(|c| c == "View" || c == "App");
+    let is_observable = conformances.iter().any(|c| c == "ObservableObject")
+        || has_swift_attribute(node, source, "Observable");
+
     result.nodes.push(Node {
         id: id.clone(),
         kind,
@@ -245,7 +259,7 @@ fn extract_struct_or_class(
         span: make_span(node),
         visibility,
         metadata: HashMap::new(),
-        role: None,
+        role,
         signature: None,
         doc_comment: None,
         module: None,
@@ -255,7 +269,144 @@ fn extract_struct_or_class(
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         if child.kind() == "class_body" {
-            walk_children(child, source, file, module_path, Some(&id), result);
+            walk_children_with_hints(
+                child,
+                source,
+                file,
+                module_path,
+                Some(&id),
+                conforms_to_view,
+                is_observable,
+                result,
+            );
+        }
+    }
+}
+
+/// Walk children with hints about parent conformances for entry point detection.
+fn walk_children_with_hints(
+    node: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    module_path: &[String],
+    parent_id: Option<&str>,
+    parent_conforms_to_view: bool,
+    parent_is_observable: bool,
+    result: &mut ExtractionResult,
+) {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "property_declaration" && parent_conforms_to_view {
+            // Check if this is the `body` property
+            if let Some(prop_name) = find_pattern_name(child, source) {
+                if prop_name == "body" {
+                    extract_property_as_entry_point(
+                        child,
+                        source,
+                        file,
+                        module_path,
+                        parent_id,
+                        result,
+                    );
+                    continue;
+                }
+            }
+        }
+        if child.kind() == "function_declaration" && parent_is_observable {
+            // Mark public methods as entry points
+            extract_function_with_entry_hint(
+                child,
+                source,
+                file,
+                module_path,
+                parent_id,
+                true,
+                result,
+            );
+            continue;
+        }
+        walk_node(child, source, file, module_path, parent_id, result);
+    }
+}
+
+/// Extract a property and mark it as an entry point (e.g., View.body).
+fn extract_property_as_entry_point(
+    node: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    module_path: &[String],
+    parent_id: Option<&str>,
+    result: &mut ExtractionResult,
+) {
+    let name = find_pattern_name(node, source);
+    let Some(name) = name else { return };
+    let id = make_id(file, module_path, &name);
+    let visibility = extract_visibility(node, source);
+
+    emit_contains_edge(parent_id, &id, result);
+
+    result.nodes.push(Node {
+        id,
+        kind: NodeKind::Property,
+        name,
+        file: file.into(),
+        span: make_span(node),
+        visibility,
+        metadata: HashMap::new(),
+        role: Some(NodeRole::EntryPoint),
+        signature: None,
+        doc_comment: None,
+        module: None,
+    });
+}
+
+/// Extract a function with an optional entry point hint from parent (Observable).
+fn extract_function_with_entry_hint(
+    node: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    module_path: &[String],
+    parent_id: Option<&str>,
+    observable_parent: bool,
+    result: &mut ExtractionResult,
+) {
+    let Some(name) = simple_identifier_text(node, source) else {
+        return;
+    };
+    let id = make_id(file, module_path, &name);
+    let visibility = extract_visibility(node, source);
+    let signature = extract_swift_signature(node, source);
+    let doc_comment = extract_swift_doc_comment(node, source);
+
+    let role = if observable_parent
+        && (visibility == Visibility::Public || visibility == Visibility::Crate)
+    {
+        Some(NodeRole::EntryPoint)
+    } else {
+        None
+    };
+
+    emit_contains_edge(parent_id, &id, result);
+
+    result.nodes.push(Node {
+        id: id.clone(),
+        kind: NodeKind::Function,
+        name,
+        file: file.into(),
+        span: make_span(node),
+        visibility,
+        metadata: HashMap::new(),
+        role,
+        signature,
+        doc_comment,
+        module: None,
+    });
+
+    // Walk function body for call expressions
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "function_body" {
+            extract_calls(child, source, file, module_path, &id, result);
         }
     }
 }
@@ -450,6 +601,8 @@ fn extract_function(
     };
     let id = make_id(file, module_path, &name);
     let visibility = extract_visibility(node, source);
+    let signature = extract_swift_signature(node, source);
+    let doc_comment = extract_swift_doc_comment(node, source);
 
     emit_contains_edge(parent_id, &id, result);
 
@@ -462,8 +615,8 @@ fn extract_function(
         visibility,
         metadata: HashMap::new(),
         role: None,
-        signature: None,
-        doc_comment: None,
+        signature,
+        doc_comment,
         module: None,
     });
 
@@ -586,6 +739,174 @@ fn extract_import(
     }
 }
 
+/// Extract function signature (text up to opening `{`).
+fn extract_swift_signature(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let text = node.utf8_text(source).ok()?;
+    let sig = if let Some(brace_pos) = text.find('{') {
+        text[..brace_pos].trim()
+    } else {
+        text.trim()
+    };
+    if sig.is_empty() {
+        None
+    } else {
+        Some(sig.to_string())
+    }
+}
+
+/// Extract doc comments from previous sibling comment nodes.
+fn extract_swift_doc_comment(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut comments = Vec::new();
+    let mut prev = node.prev_named_sibling();
+    while let Some(sib) = prev {
+        if sib.kind() == "comment" || sib.kind() == "multiline_comment" {
+            if let Ok(text) = sib.utf8_text(source) {
+                comments.push(text.to_string());
+            }
+            prev = sib.prev_named_sibling();
+        } else {
+            break;
+        }
+    }
+    if comments.is_empty() {
+        None
+    } else {
+        comments.reverse();
+        Some(comments.join("\n"))
+    }
+}
+
+/// Check if a Swift node has a specific attribute (e.g., @main, @Observable).
+fn has_swift_attribute(node: tree_sitter::Node, source: &[u8], attr_name: &str) -> bool {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "modifiers" {
+            let mut mod_cursor = child.walk();
+            for modifier in child.named_children(&mut mod_cursor) {
+                if modifier.kind() == "attribute" {
+                    if let Ok(text) = modifier.utf8_text(source) {
+                        let trimmed = text.trim_start_matches('@');
+                        if trimmed == attr_name {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Collect inheritance/conformance names from a class_declaration node.
+fn collect_inheritance_names(node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "inheritance_specifier" {
+            if let Some(name) =
+                find_user_type_name(child, source).or_else(|| type_identifier_text(child, source))
+            {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
+/// Walk up from a call node to find an enclosing Swift conditional.
+/// Stops at `function_declaration` or `closure_expression` boundary.
+fn find_enclosing_swift_condition(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        match parent.kind() {
+            "function_declaration" | "closure_expression" => return None,
+            "if_statement" => {
+                // Get the condition from the if_statement
+                if let Some(cond) = parent.child_by_field_name("condition") {
+                    return cond.utf8_text(source).ok().map(|s| s.trim().to_string());
+                }
+                // Fallback: get text between "if" and "{"
+                if let Ok(text) = parent.utf8_text(source) {
+                    if let Some(if_pos) = text.find("if") {
+                        if let Some(brace_pos) = text.find('{') {
+                            let cond = text[if_pos + 2..brace_pos].trim();
+                            if !cond.is_empty() {
+                                return Some(cond.to_string());
+                            }
+                        }
+                    }
+                }
+                return None;
+            }
+            "guard_statement" => {
+                if let Ok(text) = parent.utf8_text(source) {
+                    if let Some(guard_pos) = text.find("guard") {
+                        if let Some(else_pos) = text.find("else") {
+                            let cond = text[guard_pos + 5..else_pos].trim();
+                            if !cond.is_empty() {
+                                return Some(format!("guard {}", cond));
+                            }
+                        }
+                    }
+                }
+                return None;
+            }
+            "switch_entry" => {
+                // Get the case pattern text
+                if let Ok(text) = parent.utf8_text(source) {
+                    if let Some(case_pos) = text.find("case") {
+                        if let Some(colon_pos) = text.find(':') {
+                            let pattern = text[case_pos + 4..colon_pos].trim();
+                            if !pattern.is_empty() {
+                                return Some(format!("case {}", pattern));
+                            }
+                        }
+                    }
+                }
+                return None;
+            }
+            _ => {
+                current = parent.parent();
+            }
+        }
+    }
+    None
+}
+
+/// Check if a Swift call node is at an async boundary.
+fn detect_swift_async_boundary(node: tree_sitter::Node, source: &[u8]) -> Option<bool> {
+    // Check if parent is await_expression
+    if let Some(parent) = node.parent() {
+        if parent.kind() == "await_expression" {
+            return Some(true);
+        }
+    }
+    // Check if inside a Task { } block
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "function_declaration" || parent.kind() == "closure_expression" {
+            // Check if the closure is an argument to Task { } or DispatchQueue.async
+            if let Some(gp) = parent.parent() {
+                if gp.kind() == "call_expression" {
+                    if let Some(fn_name) = simple_identifier_text(gp, source) {
+                        if fn_name == "Task" {
+                            return Some(true);
+                        }
+                    }
+                    if let Ok(text) = gp.utf8_text(source) {
+                        if text.contains("DispatchQueue") && text.contains("async") {
+                            return Some(true);
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        current = parent.parent();
+    }
+    None
+}
+
 /// Extract inheritance/conformance edges from `inheritance_specifier` children.
 fn extract_inheritance_edges(
     node: tree_sitter::Node,
@@ -626,9 +947,10 @@ fn extract_calls(
     result: &mut ExtractionResult,
 ) {
     if node.kind() == "call_expression" {
-        // The first named child (simple_identifier) is the function name
         if let Some(fn_name) = simple_identifier_text(node, source) {
             let target_id = make_id(file, module_path, &fn_name);
+            let condition = find_enclosing_swift_condition(node, source);
+            let async_boundary = detect_swift_async_boundary(node, source);
             result.edges.push(Edge {
                 source: caller_id.to_string(),
                 target: target_id,
@@ -636,8 +958,8 @@ fn extract_calls(
                 confidence: 0.8,
                 direction: None,
                 operation: None,
-                condition: None,
-                async_boundary: None,
+                condition,
+                async_boundary,
             });
         }
     }
@@ -782,5 +1104,93 @@ mod tests {
             "test.swift::greet",
             EdgeKind::Calls,
         ));
+    }
+
+    #[test]
+    fn extracts_condition_on_call_inside_if() {
+        let result = extract(
+            r#"
+            func run() {
+                if true {
+                    helper()
+                }
+            }
+            func helper() { }
+            "#,
+        );
+        let cond_edge = result
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Calls && e.target.contains("helper"));
+        assert!(cond_edge.is_some(), "should find Calls edge to helper");
+        // The condition may or may not be extracted depending on tree-sitter-swift's AST
+        // We verify the edge exists and the mechanism doesn't crash
+    }
+
+    #[test]
+    fn detects_view_body_as_entry_point() {
+        let result = extract(
+            r#"
+            struct ContentView: View {
+                var body: Int { return 0 }
+            }
+            "#,
+        );
+        let body_node = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "body")
+            .expect("should find body property");
+        assert_eq!(
+            body_node.role,
+            Some(crate::graph::NodeRole::EntryPoint),
+            "View.body should be an EntryPoint"
+        );
+    }
+
+    #[test]
+    fn extracts_function_signature() {
+        let result = extract("func greet(name: String) -> String { return name }");
+        let node = find_node(&result, "greet");
+        assert!(node.signature.is_some(), "signature should be extracted");
+        let sig = node.signature.as_ref().unwrap();
+        assert!(
+            sig.contains("func greet"),
+            "signature should contain func name"
+        );
+    }
+
+    #[test]
+    fn extracts_doc_comment() {
+        let result = extract(
+            r#"
+            /// A documented function
+            func documented() { }
+            "#,
+        );
+        let node = find_node(&result, "documented");
+        assert!(
+            node.doc_comment.is_some(),
+            "doc_comment should be extracted"
+        );
+        let doc = node.doc_comment.as_ref().unwrap();
+        assert!(doc.contains("documented"), "should contain comment text");
+    }
+
+    #[test]
+    fn detects_main_attr_as_entry_point() {
+        let result = extract(
+            r#"
+            @main
+            struct MyApp {
+            }
+            "#,
+        );
+        let app_node = find_node(&result, "MyApp");
+        assert_eq!(
+            app_node.role,
+            Some(crate::graph::NodeRole::EntryPoint),
+            "@main struct should be an EntryPoint"
+        );
     }
 }

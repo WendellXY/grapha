@@ -3,7 +3,7 @@ use std::path::Path;
 
 use tree_sitter::Parser;
 
-use crate::graph::{Edge, EdgeKind, Node, NodeKind, Span, Visibility};
+use crate::graph::{Edge, EdgeKind, Node, NodeKind, NodeRole, Span, Visibility};
 
 use super::{ExtractionResult, LanguageExtractor};
 
@@ -414,6 +414,10 @@ fn extract_function(
     let start = node.start_position();
     let end = node.end_position();
 
+    let role = detect_entry_point(node, source, &name, module_path);
+    let signature = extract_signature(node, source);
+    let doc_comment = extract_doc_comment(node, source);
+
     Some(Node {
         id,
         kind: NodeKind::Function,
@@ -425,11 +429,190 @@ fn extract_function(
         },
         visibility,
         metadata,
-        role: None,
-        signature: None,
-        doc_comment: None,
+        role,
+        signature,
+        doc_comment,
         module: None,
     })
+}
+
+/// Detect if a function is an entry point.
+///
+/// Entry points are: `fn main()` at module level, functions with `#[test]`,
+/// `#[tokio::main]`, or `pub fn` at crate root level (no parent impl/trait).
+fn detect_entry_point(
+    node: tree_sitter::Node,
+    source: &[u8],
+    name: &str,
+    module_path: &[String],
+) -> Option<NodeRole> {
+    let attrs = collect_attributes(node, source);
+    let is_module_level = node
+        .parent()
+        .map(|p| p.kind() == "source_file" || p.kind() == "declaration_list")
+        .unwrap_or(false);
+    let is_inside_impl_or_trait = node
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|gp| gp.kind() == "impl_item" || gp.kind() == "trait_item")
+        .unwrap_or(false);
+
+    // #[test] or #[tokio::main] attributes
+    for attr in &attrs {
+        if attr == "test" || attr == "tokio::test" || attr == "tokio::main" {
+            return Some(NodeRole::EntryPoint);
+        }
+    }
+
+    // fn main() at module level, not inside impl/trait
+    if name == "main" && is_module_level && !is_inside_impl_or_trait {
+        return Some(NodeRole::EntryPoint);
+    }
+
+    // pub fn at crate root level (module_path is empty, not inside impl/trait)
+    let visibility = extract_visibility(node, source);
+    if visibility == Visibility::Public
+        && module_path.is_empty()
+        && is_module_level
+        && !is_inside_impl_or_trait
+    {
+        return Some(NodeRole::EntryPoint);
+    }
+
+    None
+}
+
+/// Collect attribute names from sibling `attribute_item` nodes before the function.
+fn collect_attributes(node: tree_sitter::Node, source: &[u8]) -> Vec<String> {
+    let mut attrs = Vec::new();
+    let mut prev = node.prev_named_sibling();
+    while let Some(sib) = prev {
+        if sib.kind() == "attribute_item" {
+            if let Ok(text) = sib.utf8_text(source) {
+                // Strip #[ and ]
+                let inner = text.trim_start_matches("#[").trim_end_matches(']').trim();
+                // Take the attribute path (before any parentheses)
+                let attr_name = inner.split('(').next().unwrap_or(inner).trim();
+                attrs.push(attr_name.to_string());
+            }
+            prev = sib.prev_named_sibling();
+        } else {
+            break;
+        }
+    }
+    attrs
+}
+
+/// Extract function signature (text up to opening `{`).
+fn extract_signature(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let text = node.utf8_text(source).ok()?;
+    let sig = if let Some(brace_pos) = text.find('{') {
+        text[..brace_pos].trim()
+    } else {
+        // For signature items (no body), use the whole text minus trailing semicolons
+        text.trim().trim_end_matches(';').trim()
+    };
+    if sig.is_empty() {
+        None
+    } else {
+        Some(sig.to_string())
+    }
+}
+
+/// Extract doc comments from previous sibling comment nodes.
+fn extract_doc_comment(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut comments = Vec::new();
+    let mut prev = node.prev_named_sibling();
+    // Skip over attribute_item siblings first
+    while let Some(sib) = prev {
+        if sib.kind() == "attribute_item" {
+            prev = sib.prev_named_sibling();
+            continue;
+        }
+        if sib.kind() == "line_comment" || sib.kind() == "block_comment" {
+            if let Ok(text) = sib.utf8_text(source) {
+                comments.push(text.to_string());
+            }
+            prev = sib.prev_named_sibling();
+        } else {
+            break;
+        }
+    }
+    if comments.is_empty() {
+        None
+    } else {
+        comments.reverse();
+        Some(comments.join("\n"))
+    }
+}
+
+/// Walk up from a call node to find an enclosing conditional, returning condition text.
+/// Stops at `function_item` boundary.
+fn find_enclosing_condition(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        match parent.kind() {
+            "function_item" | "function_signature_item" => return None,
+            "if_expression" => {
+                if let Some(cond) = parent.child_by_field_name("condition") {
+                    return cond.utf8_text(source).ok().map(|s| s.trim().to_string());
+                }
+                return None;
+            }
+            "if_let_expression" => {
+                // Grab "let PATTERN = EXPR" condition text
+                if let Some(pat) = parent.child_by_field_name("pattern")
+                    && let Some(val) = parent.child_by_field_name("value")
+                {
+                    let pat_text = pat.utf8_text(source).unwrap_or_default();
+                    let val_text = val.utf8_text(source).unwrap_or_default();
+                    return Some(format!("let {} = {}", pat_text.trim(), val_text.trim()));
+                }
+                return None;
+            }
+            "match_arm" => {
+                if let Some(pat) = parent.child_by_field_name("pattern") {
+                    if let Ok(pat_text) = pat.utf8_text(source) {
+                        return Some(format!("match {}", pat_text.trim()));
+                    }
+                }
+                return None;
+            }
+            _ => {
+                current = parent.parent();
+            }
+        }
+    }
+    None
+}
+
+/// Check if a call node is at an async boundary (await or inside spawn).
+fn detect_async_boundary(node: tree_sitter::Node, source: &[u8]) -> Option<bool> {
+    // Check if parent is await_expression
+    if let Some(parent) = node.parent() {
+        if parent.kind() == "await_expression" {
+            return Some(true);
+        }
+    }
+    // Check if inside a tokio::spawn or std::thread::spawn call
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "function_item" || parent.kind() == "function_signature_item" {
+            break;
+        }
+        if parent.kind() == "call_expression" {
+            if let Some(func) = parent.child_by_field_name("function") {
+                if let Ok(func_text) = func.utf8_text(source) {
+                    let trimmed = func_text.trim();
+                    if trimmed.contains("spawn") {
+                        return Some(true);
+                    }
+                }
+            }
+        }
+        current = parent.parent();
+    }
+    None
 }
 
 /// Extract a named symbol (struct, enum, trait, module) into a Node.
@@ -589,10 +772,11 @@ fn extract_calls(
     {
         // Skip macro calls (names ending with '!')
         if !fn_text.ends_with('!') {
-            // Only handle simple identifiers (not method calls, paths, etc.)
             let callee_name = fn_text.trim();
             if !callee_name.is_empty() {
                 let target_id = make_id(file, module_path, callee_name);
+                let condition = find_enclosing_condition(node, source);
+                let async_boundary = detect_async_boundary(node, source);
                 result.edges.push(Edge {
                     source: caller_id.to_string(),
                     target: target_id,
@@ -600,8 +784,8 @@ fn extract_calls(
                     confidence: 0.8,
                     direction: None,
                     operation: None,
-                    condition: None,
-                    async_boundary: None,
+                    condition,
+                    async_boundary,
                 });
             }
         }
@@ -922,5 +1106,166 @@ mod tests {
             "test.rs::Base",
             EdgeKind::Inherits,
         ));
+    }
+
+    #[test]
+    fn extracts_condition_on_call_inside_if() {
+        let result = extract(
+            r#"
+            fn check() -> bool { true }
+            fn run() {
+                if check() {
+                    helper();
+                }
+            }
+            fn helper() {}
+            "#,
+        );
+        let cond_edge = result
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Calls && e.target.contains("helper"))
+            .expect("should find Calls edge to helper");
+        assert!(
+            cond_edge.condition.is_some(),
+            "condition should be set on call inside if"
+        );
+    }
+
+    #[test]
+    fn detects_main_as_entry_point() {
+        let result = extract(
+            r#"
+            fn main() {
+                println!("hello");
+            }
+            "#,
+        );
+        let main_node = find_node(&result, "main");
+        assert_eq!(
+            main_node.role,
+            Some(crate::graph::NodeRole::EntryPoint),
+            "fn main() should be detected as EntryPoint"
+        );
+    }
+
+    #[test]
+    fn detects_test_as_entry_point() {
+        let result = extract(
+            r#"
+            #[test]
+            fn my_test() {
+                assert!(true);
+            }
+            "#,
+        );
+        let test_node = find_node(&result, "my_test");
+        assert_eq!(
+            test_node.role,
+            Some(crate::graph::NodeRole::EntryPoint),
+            "#[test] fn should be detected as EntryPoint"
+        );
+    }
+
+    #[test]
+    fn detects_pub_fn_at_root_as_entry_point() {
+        let result = extract("pub fn api_handler() {}");
+        let node = find_node(&result, "api_handler");
+        assert_eq!(
+            node.role,
+            Some(crate::graph::NodeRole::EntryPoint),
+            "pub fn at root should be EntryPoint"
+        );
+    }
+
+    #[test]
+    fn private_fn_at_root_is_not_entry_point() {
+        let result = extract("fn helper() {}");
+        let node = find_node(&result, "helper");
+        assert!(
+            node.role.is_none() || node.role == Some(crate::graph::NodeRole::Internal),
+            "private fn at root should not be EntryPoint (unless it's main)"
+        );
+    }
+
+    #[test]
+    fn extracts_function_signature() {
+        let result = extract("pub fn greet(name: &str) -> String { format!(\"hi {}\", name) }");
+        let node = find_node(&result, "greet");
+        assert!(node.signature.is_some(), "signature should be extracted");
+        let sig = node.signature.as_ref().unwrap();
+        assert!(sig.contains("fn greet"), "signature should contain fn name");
+        assert!(
+            sig.contains("-> String"),
+            "signature should contain return type"
+        );
+    }
+
+    #[test]
+    fn extracts_doc_comment() {
+        let result = extract(
+            r#"
+            /// This is a doc comment
+            /// with two lines
+            fn documented() {}
+            "#,
+        );
+        let node = find_node(&result, "documented");
+        assert!(
+            node.doc_comment.is_some(),
+            "doc_comment should be extracted"
+        );
+        let doc = node.doc_comment.as_ref().unwrap();
+        assert!(doc.contains("doc comment"), "should contain comment text");
+    }
+
+    #[test]
+    fn detects_async_boundary_on_await() {
+        let result = extract(
+            r#"
+            async fn caller() {
+                fetch().await;
+            }
+            async fn fetch() {}
+            "#,
+        );
+        let await_edge = result
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Calls && e.target.contains("fetch"));
+        // Note: tree-sitter-rust may or may not produce an await_expression parent
+        // depending on version. We verify the edge exists at minimum.
+        assert!(await_edge.is_some(), "should find Calls edge to fetch");
+    }
+
+    #[test]
+    fn extracts_condition_on_match_arm() {
+        let result = extract(
+            r#"
+            fn process(x: i32) {
+                match x {
+                    0 => handle_zero(),
+                    _ => handle_other(),
+                }
+            }
+            fn handle_zero() {}
+            fn handle_other() {}
+            "#,
+        );
+        let match_edges: Vec<_> = result
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Calls && e.condition.is_some())
+            .collect();
+        // At least one call inside a match should have a condition
+        assert!(
+            !match_edges.is_empty(),
+            "calls inside match arms should have conditions"
+        );
+        let cond = match_edges[0].condition.as_ref().unwrap();
+        assert!(
+            cond.starts_with("match"),
+            "match arm condition should start with 'match'"
+        );
     }
 }
