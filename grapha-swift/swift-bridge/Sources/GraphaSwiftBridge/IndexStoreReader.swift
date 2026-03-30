@@ -1,8 +1,7 @@
+import CIndexStore
 import Foundation
 
-// MARK: - IndexStore C API Types & Role Constants
-
-private typealias IndexStoreError = OpaquePointer
+// MARK: - Role Constants
 
 private struct Roles {
     static let declaration: UInt64 = 1
@@ -15,131 +14,13 @@ private struct Roles {
     static let conformsTo: UInt64 = 1 << 19
 }
 
-// MARK: - Function Pointer Types (loaded via dlsym)
+// MARK: - String Conversion
 
-private typealias StoreCreateFn = @convention(c) (
-    UnsafePointer<CChar>, UnsafeMutablePointer<IndexStoreError?>?
-) -> OpaquePointer?
-
-private typealias StoreDisposeFn = @convention(c) (OpaquePointer) -> Void
-
-private typealias RecordReaderCreateFn = @convention(c) (
-    OpaquePointer, UnsafePointer<CChar>, UnsafeMutablePointer<IndexStoreError?>?
-) -> OpaquePointer?
-
-private typealias HandleDisposeFn = @convention(c) (OpaquePointer) -> Void
-
-private typealias UnitReaderCreateFn = @convention(c) (
-    OpaquePointer, UnsafePointer<CChar>, UnsafeMutablePointer<IndexStoreError?>?
-) -> OpaquePointer?
-
-private typealias UnitGetStringFn = @convention(c) (OpaquePointer) -> UnsafePointer<CChar>
-
-private typealias DepGetKindFn = @convention(c) (OpaquePointer) -> Int32
-private typealias DepGetStringFn = @convention(c) (OpaquePointer) -> UnsafePointer<CChar>
-
-private typealias OccGetSymbolFn = @convention(c) (OpaquePointer) -> OpaquePointer
-private typealias OccGetRolesFn = @convention(c) (OpaquePointer) -> UInt64
-private typealias OccGetLineColFn = @convention(c) (
-    OpaquePointer, UnsafeMutablePointer<UInt32>, UnsafeMutablePointer<UInt32>
-) -> Void
-
-private typealias SymGetStringFn = @convention(c) (OpaquePointer) -> UnsafePointer<CChar>
-private typealias SymGetKindFn = @convention(c) (OpaquePointer) -> UInt32
-
-// apply_f callbacks: (handle, ctx, fn(ctx, item) -> Bool) -> Bool
-private typealias UnitsApplyFn = @convention(c) (
-    OpaquePointer, Int32, UnsafeMutableRawPointer?,
-    @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>, Int) -> Bool
-) -> Bool
-
-private typealias DepsApplyFn = @convention(c) (
-    OpaquePointer, UnsafeMutableRawPointer?,
-    @convention(c) (UnsafeMutableRawPointer?, OpaquePointer) -> Bool
-) -> Bool
-
-private typealias OccApplyFn = @convention(c) (
-    OpaquePointer, UnsafeMutableRawPointer?,
-    @convention(c) (UnsafeMutableRawPointer?, OpaquePointer) -> Bool
-) -> Bool
-
-private typealias RelApplyFn = @convention(c) (
-    OpaquePointer, UnsafeMutableRawPointer?,
-    @convention(c) (UnsafeMutableRawPointer?, OpaquePointer) -> Bool
-) -> Bool
-
-// MARK: - Function Table
-
-private struct FnTable: @unchecked Sendable {
-    let storeCreate: StoreCreateFn
-    let storeDispose: StoreDisposeFn
-    let recordCreate: RecordReaderCreateFn
-    let recordDispose: HandleDisposeFn
-    let unitCreate: UnitReaderCreateFn
-    let unitDispose: HandleDisposeFn
-    let unitGetMainFile: UnitGetStringFn
-    let unitGetModule: UnitGetStringFn
-    let depGetKind: DepGetKindFn
-    let depGetName: DepGetStringFn
-    let occGetSymbol: OccGetSymbolFn
-    let occGetRoles: OccGetRolesFn
-    let occGetLineCol: OccGetLineColFn
-    let symGetName: SymGetStringFn
-    let symGetUSR: SymGetStringFn
-    let symGetKind: SymGetKindFn
-    let relGetSymbol: OccGetSymbolFn
-    let relGetRoles: OccGetRolesFn
-    // apply_f variants loaded as raw pointers
-    let unitsApply: UnitsApplyFn
-    let depsApply: DepsApplyFn
-    let occApply: OccApplyFn
-    let relApply: RelApplyFn
-}
-
-private func loadFnTable(from lib: UnsafeMutableRawPointer) -> FnTable? {
-    func sym<T>(_ name: String) -> T? {
-        dlsym(lib, name).map { unsafeBitCast($0, to: T.self) }
-    }
-
-    guard
-        let storeCreate: StoreCreateFn = sym("indexstore_store_create"),
-        let storeDispose: StoreDisposeFn = sym("indexstore_store_dispose"),
-        let recordCreate: RecordReaderCreateFn = sym("indexstore_record_reader_create"),
-        let recordDispose: HandleDisposeFn = sym("indexstore_record_reader_dispose"),
-        let unitCreate: UnitReaderCreateFn = sym("indexstore_unit_reader_create"),
-        let unitDispose: HandleDisposeFn = sym("indexstore_unit_reader_dispose"),
-        let unitGetMainFile: UnitGetStringFn = sym("indexstore_unit_reader_get_main_file"),
-        let unitGetModule: UnitGetStringFn = sym("indexstore_unit_reader_get_module_name"),
-        let depGetKind: DepGetKindFn = sym("indexstore_unit_dependency_get_kind"),
-        let depGetName: DepGetStringFn = sym("indexstore_unit_dependency_get_name"),
-        let occGetSymbol: OccGetSymbolFn = sym("indexstore_occurrence_get_symbol"),
-        let occGetRoles: OccGetRolesFn = sym("indexstore_occurrence_get_roles"),
-        let occGetLineCol: OccGetLineColFn = sym("indexstore_occurrence_get_line_col"),
-        let symGetName: SymGetStringFn = sym("indexstore_symbol_get_name"),
-        let symGetUSR: SymGetStringFn = sym("indexstore_symbol_get_usr"),
-        let symGetKind: SymGetKindFn = sym("indexstore_symbol_get_kind"),
-        let relGetSymbol: OccGetSymbolFn = sym("indexstore_symbol_relation_get_symbol"),
-        let relGetRoles: OccGetRolesFn = sym("indexstore_symbol_relation_get_roles"),
-        let unitsApply: UnitsApplyFn = sym("indexstore_store_units_apply_f"),
-        let depsApply: DepsApplyFn = sym("indexstore_unit_reader_dependencies_apply_f"),
-        let occApply: OccApplyFn = sym("indexstore_record_reader_occurrences_apply_f"),
-        let relApply: RelApplyFn = sym("indexstore_occurrence_relations_apply_f")
-    else {
-        return nil
-    }
-
-    return FnTable(
-        storeCreate: storeCreate, storeDispose: storeDispose,
-        recordCreate: recordCreate, recordDispose: recordDispose,
-        unitCreate: unitCreate, unitDispose: unitDispose,
-        unitGetMainFile: unitGetMainFile, unitGetModule: unitGetModule,
-        depGetKind: depGetKind, depGetName: depGetName,
-        occGetSymbol: occGetSymbol, occGetRoles: occGetRoles,
-        occGetLineCol: occGetLineCol,
-        symGetName: symGetName, symGetUSR: symGetUSR, symGetKind: symGetKind,
-        relGetSymbol: relGetSymbol, relGetRoles: relGetRoles,
-        unitsApply: unitsApply, depsApply: depsApply,
-        occApply: occApply, relApply: relApply
+private func str(_ ref: indexstore_string_ref_t) -> String {
+    guard ref.length > 0, let data = ref.data else { return "" }
+    return String(
+        decoding: UnsafeRawBufferPointer(start: data, count: ref.length),
+        as: UTF8.self
     )
 }
 
@@ -173,63 +54,54 @@ private struct ExtractedEdge: Hashable {
     }
 }
 
-// MARK: - Occurrence Collector (passed as context to C callbacks)
+// MARK: - Callback Context Types
 
-private final class OccCollector {
-    let fn: FnTable
+private final class UnitCollector: @unchecked Sendable {
+    var names: [String] = []
+}
+
+private final class DepCollector: @unchecked Sendable {
+    var recordName: String?
+}
+
+private final class OccCollector: @unchecked Sendable {
     var nodes: [String: ExtractedNode] = [:]
     var edges: [ExtractedEdge] = []
     let fileName: String
     let moduleName: String?
 
-    init(fn: FnTable, fileName: String, moduleName: String?) {
-        self.fn = fn
+    init(fileName: String, moduleName: String?) {
         self.fileName = fileName
         self.moduleName = moduleName
+    }
+}
+
+private final class RelCollector: @unchecked Sendable {
+    let symbolUSR: String
+    let roles: UInt64
+    var edges: [ExtractedEdge] = []
+
+    init(symbolUSR: String, roles: UInt64) {
+        self.symbolUSR = symbolUSR
+        self.roles = roles
     }
 }
 
 // MARK: - IndexStoreReader
 
 final class IndexStoreReader: @unchecked Sendable {
-    private let fn: FnTable
-    private let store: OpaquePointer
-    private let lib: UnsafeMutableRawPointer
+    private let store: UnsafeMutableRawPointer
 
     init?(storePath: String) {
-        let dylibPath = "/Applications/Xcode.app/Contents/Developer/Toolchains/"
-            + "XcodeDefault.xctoolchain/usr/lib/libIndexStore.dylib"
-        guard let lib = dlopen(dylibPath, RTLD_LAZY) else {
-            let err = String(cString: dlerror())
+        var err: UnsafeMutableRawPointer?
+        guard let store = storePath.withCString({ indexstore_store_create($0, &err) }) else {
             return nil
         }
-        guard let fn = loadFnTable(from: lib) else {
-            dlclose(lib)
-            return nil
-        }
-        var errPtr: OpaquePointer?
-        guard let store = storePath.withCString({ fn.storeCreate($0, &errPtr) }) else {
-            if let errPtr {
-                // Try to get error description if we have the function
-                if let errDescSym = dlsym(lib, "indexstore_error_get_description") {
-                    typealias ErrDescFn = @convention(c) (OpaquePointer) -> UnsafePointer<CChar>
-                    let getDesc = unsafeBitCast(errDescSym, to: ErrDescFn.self)
-                    let desc = String(cString: getDesc(errPtr))
-                }
-            } else {
-            }
-            dlclose(lib)
-            return nil
-        }
-
-        self.lib = lib
-        self.fn = fn
         self.store = store
     }
 
     deinit {
-        fn.storeDispose(store)
-        dlclose(lib)
+        indexstore_store_dispose(store)
     }
 
     // MARK: - Public
@@ -252,17 +124,13 @@ final class IndexStoreReader: @unchecked Sendable {
     // MARK: - Unit Discovery
 
     private func findUnit(forFile path: String) -> (unitName: String, module: String?)? {
-        final class Ctx {
-            var names: [String] = []
-        }
-
-        let ctx = Ctx()
+        let ctx = UnitCollector()
         let ptr = Unmanaged.passUnretained(ctx).toOpaque()
 
-        let cb: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>, Int) -> Bool = {
+        let cb: @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, Int) -> Bool = {
             raw, data, len in
-            guard let raw else { return true }
-            let c = Unmanaged<Ctx>.fromOpaque(raw).takeUnretainedValue()
+            guard let raw, let data else { return true }
+            let c = Unmanaged<UnitCollector>.fromOpaque(raw).takeUnretainedValue()
             let buf = UnsafeRawBufferPointer(start: data, count: len)
             if let s = String(bytes: buf, encoding: .utf8) {
                 c.names.append(s)
@@ -270,17 +138,19 @@ final class IndexStoreReader: @unchecked Sendable {
             return true
         }
 
-        _ = fn.unitsApply(store, 0, ptr, cb)
+        _ = indexstore_store_units_apply_f(store, 0, ptr, cb)
 
         let fileName = (path as NSString).lastPathComponent
 
         for name in ctx.names {
-            guard let reader = name.withCString({ fn.unitCreate(store, $0, nil) }) else { continue }
-            defer { fn.unitDispose(reader) }
+            guard let reader = name.withCString({
+                indexstore_unit_reader_create(store, $0, nil)
+            }) else { continue }
+            defer { indexstore_unit_reader_dispose(reader) }
 
-            let mainFile = String(cString: fn.unitGetMainFile(reader))
+            let mainFile = str(indexstore_unit_reader_get_main_file(reader))
             if mainFile == path || mainFile.hasSuffix("/" + fileName) {
-                let mod = String(cString: fn.unitGetModule(reader))
+                let mod = str(indexstore_unit_reader_get_module_name(reader))
                 return (name, mod.isEmpty ? nil : mod)
             }
         }
@@ -291,31 +161,23 @@ final class IndexStoreReader: @unchecked Sendable {
     // MARK: - Record Discovery
 
     private func findRecordName(inUnit unitName: String) -> String? {
-        guard let reader = unitName.withCString({ fn.unitCreate(store, $0, nil) }) else {
+        guard let reader = unitName.withCString({
+            indexstore_unit_reader_create(store, $0, nil)
+        }) else {
             return nil
         }
-        defer { fn.unitDispose(reader) }
+        defer { indexstore_unit_reader_dispose(reader) }
 
-        final class Ctx {
-            let depGetKind: DepGetKindFn
-            let depGetName: DepGetStringFn
-            var recordName: String?
-
-            init(depGetKind: DepGetKindFn, depGetName: DepGetStringFn) {
-                self.depGetKind = depGetKind
-                self.depGetName = depGetName
-            }
-        }
-
-        let ctx = Ctx(depGetKind: fn.depGetKind, depGetName: fn.depGetName)
+        let ctx = DepCollector()
         let ptr = Unmanaged.passUnretained(ctx).toOpaque()
 
-        let cb: @convention(c) (UnsafeMutableRawPointer?, OpaquePointer) -> Bool = { raw, dep in
-            guard let raw else { return true }
-            let c = Unmanaged<Ctx>.fromOpaque(raw).takeUnretainedValue()
+        let cb: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Bool = {
+            raw, dep in
+            guard let raw, let dep else { return true }
+            let c = Unmanaged<DepCollector>.fromOpaque(raw).takeUnretainedValue()
             // kind 1 = record dependency
-            if c.depGetKind(dep) == 1 {
-                let name = String(cString: c.depGetName(dep))
+            if indexstore_unit_dependency_get_kind(dep) == 1 {
+                let name = str(indexstore_unit_dependency_get_name(dep))
                 if !name.isEmpty {
                     c.recordName = name
                     return false // found it, stop
@@ -324,7 +186,7 @@ final class IndexStoreReader: @unchecked Sendable {
             return true
         }
 
-        _ = fn.depsApply(reader, ptr, cb)
+        _ = indexstore_unit_reader_dependencies_apply_f(reader, ptr, cb)
         return ctx.recordName
     }
 
@@ -335,41 +197,44 @@ final class IndexStoreReader: @unchecked Sendable {
         fileName: String,
         moduleName: String?
     ) -> OccCollector {
-        let collector = OccCollector(fn: fn, fileName: fileName, moduleName: moduleName)
+        let collector = OccCollector(fileName: fileName, moduleName: moduleName)
 
-        guard let reader = recordName.withCString({ fn.recordCreate(store, $0, nil) }) else {
+        guard let reader = recordName.withCString({
+            indexstore_record_reader_create(store, $0, nil)
+        }) else {
             return collector
         }
-        defer { fn.recordDispose(reader) }
+        defer { indexstore_record_reader_dispose(reader) }
 
         let ptr = Unmanaged.passUnretained(collector).toOpaque()
 
-        let cb: @convention(c) (UnsafeMutableRawPointer?, OpaquePointer) -> Bool = { raw, occ in
-            guard let raw else { return true }
+        let cb: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Bool = {
+            raw, occ in
+            guard let raw, let occ else { return true }
             let c = Unmanaged<OccCollector>.fromOpaque(raw).takeUnretainedValue()
             processOccurrence(collector: c, occ: occ)
             return true
         }
 
-        _ = fn.occApply(reader, ptr, cb)
+        _ = indexstore_record_reader_occurrences_apply_f(reader, ptr, cb)
         return collector
     }
 }
 
 // MARK: - Occurrence Processing
 
-private func processOccurrence(collector c: OccCollector, occ: OpaquePointer) {
-    let symbol = c.fn.occGetSymbol(occ)
-    let roles = c.fn.occGetRoles(occ)
-    let usr = String(cString: c.fn.symGetUSR(symbol))
+private func processOccurrence(collector c: OccCollector, occ: UnsafeMutableRawPointer) {
+    let symbol = indexstore_occurrence_get_symbol(occ)!
+    let roles = indexstore_occurrence_get_roles(occ)
+    let usr = str(indexstore_symbol_get_usr(symbol))
     guard !usr.isEmpty else { return }
 
-    let name = String(cString: c.fn.symGetName(symbol))
-    let kindRaw = c.fn.symGetKind(symbol)
+    let name = str(indexstore_symbol_get_name(symbol))
+    let kindRaw = indexstore_symbol_get_kind(symbol)
 
     var line: UInt32 = 0
     var col: UInt32 = 0
-    c.fn.occGetLineCol(occ, &line, &col)
+    indexstore_occurrence_get_line_col(occ, &line, &col)
 
     // Record definitions/declarations as nodes
     let isDefOrDecl = (roles & Roles.definition) != 0 || (roles & Roles.declaration) != 0
@@ -386,38 +251,25 @@ private func processOccurrence(collector c: OccCollector, occ: OpaquePointer) {
 
 private func extractRelationEdges(
     collector c: OccCollector,
-    occ: OpaquePointer,
+    occ: UnsafeMutableRawPointer,
     symbolUSR: String,
     roles: UInt64
 ) {
-    final class RelCtx {
-        let fn: FnTable
-        let symbolUSR: String
-        let roles: UInt64
-        var edges: [ExtractedEdge] = []
-
-        init(fn: FnTable, symbolUSR: String, roles: UInt64) {
-            self.fn = fn
-            self.symbolUSR = symbolUSR
-            self.roles = roles
-        }
-    }
-
-    let ctx = RelCtx(fn: c.fn, symbolUSR: symbolUSR, roles: roles)
+    let ctx = RelCollector(symbolUSR: symbolUSR, roles: roles)
     let ptr = Unmanaged.passUnretained(ctx).toOpaque()
 
-    let cb: @convention(c) (UnsafeMutableRawPointer?, OpaquePointer) -> Bool = { raw, rel in
-        guard let raw else { return true }
-        let ctx = Unmanaged<RelCtx>.fromOpaque(raw).takeUnretainedValue()
-        let relSym = ctx.fn.relGetSymbol(rel)
-        let relUSR = String(cString: ctx.fn.symGetUSR(relSym))
+    let cb: @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Bool = {
+        raw, rel in
+        guard let raw, let rel else { return true }
+        let ctx = Unmanaged<RelCollector>.fromOpaque(raw).takeUnretainedValue()
+        let relSym = indexstore_symbol_relation_get_symbol(rel)!
+        let relUSR = str(indexstore_symbol_get_usr(relSym))
         guard !relUSR.isEmpty else { return true }
 
-        let relRoles = ctx.fn.relGetRoles(rel)
+        let relRoles = indexstore_symbol_relation_get_roles(rel)
         let combinedRoles = ctx.roles | relRoles
 
         if (combinedRoles & Roles.call) != 0 {
-            // For call occurrences, the relation symbol is the caller (container)
             ctx.edges.append(ExtractedEdge(
                 source: relUSR, target: ctx.symbolUSR,
                 kind: "calls", confidence: 1.0
@@ -465,13 +317,13 @@ private func extractRelationEdges(
         return true
     }
 
-    _ = c.fn.relApply(occ, ptr, cb)
+    _ = indexstore_occurrence_relations_apply_f(occ, ptr, cb)
     c.edges.append(contentsOf: ctx.edges)
 }
 
 // MARK: - Symbol Kind Mapping
 
-private func mapSymbolKind(_ raw: UInt32) -> String? {
+private func mapSymbolKind(_ raw: UInt64) -> String? {
     switch raw {
     case 4: return "struct"      // class
     case 5: return "struct"      // struct

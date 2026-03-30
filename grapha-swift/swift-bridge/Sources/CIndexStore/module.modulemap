@@ -1,0 +1,5 @@
+module CIndexStore {
+    header "include/indexstore.h"
+    link "IndexStore"
+    export *
+}
