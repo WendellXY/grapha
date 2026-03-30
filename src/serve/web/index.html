@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Grapha</title>
+<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"></script>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #1a1a2e; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; height: 100vh; display: flex; flex-direction: column; }
+
+.header {
+  display: flex; align-items: center; gap: 12px; padding: 8px 16px;
+  background: #16213e; border-bottom: 1px solid #0f3460;
+}
+.header h1 { font-size: 18px; color: #e94560; margin-right: auto; }
+.header input, .header select {
+  background: #1a1a2e; border: 1px solid #0f3460; color: #e0e0e0;
+  padding: 6px 10px; border-radius: 4px; font-size: 13px;
+}
+.header input { width: 200px; }
+.header select { min-width: 140px; }
+
+.main { display: flex; flex: 1; overflow: hidden; }
+#graph-canvas { flex: 1; position: relative; }
+
+.detail-panel {
+  width: 320px; background: #16213e; border-left: 1px solid #0f3460;
+  padding: 16px; overflow-y: auto; display: none; font-size: 13px;
+}
+.detail-panel.visible { display: block; }
+.detail-panel h2 { font-size: 15px; color: #e94560; margin-bottom: 12px; }
+.detail-panel .field { margin-bottom: 8px; }
+.detail-panel .label { color: #888; font-size: 11px; text-transform: uppercase; }
+.detail-panel .value { color: #e0e0e0; word-break: break-all; }
+.detail-panel .list { padding-left: 16px; }
+.detail-panel .list li { margin: 2px 0; cursor: pointer; color: #53a8b6; }
+.detail-panel .list li:hover { text-decoration: underline; }
+
+.legend {
+  position: absolute; bottom: 12px; left: 12px; background: rgba(22,33,62,0.9);
+  border: 1px solid #0f3460; border-radius: 6px; padding: 10px 14px; font-size: 11px;
+  z-index: 10;
+}
+.legend div { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+.legend .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.legend .diamond { width: 10px; height: 10px; transform: rotate(45deg); display: inline-block; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>Grapha</h1>
+  <input id="search-input" type="text" placeholder="Search symbols..." />
+  <select id="entries-dropdown"><option value="">-- Entry Points --</option></select>
+  <select id="filter-dropdown">
+    <option value="">-- Filter --</option>
+    <option value="function">Functions</option>
+    <option value="struct">Structs</option>
+    <option value="enum">Enums</option>
+    <option value="trait">Traits</option>
+    <option value="entry_point">Entry Points</option>
+    <option value="terminal">Terminals</option>
+  </select>
+</div>
+<div class="main">
+  <div id="graph-canvas">
+    <div class="legend">
+      <div><span class="diamond" style="background:#4CAF50"></span> Entry Point</div>
+      <div><span class="dot" style="background:#f44336"></span> Terminal (write)</div>
+      <div><span class="dot" style="background:#2196F3"></span> Terminal (read)</div>
+      <div><span class="dot" style="background:#FF9800"></span> Terminal (event)</div>
+      <div><span class="dot" style="background:#9E9E9E"></span> Internal</div>
+    </div>
+  </div>
+  <div class="detail-panel" id="detail-panel">
+    <h2 id="detail-name"></h2>
+    <div class="field"><div class="label">Kind</div><div class="value" id="detail-kind"></div></div>
+    <div class="field"><div class="label">Role</div><div class="value" id="detail-role"></div></div>
+    <div class="field"><div class="label">File</div><div class="value" id="detail-file"></div></div>
+    <div class="field"><div class="label">Signature</div><div class="value" id="detail-sig"></div></div>
+    <div class="field"><div class="label">Callers</div><ul class="list" id="detail-callers"></ul></div>
+    <div class="field"><div class="label">Callees</div><ul class="list" id="detail-callees"></ul></div>
+  </div>
+</div>
+<script>
+const API = '';
+let graphData = null;
+let network = null;
+let allNodes = [];
+let allEdges = [];
+
+function nodeColor(node) {
+  if (node.role) {
+    if (node.role.type === 'entry_point') return '#4CAF50';
+    if (node.role.type === 'terminal') {
+      const dir = findEdgeDirection(node.id);
+      if (dir === 'write') return '#f44336';
+      if (dir === 'event' || (node.role.kind && node.role.kind === 'event')) return '#FF9800';
+      return '#2196F3';
+    }
+  }
+  return '#9E9E9E';
+}
+
+function findEdgeDirection(nodeId) {
+  if (!graphData) return null;
+  for (const e of graphData.edges) {
+    if (e.target === nodeId && e.direction) return e.direction;
+  }
+  return null;
+}
+
+function nodeShape(node) {
+  if (node.role && node.role.type === 'entry_point') return 'diamond';
+  return 'dot';
+}
+
+function edgeColor(edge) {
+  if (edge.kind === 'writes' || edge.kind === 'publishes') return '#f44336';
+  if (edge.kind === 'reads' || edge.kind === 'subscribes') return '#2196F3';
+  return '#555';
+}
+
+function buildVisData(nodes, edges) {
+  const visNodes = nodes.map(n => ({
+    id: n.id, label: n.name,
+    color: { background: nodeColor(n), border: nodeColor(n), highlight: { background: '#e94560', border: '#e94560' } },
+    shape: nodeShape(n), size: nodeShape(n) === 'diamond' ? 14 : 8,
+    font: { color: '#ccc', size: 11 },
+    _data: n,
+  }));
+  const visEdges = edges.map((e, i) => ({
+    id: 'e' + i, from: e.source, to: e.target,
+    color: { color: edgeColor(e), highlight: '#e94560' },
+    arrows: 'to', dashes: e.async_boundary === true,
+    width: 1, _data: e,
+  }));
+  return { nodes: new vis.DataSet(visNodes), edges: new vis.DataSet(visEdges) };
+}
+
+async function loadGraph() {
+  const res = await fetch(API + '/api/graph');
+  graphData = await res.json();
+  allNodes = graphData.nodes || [];
+  allEdges = graphData.edges || [];
+  renderGraph(allNodes, allEdges);
+  loadEntries();
+}
+
+function renderGraph(nodes, edges) {
+  const container = document.getElementById('graph-canvas');
+  const data = buildVisData(nodes, edges);
+  const options = {
+    physics: { solver: 'forceAtlas2Based', forceAtlas2Based: { gravitationalConstant: -40, springLength: 100 } },
+    interaction: { hover: true, tooltipDelay: 200 },
+    layout: { improvedLayout: nodes.length < 200 },
+  };
+  network = new vis.Network(container, data, options);
+  network.on('click', async (params) => {
+    if (params.nodes.length > 0) {
+      const nodeId = params.nodes[0];
+      await showDetail(nodeId);
+    } else {
+      document.getElementById('detail-panel').classList.remove('visible');
+    }
+  });
+}
+
+async function showDetail(nodeId) {
+  const panel = document.getElementById('detail-panel');
+  try {
+    const res = await fetch(API + '/api/context/' + encodeURIComponent(nodeId));
+    if (!res.ok) { panel.classList.remove('visible'); return; }
+    const ctx = await res.json();
+    document.getElementById('detail-name').textContent = ctx.symbol.name;
+    document.getElementById('detail-kind').textContent = ctx.symbol.kind;
+    const node = allNodes.find(n => n.id === nodeId);
+    document.getElementById('detail-role').textContent = node && node.role ? JSON.stringify(node.role) : 'none';
+    document.getElementById('detail-file').textContent = ctx.symbol.file;
+    document.getElementById('detail-sig').textContent = node && node.signature ? node.signature : '-';
+    const callersList = document.getElementById('detail-callers');
+    callersList.innerHTML = '';
+    (ctx.callers || []).forEach(c => {
+      const li = document.createElement('li');
+      li.textContent = c.name;
+      li.onclick = () => { network.selectNodes([c.id]); showDetail(c.id); };
+      callersList.appendChild(li);
+    });
+    const calleesList = document.getElementById('detail-callees');
+    calleesList.innerHTML = '';
+    (ctx.callees || []).forEach(c => {
+      const li = document.createElement('li');
+      li.textContent = c.name;
+      li.onclick = () => { network.selectNodes([c.id]); showDetail(c.id); };
+      calleesList.appendChild(li);
+    });
+    panel.classList.add('visible');
+  } catch (_) {
+    panel.classList.remove('visible');
+  }
+}
+
+async function loadEntries() {
+  const res = await fetch(API + '/api/entries');
+  const data = await res.json();
+  const dropdown = document.getElementById('entries-dropdown');
+  dropdown.innerHTML = '<option value="">-- Entry Points --</option>';
+  (data.entries || []).forEach(e => {
+    const opt = document.createElement('option');
+    opt.value = e.id;
+    opt.textContent = e.name;
+    dropdown.appendChild(opt);
+  });
+}
+
+document.getElementById('entries-dropdown').addEventListener('change', async (e) => {
+  const id = e.target.value;
+  if (!id) { renderGraph(allNodes, allEdges); return; }
+  try {
+    const res = await fetch(API + '/api/trace/' + encodeURIComponent(id));
+    if (!res.ok) return;
+    const trace = await res.json();
+    const pathNodes = new Set();
+    (trace.flows || []).forEach(f => (f.path || []).forEach(name => {
+      const node = allNodes.find(n => n.name === name);
+      if (node) pathNodes.add(node.id);
+    }));
+    if (pathNodes.size === 0) { network.selectNodes([]); return; }
+    network.selectNodes(Array.from(pathNodes));
+  } catch (_) {}
+});
+
+document.getElementById('search-input').addEventListener('input', async (e) => {
+  const q = e.target.value.trim();
+  if (!q) { renderGraph(allNodes, allEdges); return; }
+  const lower = q.toLowerCase();
+  const filtered = allNodes.filter(n => n.name.toLowerCase().includes(lower));
+  const ids = new Set(filtered.map(n => n.id));
+  const filteredEdges = allEdges.filter(e => ids.has(e.source) || ids.has(e.target));
+  renderGraph(filtered, filteredEdges);
+});
+
+document.getElementById('filter-dropdown').addEventListener('change', (e) => {
+  const val = e.target.value;
+  if (!val) { renderGraph(allNodes, allEdges); return; }
+  let filtered;
+  if (val === 'entry_point') {
+    filtered = allNodes.filter(n => n.role && n.role.type === 'entry_point');
+  } else if (val === 'terminal') {
+    filtered = allNodes.filter(n => n.role && n.role.type === 'terminal');
+  } else {
+    filtered = allNodes.filter(n => n.kind === val);
+  }
+  const ids = new Set(filtered.map(n => n.id));
+  const filteredEdges = allEdges.filter(e => ids.has(e.source) || ids.has(e.target));
+  renderGraph(filtered, filteredEdges);
+});
+
+loadGraph();
+</script>
+</body>
+</html>
