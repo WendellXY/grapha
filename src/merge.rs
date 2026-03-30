@@ -3,15 +3,25 @@ use std::collections::{HashMap, HashSet};
 use crate::extract::ExtractionResult;
 use crate::graph::{EdgeKind, Graph};
 
+/// Entry in the name-to-candidates index: (node_id, module).
+struct NameEntry {
+    id: String,
+    module: Option<String>,
+}
+
 /// Merge multiple `ExtractionResult`s into a single `Graph`.
 ///
 /// Edges whose target matches a known node ID are kept as-is.
 /// Uses edges are always kept (external references).
 /// For unresolved targets, cross-file resolution is attempted by matching
-/// the symbol name (last `::` segment) against all known nodes:
-/// - Exactly one match: rewrite target, reduce confidence by 10%
-/// - Multiple matches: pick first, reduce confidence by 50%
-/// - No matches: drop the edge
+/// the symbol name (last `::` segment) against all known nodes.
+///
+/// Module-aware confidence scoring:
+/// - Single candidate, same module as source: 0.9x
+/// - Single candidate, different module: 0.8x
+/// - Multiple candidates, same-module match preferred: 0.7x
+/// - Multiple candidates, cross-module: 0.5x
+/// - No matches: edge dropped
 pub fn merge(results: Vec<ExtractionResult>) -> Graph {
     let mut graph = Graph::new();
 
@@ -21,14 +31,24 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
 
     let node_ids: HashSet<&str> = graph.nodes.iter().map(|n| n.id.as_str()).collect();
 
-    // Build name → vec of node IDs for cross-file lookup
-    let mut name_to_ids: HashMap<&str, Vec<&str>> = HashMap::new();
+    // Build name → vec of (node_id, module) for cross-file lookup
+    let mut name_to_entries: HashMap<&str, Vec<NameEntry>> = HashMap::new();
     for node in &graph.nodes {
-        name_to_ids
+        name_to_entries
             .entry(node.name.as_str())
             .or_default()
-            .push(node.id.as_str());
+            .push(NameEntry {
+                id: node.id.clone(),
+                module: node.module.clone(),
+            });
     }
+
+    // Build id → module for source lookups
+    let id_to_module: HashMap<&str, Option<&str>> = graph
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.module.as_deref()))
+        .collect();
 
     for r in results {
         for mut edge in r.edges {
@@ -37,23 +57,53 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
             } else {
                 // Try cross-file resolution by symbol name
                 let target_name = edge.target.rsplit("::").next().unwrap_or(&edge.target);
-                if let Some(candidates) = name_to_ids.get(target_name) {
+                if let Some(candidates) = name_to_entries.get(target_name) {
+                    if candidates.is_empty() {
+                        continue;
+                    }
+
+                    let source_module = id_to_module
+                        .get(edge.source.as_str())
+                        .copied()
+                        .flatten();
+
                     if candidates.len() == 1 {
-                        edge.target = candidates[0].to_string();
-                        edge.confidence *= 0.9;
+                        let candidate = &candidates[0];
+                        let same_module = modules_match(source_module, candidate.module.as_deref());
+                        edge.target = candidate.id.clone();
+                        edge.confidence *= if same_module { 0.9 } else { 0.8 };
                         graph.edges.push(edge);
-                    } else if candidates.len() > 1 {
-                        edge.target = candidates[0].to_string();
-                        edge.confidence *= 0.5;
+                    } else {
+                        // Multiple candidates — prefer same-module match
+                        let same_module_candidate = candidates.iter().find(|c| {
+                            modules_match(source_module, c.module.as_deref())
+                        });
+
+                        if let Some(candidate) = same_module_candidate {
+                            edge.target = candidate.id.clone();
+                            edge.confidence *= 0.7;
+                        } else {
+                            edge.target = candidates[0].id.clone();
+                            edge.confidence *= 0.5;
+                        }
                         graph.edges.push(edge);
                     }
-                    // else: no candidates (empty vec), edge dropped
                 }
             }
         }
     }
 
     graph
+}
+
+/// Check if two modules match. Two `None` modules are considered matching
+/// (both in the default/root module).
+fn modules_match(a: Option<&str>, b: Option<&str>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a == b,
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -184,6 +234,142 @@ mod tests {
         };
         let graph = merge(vec![r1]);
         assert_eq!(graph.edges.len(), 1);
+    }
+
+    #[test]
+    fn cross_module_resolution_gets_lower_confidence() {
+        // Two nodes with the same name in different modules
+        let mut node_a = make_node("mod_a::helper", "helper", NodeKind::Function);
+        node_a.module = Some("mod_a".to_string());
+
+        let mut node_b = make_node("mod_b::helper", "helper", NodeKind::Function);
+        node_b.module = Some("mod_b".to_string());
+
+        let mut caller = make_node("mod_a::main", "main", NodeKind::Function);
+        caller.module = Some("mod_a".to_string());
+
+        let r1 = ExtractionResult {
+            nodes: vec![caller],
+            edges: vec![Edge {
+                source: "mod_a::main".to_string(),
+                target: "unknown::helper".to_string(),
+                kind: EdgeKind::Calls,
+                confidence: 1.0,
+                direction: None,
+                operation: None,
+                condition: None,
+                async_boundary: None,
+            }],
+            imports: vec![],
+        };
+        let r2 = ExtractionResult {
+            nodes: vec![node_a, node_b],
+            edges: vec![],
+            imports: vec![],
+        };
+
+        let graph = merge(vec![r1, r2]);
+        let call_edge = graph
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Calls)
+            .expect("should have a call edge");
+
+        // Multiple candidates but same-module match preferred → 0.7x
+        assert_eq!(call_edge.target, "mod_a::helper");
+        assert!(
+            (call_edge.confidence - 0.7).abs() < 0.001,
+            "expected 0.7, got {}",
+            call_edge.confidence
+        );
+    }
+
+    #[test]
+    fn cross_module_single_candidate_different_module() {
+        let mut node = make_node("mod_b::helper", "helper", NodeKind::Function);
+        node.module = Some("mod_b".to_string());
+
+        let mut caller = make_node("mod_a::main", "main", NodeKind::Function);
+        caller.module = Some("mod_a".to_string());
+
+        let r1 = ExtractionResult {
+            nodes: vec![caller],
+            edges: vec![Edge {
+                source: "mod_a::main".to_string(),
+                target: "unknown::helper".to_string(),
+                kind: EdgeKind::Calls,
+                confidence: 1.0,
+                direction: None,
+                operation: None,
+                condition: None,
+                async_boundary: None,
+            }],
+            imports: vec![],
+        };
+        let r2 = ExtractionResult {
+            nodes: vec![node],
+            edges: vec![],
+            imports: vec![],
+        };
+
+        let graph = merge(vec![r1, r2]);
+        let call_edge = graph
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Calls)
+            .expect("should have a call edge");
+
+        // Single candidate, different module → 0.8x
+        assert_eq!(call_edge.target, "mod_b::helper");
+        assert!(
+            (call_edge.confidence - 0.8).abs() < 0.001,
+            "expected 0.8, got {}",
+            call_edge.confidence
+        );
+    }
+
+    #[test]
+    fn same_module_single_candidate_gets_highest_confidence() {
+        let mut node = make_node("mod_a::helper", "helper", NodeKind::Function);
+        node.module = Some("mod_a".to_string());
+
+        let mut caller = make_node("mod_a::main", "main", NodeKind::Function);
+        caller.module = Some("mod_a".to_string());
+
+        let r1 = ExtractionResult {
+            nodes: vec![caller],
+            edges: vec![Edge {
+                source: "mod_a::main".to_string(),
+                target: "unknown::helper".to_string(),
+                kind: EdgeKind::Calls,
+                confidence: 1.0,
+                direction: None,
+                operation: None,
+                condition: None,
+                async_boundary: None,
+            }],
+            imports: vec![],
+        };
+        let r2 = ExtractionResult {
+            nodes: vec![node],
+            edges: vec![],
+            imports: vec![],
+        };
+
+        let graph = merge(vec![r1, r2]);
+        let call_edge = graph
+            .edges
+            .iter()
+            .find(|e| e.kind == EdgeKind::Calls)
+            .expect("should have a call edge");
+
+        // Single candidate, same module → 0.9x
+        assert_eq!(call_edge.target, "mod_a::helper");
+        assert!(
+            (call_edge.confidence - 0.9).abs() < 0.001,
+            "expected 0.9, got {}",
+            call_edge.confidence
+        );
     }
 
     #[test]
