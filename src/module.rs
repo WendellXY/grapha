@@ -37,6 +37,9 @@ impl ModuleMap {
     }
 
     /// Find which module a file belongs to.
+    ///
+    /// Accepts both absolute and relative paths. For relative paths, attempts
+    /// suffix-based matching against module source directories.
     pub fn module_for_file(&self, file: &Path) -> Option<String> {
         let canonical_file = normalize_path(file);
 
@@ -45,6 +48,8 @@ impl ModuleMap {
         for (name, dirs) in &self.modules {
             for dir in dirs {
                 let canonical_dir = normalize_path(dir);
+
+                // Try prefix-based matching (works for absolute paths)
                 if let Ok(suffix) = canonical_file.strip_prefix(&canonical_dir) {
                     let depth = suffix.components().count();
                     match best_match {
@@ -55,6 +60,20 @@ impl ModuleMap {
                             best_match = Some((name, depth));
                         }
                         _ => {}
+                    }
+                }
+
+                // Fallback: suffix-based matching for relative paths.
+                // Check if the relative file path is a suffix of the module dir
+                // or if the module dir name appears as a component of the file path.
+                if best_match.is_none() && file.is_relative() {
+                    if let Some(dir_name) = canonical_dir.file_name().and_then(|n| n.to_str()) {
+                        let file_str = file.to_string_lossy();
+                        if file_str.starts_with(dir_name)
+                            || file_str.starts_with(&format!("{dir_name}/"))
+                        {
+                            best_match = Some((name, usize::MAX));
+                        }
                     }
                 }
             }
@@ -109,10 +128,7 @@ fn discover_swift_packages(root: &Path, modules: &mut HashMap<String, Vec<PathBu
                 pkg_dir.to_path_buf()
             };
 
-            modules
-                .entry(module_name)
-                .or_default()
-                .push(source_dir);
+            modules.entry(module_name).or_default().push(source_dir);
         }
     }
 }
@@ -190,11 +206,7 @@ fn expand_workspace_member(
     }
 }
 
-fn add_cargo_member(
-    _root: &Path,
-    member_path: &Path,
-    modules: &mut HashMap<String, Vec<PathBuf>>,
-) {
+fn add_cargo_member(_root: &Path, member_path: &Path, modules: &mut HashMap<String, Vec<PathBuf>>) {
     let name = member_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -222,11 +234,7 @@ mod tests {
         let pkg_dir = dir.path().join("MyPackage");
         let sources_dir = pkg_dir.join("Sources");
         fs::create_dir_all(&sources_dir).unwrap();
-        fs::write(
-            pkg_dir.join("Package.swift"),
-            "// swift-tools-version:5.5",
-        )
-        .unwrap();
+        fs::write(pkg_dir.join("Package.swift"), "// swift-tools-version:5.5").unwrap();
 
         let map = ModuleMap::discover(dir.path());
         assert!(map.modules.contains_key("MyPackage"));
@@ -253,8 +261,16 @@ members = ["crates/*"]
         fs::create_dir_all(crate_b.join("src")).unwrap();
 
         let map = ModuleMap::discover(dir.path());
-        assert!(map.modules.contains_key("alpha"), "modules: {:?}", map.modules);
-        assert!(map.modules.contains_key("beta"), "modules: {:?}", map.modules);
+        assert!(
+            map.modules.contains_key("alpha"),
+            "modules: {:?}",
+            map.modules
+        );
+        assert!(
+            map.modules.contains_key("beta"),
+            "modules: {:?}",
+            map.modules
+        );
     }
 
     #[test]
@@ -312,6 +328,10 @@ edition = "2021"
         fs::create_dir_all(dir.path().join("src")).unwrap();
 
         let map = ModuleMap::discover(dir.path());
-        assert!(map.modules.contains_key("my_app"), "modules: {:?}", map.modules);
+        assert!(
+            map.modules.contains_key("my_app"),
+            "modules: {:?}",
+            map.modules
+        );
     }
 }

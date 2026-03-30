@@ -76,8 +76,7 @@ pub fn query_reverse(graph: &Graph, symbol: &str) -> Option<ReverseResult> {
 
                     if source_node.role == Some(NodeRole::EntryPoint) {
                         // Reverse the path so it goes entry -> ... -> symbol
-                        let reversed_path: Vec<String> =
-                            new_path.into_iter().rev().collect();
+                        let reversed_path: Vec<String> = new_path.into_iter().rev().collect();
                         affected_entries.push(AffectedEntry {
                             entry: SymbolRef {
                                 id: source_node.id.clone(),
@@ -156,12 +155,14 @@ mod tests {
             nodes: vec![
                 make_node("entry1", Some(NodeRole::EntryPoint)),
                 make_node("service", None),
-                make_node("db", Some(NodeRole::Terminal { kind: TerminalKind::Persistence })),
+                make_node(
+                    "db",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Persistence,
+                    }),
+                ),
             ],
-            edges: vec![
-                make_edge("entry1", "service"),
-                make_edge("service", "db"),
-            ],
+            edges: vec![make_edge("entry1", "service"), make_edge("service", "db")],
         };
 
         let result = query_reverse(&graph, "db").unwrap();
@@ -184,10 +185,7 @@ mod tests {
                 make_node("entry2", Some(NodeRole::EntryPoint)),
                 make_node("shared", None),
             ],
-            edges: vec![
-                make_edge("entry1", "shared"),
-                make_edge("entry2", "shared"),
-            ],
+            edges: vec![make_edge("entry1", "shared"), make_edge("entry2", "shared")],
         };
 
         let result = query_reverse(&graph, "shared").unwrap();
@@ -220,10 +218,7 @@ mod tests {
                 make_node("mid", None),
                 make_node("target", None),
             ],
-            edges: vec![
-                make_edge("entry", "mid"),
-                make_edge("mid", "target"),
-            ],
+            edges: vec![make_edge("entry", "mid"), make_edge("mid", "target")],
         };
 
         let result = query_reverse(&graph, "target").unwrap();

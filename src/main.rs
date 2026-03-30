@@ -8,7 +8,6 @@ mod extract;
 mod filter;
 mod graph;
 mod merge;
-#[allow(dead_code)]
 mod module;
 mod progress;
 mod query;
@@ -141,6 +140,28 @@ enum Commands {
     },
 }
 
+/// Set `node.module` on every node in an extraction result.
+fn stamp_module(
+    result: extract::ExtractionResult,
+    module_name: &Option<String>,
+) -> extract::ExtractionResult {
+    let module_name = match module_name {
+        Some(name) => name,
+        None => return result,
+    };
+
+    let nodes = result
+        .nodes
+        .into_iter()
+        .map(|node| graph::Node {
+            module: Some(module_name.clone()),
+            ..node
+        })
+        .collect();
+
+    extract::ExtractionResult { nodes, ..result }
+}
+
 fn extractor_for_path(path: &Path) -> Option<Box<dyn LanguageExtractor>> {
     let ext = path.extension()?.to_str()?;
     match ext {
@@ -161,6 +182,9 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<graph::Graph> {
     if verbose {
         progress::done(&format!("discovered {} files", files.len()), t);
     }
+
+    let abs_root = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let module_map = module::ModuleMap::discover(&abs_root);
 
     let t = Instant::now();
     let pb = if verbose && files.len() > 1 {
@@ -188,8 +212,14 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<graph::Graph> {
                 .unwrap_or(file.as_path())
         };
 
+        let abs_file = std::fs::canonicalize(file).unwrap_or_else(|_| abs_root.join(relative));
+        let file_module = module_map.module_for_file(&abs_file);
+
         match extractor.extract(&source, relative) {
-            Ok(result) => results.push(result),
+            Ok(result) => {
+                let stamped = stamp_module(result, &file_module);
+                results.push(stamped);
+            }
             Err(e) => {
                 skipped += 1;
                 if verbose {
@@ -238,7 +268,9 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<graph::Graph> {
     let t = Instant::now();
     let cfg = config::load_config(path);
     let classifiers: Vec<Box<dyn classify::Classifier>> = vec![
-        Box::new(classify::toml_rules::TomlRulesClassifier::new(&cfg.classifiers)),
+        Box::new(classify::toml_rules::TomlRulesClassifier::new(
+            &cfg.classifiers,
+        )),
         Box::new(classify::swift::SwiftClassifier::new()),
         Box::new(classify::rust::RustClassifier::new()),
     ];

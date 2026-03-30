@@ -129,9 +129,10 @@ pub fn query_trace(graph: &Graph, entry: &str, max_depth: usize) -> Option<Trace
             let node = &graph.nodes[ni];
             if let Some(NodeRole::Terminal { kind }) = &node.role {
                 // Determine direction from the last edge that led here
-                let last_edge_direction = graph.edges.iter().find(|e| {
-                    e.target == frame.node_id && is_dataflow_edge(e.kind)
-                });
+                let last_edge_direction = graph
+                    .edges
+                    .iter()
+                    .find(|e| e.target == frame.node_id && is_dataflow_edge(e.kind));
                 let direction = last_edge_direction
                     .map(|e| direction_from_edge(e.kind, e.direction.as_ref()))
                     .unwrap_or_else(|| "unknown".to_string());
@@ -162,9 +163,7 @@ pub fn query_trace(graph: &Graph, entry: &str, max_depth: usize) -> Option<Trace
                 }
 
                 let edge = &graph.edges[ei];
-                let target_node = node_index
-                    .get(target_id)
-                    .map(|&i| &graph.nodes[i]);
+                let target_node = node_index.get(target_id).map(|&i| &graph.nodes[i]);
 
                 let target_name = target_node
                     .map(|n| n.name.clone())
@@ -276,17 +275,19 @@ mod tests {
             nodes: vec![
                 make_node("entry", Some(NodeRole::EntryPoint)),
                 make_node("service", None),
-                make_node("db_save", Some(NodeRole::Terminal { kind: TerminalKind::Persistence })),
+                make_node(
+                    "db_save",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Persistence,
+                    }),
+                ),
             ],
-            edges: vec![
-                make_edge("entry", "service", EdgeKind::Calls),
-                {
-                    let mut e = make_edge("service", "db_save", EdgeKind::Writes);
-                    e.direction = Some(FlowDirection::Write);
-                    e.operation = Some("save".to_string());
-                    e
-                },
-            ],
+            edges: vec![make_edge("entry", "service", EdgeKind::Calls), {
+                let mut e = make_edge("service", "db_save", EdgeKind::Writes);
+                e.direction = Some(FlowDirection::Write);
+                e.operation = Some("save".to_string());
+                e
+            }],
         };
 
         let result = query_trace(&graph, "entry", 10).unwrap();
@@ -311,7 +312,12 @@ mod tests {
             version: "0.1.0".to_string(),
             nodes: vec![
                 make_node("entry", Some(NodeRole::EntryPoint)),
-                make_node("db", Some(NodeRole::Terminal { kind: TerminalKind::Persistence })),
+                make_node(
+                    "db",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Persistence,
+                    }),
+                ),
             ],
             edges: vec![{
                 let mut e = make_edge("entry", "db", EdgeKind::Writes);
@@ -345,7 +351,12 @@ mod tests {
                 make_node("a", Some(NodeRole::EntryPoint)),
                 make_node("b", None),
                 make_node("c", None),
-                make_node("d", Some(NodeRole::Terminal { kind: TerminalKind::Network })),
+                make_node(
+                    "d",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Network,
+                    }),
+                ),
             ],
             edges: vec![
                 make_edge("a", "b", EdgeKind::Calls),
@@ -375,7 +386,12 @@ mod tests {
             version: "0.1.0".to_string(),
             nodes: vec![
                 make_node("entry", Some(NodeRole::EntryPoint)),
-                make_node("api", Some(NodeRole::Terminal { kind: TerminalKind::Network })),
+                make_node(
+                    "api",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Network,
+                    }),
+                ),
             ],
             edges: vec![{
                 let mut e = make_edge("entry", "api", EdgeKind::Reads);

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::Json;
 use serde::Deserialize;
 
 use crate::query;
@@ -23,8 +23,8 @@ pub async fn get_context(
     Path(symbol): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let decoded = urlencoding::decode(&symbol).unwrap_or_default();
-    let result = query::context::query_context(&state.graph, &decoded)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let result =
+        query::context::query_context(&state.graph, &decoded).ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
 }
 
@@ -33,8 +33,8 @@ pub async fn get_trace(
     Path(symbol): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let decoded = urlencoding::decode(&symbol).unwrap_or_default();
-    let result = query::trace::query_trace(&state.graph, &decoded, 10)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let result =
+        query::trace::query_trace(&state.graph, &decoded, 10).ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
 }
 
@@ -43,8 +43,8 @@ pub async fn get_reverse(
     Path(symbol): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let decoded = urlencoding::decode(&symbol).unwrap_or_default();
-    let result = query::reverse::query_reverse(&state.graph, &decoded)
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let result =
+        query::reverse::query_reverse(&state.graph, &decoded).ok_or(StatusCode::NOT_FOUND)?;
     Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
 }
 

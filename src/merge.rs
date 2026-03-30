@@ -62,10 +62,7 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
                         continue;
                     }
 
-                    let source_module = id_to_module
-                        .get(edge.source.as_str())
-                        .copied()
-                        .flatten();
+                    let source_module = id_to_module.get(edge.source.as_str()).copied().flatten();
 
                     if candidates.len() == 1 {
                         let candidate = &candidates[0];
@@ -75,9 +72,9 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
                         graph.edges.push(edge);
                     } else {
                         // Multiple candidates — prefer same-module match
-                        let same_module_candidate = candidates.iter().find(|c| {
-                            modules_match(source_module, c.module.as_deref())
-                        });
+                        let same_module_candidate = candidates
+                            .iter()
+                            .find(|c| modules_match(source_module, c.module.as_deref()));
 
                         if let Some(candidate) = same_module_candidate {
                             edge.target = candidate.id.clone();

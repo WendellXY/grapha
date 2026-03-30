@@ -893,7 +893,8 @@ fn detect_swift_async_boundary(node: tree_sitter::Node, source: &[u8]) -> Option
                     return Some(true);
                 }
                 if let Ok(text) = gp.utf8_text(source)
-                    && text.contains("DispatchQueue") && text.contains("async")
+                    && text.contains("DispatchQueue")
+                    && text.contains("async")
                 {
                     return Some(true);
                 }
