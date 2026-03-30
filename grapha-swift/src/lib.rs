@@ -131,7 +131,8 @@ pub fn extract_swift(
                 .map(|cwd| cwd.join(file_path))
                 .unwrap_or_else(|_| file_path.to_path_buf())
         };
-        if let Some(result) = indexstore::extract_from_indexstore(&abs_file, store_path) {
+        let canonical_file = std::fs::canonicalize(&abs_file).unwrap_or(abs_file);
+        if let Some(result) = indexstore::extract_from_indexstore(&canonical_file, store_path) {
             return Ok(result);
         }
     }
