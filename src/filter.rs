@@ -15,6 +15,11 @@ pub fn parse_filter(filter: &str) -> anyhow::Result<HashSet<NodeKind>> {
             "mod" | "module" => NodeKind::Module,
             "field" => NodeKind::Field,
             "variant" => NodeKind::Variant,
+            "property" => NodeKind::Property,
+            "const" | "constant" => NodeKind::Constant,
+            "typealias" | "type_alias" => NodeKind::TypeAlias,
+            "protocol" => NodeKind::Protocol,
+            "extension" | "ext" => NodeKind::Extension,
             other => anyhow::bail!("unknown node kind: '{other}'"),
         };
         kinds.insert(kind);
@@ -118,11 +123,13 @@ mod tests {
                     source: "a".to_string(),
                     target: "b".to_string(),
                     kind: EdgeKind::TypeRef,
+                    confidence: 1.0,
                 },
                 Edge {
                     source: "a".to_string(),
                     target: "a".to_string(),
                     kind: EdgeKind::Calls,
+                    confidence: 1.0,
                 },
             ],
         };

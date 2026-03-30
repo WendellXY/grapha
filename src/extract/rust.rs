@@ -54,6 +54,7 @@ fn walk_node(
                         source: pid.to_string(),
                         target: graph_node.id.clone(),
                         kind: EdgeKind::Contains,
+                        confidence: 1.0,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -71,6 +72,7 @@ fn walk_node(
                             source: node_id.clone(),
                             target: target_id,
                             kind: EdgeKind::TypeRef,
+                            confidence: 0.85,
                         });
                     }
                 }
@@ -91,6 +93,7 @@ fn walk_node(
                         source: pid.to_string(),
                         target: graph_node.id.clone(),
                         kind: EdgeKind::Contains,
+                        confidence: 1.0,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -120,6 +123,7 @@ fn walk_node(
                         source: pid.to_string(),
                         target: graph_node.id.clone(),
                         kind: EdgeKind::Contains,
+                        confidence: 1.0,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -149,6 +153,7 @@ fn walk_node(
                         source: pid.to_string(),
                         target: graph_node.id.clone(),
                         kind: EdgeKind::Contains,
+                        confidence: 1.0,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -166,6 +171,7 @@ fn walk_node(
                                 source: node_id.clone(),
                                 target: target_id,
                                 kind: EdgeKind::Inherits,
+                                confidence: 0.9,
                             });
                         }
                     }
@@ -183,6 +189,7 @@ fn walk_node(
                         source: pid.to_string(),
                         target: graph_node.id.clone(),
                         kind: EdgeKind::Contains,
+                        confidence: 1.0,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -199,6 +206,7 @@ fn walk_node(
                         source: type_id,
                         target: trait_id,
                         kind: EdgeKind::Implements,
+                        confidence: 0.9,
                     });
                 }
 
@@ -218,6 +226,7 @@ fn walk_node(
                         source: pid.to_string(),
                         target: graph_node.id.clone(),
                         kind: EdgeKind::Contains,
+                        confidence: 1.0,
                     });
                 }
                 let mod_name = graph_node.name.clone();
@@ -234,10 +243,45 @@ fn walk_node(
         }
         "use_declaration" => {
             if let Ok(use_text) = node.utf8_text(source) {
+                let raw = use_text
+                    .trim_start_matches("use ")
+                    .trim_end_matches(';')
+                    .trim()
+                    .to_string();
+
+                let kind = if raw.starts_with("crate::")
+                    || raw.starts_with("super::")
+                    || raw.starts_with("self::")
+                {
+                    crate::resolve::ImportKind::Relative
+                } else if raw.ends_with("::*") {
+                    crate::resolve::ImportKind::Wildcard
+                } else {
+                    crate::resolve::ImportKind::Named
+                };
+
+                // Extract symbols from grouped imports: use foo::{A, B}
+                let (path, symbols) = if let Some(brace_start) = raw.find('{') {
+                    let base = raw[..brace_start].trim_end_matches("::").to_string();
+                    let inner = raw[brace_start + 1..].trim_end_matches('}').trim();
+                    let syms = inner.split(',').map(|s| s.trim().to_string()).collect();
+                    (base, syms)
+                } else {
+                    (raw.trim_end_matches("::*").to_string(), vec![])
+                };
+
+                result.imports.push(crate::resolve::Import {
+                    path,
+                    symbols,
+                    kind,
+                });
+
+                // Keep the Uses edge for backwards compatibility
                 result.edges.push(Edge {
                     source: file.to_string(),
                     target: use_text.to_string(),
                     kind: EdgeKind::Uses,
+                    confidence: 0.7,
                 });
             }
         }
@@ -434,6 +478,7 @@ fn extract_struct_fields(
                 source: parent_id.to_string(),
                 target: id.clone(),
                 kind: EdgeKind::Contains,
+                confidence: 1.0,
             });
 
             result.nodes.push(Node {
@@ -500,6 +545,7 @@ fn extract_calls(
                     source: caller_id.to_string(),
                     target: target_id,
                     kind: EdgeKind::Calls,
+                    confidence: 0.8,
                 });
             }
         }
@@ -536,6 +582,7 @@ fn extract_enum_variants(
                 source: parent_id.to_string(),
                 target: id.clone(),
                 kind: EdgeKind::Contains,
+                confidence: 1.0,
             });
 
             result.nodes.push(Node {
@@ -773,6 +820,28 @@ mod tests {
             "#,
         );
         assert!(result.edges.iter().any(|e| e.kind == EdgeKind::TypeRef));
+    }
+
+    #[test]
+    fn extracts_structured_imports() {
+        let result = extract("use std::collections::HashMap;");
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].path, "std::collections::HashMap");
+        assert_eq!(result.imports[0].kind, crate::resolve::ImportKind::Named);
+    }
+
+    #[test]
+    fn extracts_relative_imports() {
+        let result = extract("use crate::graph::Node;");
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].kind, crate::resolve::ImportKind::Relative);
+    }
+
+    #[test]
+    fn extracts_glob_imports() {
+        let result = extract("use std::collections::*;");
+        assert_eq!(result.imports.len(), 1);
+        assert_eq!(result.imports[0].kind, crate::resolve::ImportKind::Wildcard);
     }
 
     #[test]
