@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use ignore::WalkBuilder;
-
 /// Maps module names to their source directories.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModuleMap {
@@ -66,8 +64,8 @@ impl ModuleMap {
                 // Fallback: suffix-based matching for relative paths.
                 // Check if the relative file path is a suffix of the module dir
                 // or if the module dir name appears as a component of the file path.
-                if best_match.is_none() && file.is_relative() {
-                    if let Some(dir_name) = canonical_dir.file_name().and_then(|n| n.to_str()) {
+                if best_match.is_none() && file.is_relative()
+                    && let Some(dir_name) = canonical_dir.file_name().and_then(|n| n.to_str()) {
                         let file_str = file.to_string_lossy();
                         if file_str.starts_with(dir_name)
                             || file_str.starts_with(&format!("{dir_name}/"))
@@ -75,7 +73,6 @@ impl ModuleMap {
                             best_match = Some((name, usize::MAX));
                         }
                     }
-                }
             }
         }
 
@@ -103,33 +100,58 @@ fn normalize_path(path: &Path) -> PathBuf {
     components.iter().collect()
 }
 
+/// Recursively walk directories looking for Package.swift files.
+/// When found, the containing directory is a Swift package module.
+/// We do NOT descend into directories that contain Package.swift
+/// (they are leaf modules, not containers of sub-modules).
 fn discover_swift_packages(root: &Path, modules: &mut HashMap<String, Vec<PathBuf>>) {
-    let walker = WalkBuilder::new(root)
-        .max_depth(Some(4))
-        .hidden(true)
-        .git_ignore(true)
-        .build();
+    discover_swift_packages_recursive(root, modules);
+}
 
-    for entry in walker.flatten() {
+fn discover_swift_packages_recursive(dir: &Path, modules: &mut HashMap<String, Vec<PathBuf>>) {
+    let package_swift = dir.join("Package.swift");
+    if package_swift.is_file() {
+        // This directory is a Swift package — register it and stop recursing
+        let module_name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let sources_dir = dir.join("Sources");
+        let source_dir = if sources_dir.is_dir() {
+            sources_dir
+        } else {
+            dir.to_path_buf()
+        };
+
+        modules.entry(module_name).or_default().push(source_dir);
+        return; // Don't descend further
+    }
+
+    // No Package.swift here — recurse into subdirectories
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
         let path = entry.path();
-        if path.file_name().and_then(|n| n.to_str()) == Some("Package.swift")
-            && let Some(pkg_dir) = path.parent()
-        {
-            let module_name = pkg_dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-
-            let sources_dir = pkg_dir.join("Sources");
-            let source_dir = if sources_dir.is_dir() {
-                sources_dir
-            } else {
-                pkg_dir.to_path_buf()
-            };
-
-            modules.entry(module_name).or_default().push(source_dir);
+        if !path.is_dir() {
+            continue;
         }
+        // Skip hidden dirs, build dirs, and common non-source dirs
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.')
+            || name_str == "node_modules"
+            || name_str == "build"
+            || name_str == "DerivedData"
+            || name_str == "Pods"
+        {
+            continue;
+        }
+        discover_swift_packages_recursive(&path, modules);
     }
 }
 
