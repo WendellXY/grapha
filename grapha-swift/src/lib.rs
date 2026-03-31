@@ -143,6 +143,7 @@ pub fn extract_swift(
             // Index store doesn't provide doc comments — enrich via tree-sitter.
             let _ = treesitter::enrich_doc_comments(source, &mut result);
             let _ = treesitter::enrich_swiftui_structure(source, file_path, &mut result);
+            let _ = treesitter::enrich_localization_metadata(source, file_path, &mut result);
             return Ok(result);
         }
     }
@@ -150,9 +151,12 @@ pub fn extract_swift(
     if let Some(mut result) = swiftsyntax::extract_with_swiftsyntax(source, file_path) {
         let _ = treesitter::enrich_doc_comments(source, &mut result);
         let _ = treesitter::enrich_swiftui_structure(source, file_path, &mut result);
+        let _ = treesitter::enrich_localization_metadata(source, file_path, &mut result);
         return Ok(result);
     }
 
     let extractor = SwiftExtractor;
-    extractor.extract(source, file_path)
+    let mut result = extractor.extract(source, file_path)?;
+    let _ = treesitter::enrich_localization_metadata(source, file_path, &mut result);
+    Ok(result)
 }

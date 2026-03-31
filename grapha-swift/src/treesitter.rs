@@ -1416,6 +1416,10 @@ fn push_unique_node(result: &mut ExtractionResult, node: Node) {
     result.nodes.push(node);
 }
 
+fn node_by_id_mut<'a>(result: &'a mut ExtractionResult, node_id: &str) -> Option<&'a mut Node> {
+    result.nodes.iter_mut().find(|node| node.id == node_id)
+}
+
 fn sanitize_id_component(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for ch in name.chars() {
@@ -2251,6 +2255,310 @@ fn line_matches(node_line: usize, ast_row_zero_based: usize) -> bool {
     node_line.abs_diff(ast_row_zero_based) <= 1
 }
 
+#[derive(Debug, Clone)]
+struct LocalizationWrapperMetadata {
+    table: String,
+    key: String,
+    fallback: Option<String>,
+    arg_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct LocalizedTextCall<'a> {
+    node: tree_sitter::Node<'a>,
+    ref_kind: &'static str,
+    wrapper_name: Option<String>,
+    wrapper_base: Option<String>,
+    arg_count: usize,
+    literal: Option<String>,
+}
+
+fn decode_swift_string_literal(raw: &str) -> String {
+    raw.replace(r#"\""#, "\"")
+        .replace(r"\n", "\n")
+        .replace(r"\t", "\t")
+}
+
+fn count_top_level_call_args(input: &str) -> usize {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return 0;
+    }
+
+    let mut count = 1usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for ch in trimmed.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            ',' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => count += 1,
+            _ => {}
+        }
+    }
+
+    count
+}
+
+fn function_parameter_count(node: tree_sitter::Node) -> usize {
+    fn count_parameters(node: tree_sitter::Node) -> usize {
+        let mut count = usize::from(node.kind() == "parameter");
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            count += count_parameters(child);
+        }
+        count
+    }
+
+    count_parameters(node)
+}
+
+fn parse_l10n_tr_metadata(text: &str, arg_count: usize) -> Option<LocalizationWrapperMetadata> {
+    let re = regex::Regex::new(
+        r#"(?s)L10n\.tr\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.)*)".*?fallback:\s*"((?:[^"\\]|\\.)*)""#,
+    )
+    .unwrap();
+    let captures = re.captures(text)?;
+    Some(LocalizationWrapperMetadata {
+        table: decode_swift_string_literal(captures.get(1)?.as_str()),
+        key: decode_swift_string_literal(captures.get(2)?.as_str()),
+        fallback: Some(decode_swift_string_literal(captures.get(3)?.as_str())),
+        arg_count,
+    })
+}
+
+fn parse_l10n_resource_metadata(
+    text: &str,
+    arg_count: usize,
+) -> Option<LocalizationWrapperMetadata> {
+    let re = regex::Regex::new(
+        r#"(?s)L10nResource\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*table:\s*"((?:[^"\\]|\\.)*)".*?fallback:\s*"((?:[^"\\]|\\.)*)""#,
+    )
+    .unwrap();
+    let captures = re.captures(text)?;
+    Some(LocalizationWrapperMetadata {
+        table: decode_swift_string_literal(captures.get(2)?.as_str()),
+        key: decode_swift_string_literal(captures.get(1)?.as_str()),
+        fallback: Some(decode_swift_string_literal(captures.get(3)?.as_str())),
+        arg_count,
+    })
+}
+
+fn extract_wrapper_metadata(
+    node: tree_sitter::Node,
+    source: &[u8],
+) -> Option<LocalizationWrapperMetadata> {
+    let text = node.utf8_text(source).ok()?;
+    let arg_count = if node.kind() == "function_declaration" {
+        function_parameter_count(node)
+    } else {
+        0
+    };
+
+    parse_l10n_tr_metadata(text, arg_count)
+        .or_else(|| parse_l10n_resource_metadata(text, arg_count))
+}
+
+fn collect_localizable_wrapper_nodes<'a>(
+    node: tree_sitter::Node<'a>,
+    source: &[u8],
+    out: &mut Vec<tree_sitter::Node<'a>>,
+) {
+    if matches!(node.kind(), "property_declaration" | "function_declaration")
+        && extract_wrapper_metadata(node, source).is_some()
+    {
+        out.push(node);
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_localizable_wrapper_nodes(child, source, out);
+    }
+}
+
+fn parse_localized_text_call<'a>(
+    node: tree_sitter::Node<'a>,
+    source: &[u8],
+) -> Option<LocalizedTextCall<'a>> {
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    if swiftui_call_name(node, source).as_deref() != Some("Text") {
+        return None;
+    }
+
+    let text = node.utf8_text(source).ok()?.trim();
+    if text.starts_with("Text(verbatim:") {
+        return None;
+    }
+
+    let wrapper_re = regex::Regex::new(
+        r#"(?s)^\s*Text\s*\(\s*(?:i18n\s*:\s*)?(?:(?:([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)|\.)([A-Za-z_][A-Za-z0-9_]*)\s*(?:\((.*)\))?\s*(?:\)|,)"#,
+    )
+    .unwrap();
+    if let Some(captures) = wrapper_re.captures(text) {
+        let args = captures.get(3).map(|value| value.as_str()).unwrap_or("");
+        return Some(LocalizedTextCall {
+            node,
+            ref_kind: "wrapper",
+            wrapper_name: Some(captures.get(2)?.as_str().to_string()),
+            wrapper_base: captures.get(1).map(|value| value.as_str().to_string()),
+            arg_count: count_top_level_call_args(args),
+            literal: None,
+        });
+    }
+
+    let literal_re = regex::Regex::new(
+        r#"(?s)^\s*Text\s*\(\s*"((?:[^"\\]|\\.)*)"(?:\s*,\s*bundle\s*:\s*[^,)]+)?\s*(?:\)|,)"#,
+    )
+    .unwrap();
+    literal_re.captures(text).map(|captures| LocalizedTextCall {
+        node,
+        ref_kind: "literal",
+        wrapper_name: None,
+        wrapper_base: None,
+        arg_count: 0,
+        literal: Some(decode_swift_string_literal(
+            captures.get(1).unwrap().as_str(),
+        )),
+    })
+}
+
+fn collect_localized_text_calls<'a>(
+    node: tree_sitter::Node<'a>,
+    source: &[u8],
+    out: &mut Vec<LocalizedTextCall<'a>>,
+) {
+    if let Some(call) = parse_localized_text_call(node, source) {
+        out.push(call);
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_localized_text_calls(child, source, out);
+    }
+}
+
+fn matching_synthetic_view_id(
+    result: &ExtractionResult,
+    file_path: &Path,
+    view_node: tree_sitter::Node,
+    name: &str,
+) -> Option<String> {
+    let span = make_span(view_node);
+
+    let exact = result.nodes.iter().find(|node| {
+        node.kind == NodeKind::View
+            && node.name == name
+            && file_matches(&node.file, file_path)
+            && node.span.start == span.start
+            && node.span.end == span.end
+    });
+    if let Some(node) = exact {
+        return Some(node.id.clone());
+    }
+
+    result
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.kind == NodeKind::View
+                && node.name == name
+                && file_matches(&node.file, file_path)
+                && line_matches(node.span.start[0], span.start[0])
+        })
+        .min_by_key(|node| {
+            node.span.start[0].abs_diff(span.start[0]) + node.span.start[1].abs_diff(span.start[1])
+        })
+        .map(|node| node.id.clone())
+}
+
+fn apply_wrapper_metadata(
+    result: &mut ExtractionResult,
+    node_id: &str,
+    metadata: &LocalizationWrapperMetadata,
+) {
+    let Some(node) = node_by_id_mut(result, node_id) else {
+        return;
+    };
+    node.metadata
+        .insert("l10n.wrapper.table".to_string(), metadata.table.clone());
+    node.metadata
+        .insert("l10n.wrapper.key".to_string(), metadata.key.clone());
+    if let Some(fallback) = &metadata.fallback {
+        node.metadata
+            .insert("l10n.wrapper.fallback".to_string(), fallback.clone());
+    }
+    node.metadata.insert(
+        "l10n.wrapper.arg_count".to_string(),
+        metadata.arg_count.to_string(),
+    );
+}
+
+fn apply_localized_text_call(
+    result: &mut ExtractionResult,
+    file: &str,
+    view_id: &str,
+    call: &LocalizedTextCall<'_>,
+) {
+    {
+        let Some(node) = node_by_id_mut(result, view_id) else {
+            return;
+        };
+        node.metadata
+            .insert("l10n.ref_kind".to_string(), call.ref_kind.to_string());
+        node.metadata
+            .insert("l10n.arg_count".to_string(), call.arg_count.to_string());
+        if let Some(wrapper_name) = &call.wrapper_name {
+            node.metadata
+                .insert("l10n.wrapper_name".to_string(), wrapper_name.clone());
+        }
+        if let Some(literal) = &call.literal {
+            node.metadata
+                .insert("l10n.literal".to_string(), literal.clone());
+        }
+    }
+
+    if let Some(wrapper_name) = &call.wrapper_name {
+        emit_unique_edge(
+            result,
+            Edge {
+                source: view_id.to_string(),
+                target: make_id(file, &[], wrapper_name),
+                kind: EdgeKind::TypeRef,
+                confidence: 0.85,
+                direction: None,
+                operation: call.wrapper_base.clone(),
+                condition: None,
+                async_boundary: None,
+                provenance: node_edge_provenance(file, call.node, view_id),
+            },
+        );
+    }
+}
+
 fn collect_swiftui_declaration_nodes<'a>(
     node: tree_sitter::Node<'a>,
     source: &[u8],
@@ -2400,20 +2708,7 @@ fn matching_body_id(
         .map(|node| node.id.clone())
 }
 
-pub fn enrich_swiftui_structure(
-    source: &[u8],
-    file_path: &Path,
-    result: &mut ExtractionResult,
-) -> anyhow::Result<()> {
-    let mut parser = Parser::new();
-    parser.set_language(&tree_sitter_swift::LANGUAGE.into())?;
-    let tree = parser
-        .parse(source, None)
-        .ok_or_else(|| anyhow::anyhow!("tree-sitter failed to parse Swift source"))?;
-
-    let mut declaration_nodes = Vec::new();
-    collect_swiftui_declaration_nodes(tree.root_node(), source, &mut declaration_nodes);
-
+fn candidate_owner_names(result: &ExtractionResult) -> HashMap<String, Vec<String>> {
     let id_to_name: HashMap<&str, &str> = result
         .nodes
         .iter()
@@ -2437,6 +2732,68 @@ pub fn enrich_swiftui_structure(
                 .push((*owner_name).to_string());
         }
     }
+    candidate_owner_names
+}
+
+pub fn enrich_localization_metadata(
+    source: &[u8],
+    file_path: &Path,
+    result: &mut ExtractionResult,
+) -> anyhow::Result<()> {
+    let mut parser = Parser::new();
+    parser.set_language(&tree_sitter_swift::LANGUAGE.into())?;
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| anyhow::anyhow!("tree-sitter failed to parse Swift source"))?;
+
+    let candidate_owner_names = candidate_owner_names(result);
+    let file_str = file_path.to_string_lossy().to_string();
+
+    let mut wrapper_nodes = Vec::new();
+    collect_localizable_wrapper_nodes(tree.root_node(), source, &mut wrapper_nodes);
+    for wrapper_node in wrapper_nodes {
+        let Some(wrapper_metadata) = extract_wrapper_metadata(wrapper_node, source) else {
+            continue;
+        };
+        let Some(node_id) = matching_swiftui_declaration_id(
+            result,
+            file_path,
+            wrapper_node,
+            source,
+            &candidate_owner_names,
+        ) else {
+            continue;
+        };
+        apply_wrapper_metadata(result, &node_id, &wrapper_metadata);
+    }
+
+    let mut localized_text_calls = Vec::new();
+    collect_localized_text_calls(tree.root_node(), source, &mut localized_text_calls);
+    for call in localized_text_calls {
+        let Some(view_id) = matching_synthetic_view_id(result, file_path, call.node, "Text") else {
+            continue;
+        };
+        apply_localized_text_call(result, &file_str, &view_id, &call);
+    }
+
+    Ok(())
+}
+
+pub fn enrich_swiftui_structure(
+    source: &[u8],
+    file_path: &Path,
+    result: &mut ExtractionResult,
+) -> anyhow::Result<()> {
+    let mut parser = Parser::new();
+    parser.set_language(&tree_sitter_swift::LANGUAGE.into())?;
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| anyhow::anyhow!("tree-sitter failed to parse Swift source"))?;
+
+    let mut declaration_nodes = Vec::new();
+    collect_swiftui_declaration_nodes(tree.root_node(), source, &mut declaration_nodes);
+
+    let candidate_owner_names = candidate_owner_names(result);
 
     let file_str = file_path.to_string_lossy().to_string();
     for decl_node in declaration_nodes {
@@ -2475,6 +2832,10 @@ mod tests {
         extractor
             .extract(source.as_bytes(), Path::new("test.swift"))
             .unwrap()
+    }
+
+    fn extract_with_localization(source: &str) -> ExtractionResult {
+        crate::extract_swift(source.as_bytes(), Path::new("test.swift"), None, None).unwrap()
     }
 
     fn find_node<'a>(result: &'a ExtractionResult, name: &str) -> &'a grapha_core::graph::Node {
@@ -3566,6 +3927,230 @@ class GameManager {
             app_node.role,
             Some(grapha_core::graph::NodeRole::EntryPoint),
             "@main struct should be an EntryPoint"
+        );
+    }
+
+    #[test]
+    fn enrich_localization_metadata_marks_generated_wrapper_symbols() {
+        let result = extract_with_localization(
+            r#"
+            public enum L10n {
+                public static var accountForgetPassword: String {
+                    L10n.tr("Localizable", "account_forget_password", fallback: "Forgot Password")
+                }
+
+                public static func commonCount(_ p1: Any) -> String {
+                    L10n.tr("Localizable", "common_count", String(describing: p1), fallback: "%@")
+                }
+            }
+
+            public struct L10nResource {
+                public init(_ key: String, table: String, bundle: Bundle, fallback: String) {}
+            }
+
+            public enum L10nResourceSet {
+                public static let commonShare = L10nResource(
+                    "common_share",
+                    table: "Localizable",
+                    bundle: .module,
+                    fallback: "Share"
+                )
+            }
+            "#,
+        );
+
+        let account_forget_password = result
+            .nodes
+            .iter()
+            .find(|node| node.name == "accountForgetPassword")
+            .expect("wrapper property should exist");
+        assert_eq!(
+            account_forget_password
+                .metadata
+                .get("l10n.wrapper.table")
+                .map(|value| value.as_str()),
+            Some("Localizable")
+        );
+        assert_eq!(
+            account_forget_password
+                .metadata
+                .get("l10n.wrapper.key")
+                .map(|value| value.as_str()),
+            Some("account_forget_password")
+        );
+
+        let common_count = result
+            .nodes
+            .iter()
+            .find(|node| node.name == "commonCount")
+            .expect("wrapper function should exist");
+        assert_eq!(
+            common_count
+                .metadata
+                .get("l10n.wrapper.key")
+                .map(|value| value.as_str()),
+            Some("common_count")
+        );
+        assert_eq!(
+            common_count
+                .metadata
+                .get("l10n.wrapper.arg_count")
+                .map(|value| value.as_str()),
+            Some("1")
+        );
+
+        let common_share = result
+            .nodes
+            .iter()
+            .find(|node| node.name == "commonShare")
+            .expect("resource wrapper property should exist");
+        assert_eq!(
+            common_share
+                .metadata
+                .get("l10n.wrapper.key")
+                .map(|value| value.as_str()),
+            Some("common_share")
+        );
+    }
+
+    #[test]
+    fn enrich_localization_metadata_marks_swiftui_text_usages() {
+        let result = extract_with_localization(
+            r#"
+            import SwiftUI
+
+            public enum L10n {
+                public static var accountForgetPassword: String {
+                    L10n.tr("Localizable", "account_forget_password", fallback: "Forgot Password")
+                }
+
+                public static var storeUseNow: String {
+                    L10n.tr("Localizable", "store_use_now", fallback: "Use now")
+                }
+
+                public static func commonCount(_ p1: Any) -> String {
+                    L10n.tr("Localizable", "common_count", String(describing: p1), fallback: "%@")
+                }
+            }
+
+            public struct L10nResource {
+                public init(_ key: String, table: String, bundle: Bundle, fallback: String) {}
+            }
+
+            public enum L10nResourceSet {
+                public static let commonShare = L10nResource(
+                    "common_share",
+                    table: "Localizable",
+                    bundle: .module,
+                    fallback: "Share"
+                )
+            }
+
+            struct ContentView: View {
+                let title: String
+
+                var body: some View {
+                    VStack {
+                        Text(.accountForgetPassword)
+                        Text(i18n: .commonShare)
+                        Text(L10n.storeUseNow)
+                        Text(L10n.commonCount(42))
+                        Text(verbatim: title)
+                        Text(title)
+                        Text("Party Game & Voice Chat", bundle: .module)
+                    }
+                }
+            }
+            "#,
+        );
+
+        let localized_texts: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::View && node.name == "Text")
+            .filter(|node| node.metadata.contains_key("l10n.ref_kind"))
+            .collect();
+        assert_eq!(
+            localized_texts.len(),
+            5,
+            "expected wrapper and literal Text usages, but not verbatim or dynamic text"
+        );
+
+        let account_text = localized_texts
+            .iter()
+            .find(|node| {
+                node.metadata
+                    .get("l10n.wrapper_name")
+                    .map(|value| value.as_str())
+                    == Some("accountForgetPassword")
+            })
+            .expect("dot syntax Text usage should be marked");
+        assert_eq!(
+            account_text
+                .metadata
+                .get("l10n.ref_kind")
+                .map(|value| value.as_str()),
+            Some("wrapper")
+        );
+
+        let common_share_text = localized_texts
+            .iter()
+            .find(|node| {
+                node.metadata
+                    .get("l10n.wrapper_name")
+                    .map(|value| value.as_str())
+                    == Some("commonShare")
+            })
+            .expect("i18n Text usage should be marked");
+        assert_eq!(
+            common_share_text
+                .metadata
+                .get("l10n.arg_count")
+                .map(|value| value.as_str()),
+            Some("0")
+        );
+
+        let common_count_text = localized_texts
+            .iter()
+            .find(|node| {
+                node.metadata
+                    .get("l10n.wrapper_name")
+                    .map(|value| value.as_str())
+                    == Some("commonCount")
+            })
+            .expect("parameterized wrapper usage should be marked");
+        assert_eq!(
+            common_count_text
+                .metadata
+                .get("l10n.arg_count")
+                .map(|value| value.as_str()),
+            Some("1")
+        );
+
+        let literal_text = localized_texts
+            .iter()
+            .find(|node| {
+                node.metadata
+                    .get("l10n.ref_kind")
+                    .map(|value| value.as_str())
+                    == Some("literal")
+            })
+            .expect("string literal usage should be marked");
+        assert_eq!(
+            literal_text
+                .metadata
+                .get("l10n.literal")
+                .map(|value| value.as_str()),
+            Some("Party Game & Voice Chat")
+        );
+
+        assert!(
+            result.edges.iter().any(|edge| {
+                edge.kind == EdgeKind::TypeRef
+                    && edge.source == account_text.id
+                    && edge.target.ends_with("accountForgetPassword")
+            }),
+            "localized Text usage should emit a type-ref edge to its wrapper symbol"
         );
     }
 }

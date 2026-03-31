@@ -2,8 +2,10 @@ pub mod context;
 pub mod dataflow;
 pub mod entries;
 pub mod impact;
+pub mod localize;
 pub mod reverse;
 pub mod trace;
+pub mod usages;
 
 use serde::Serialize;
 use thiserror::Error;

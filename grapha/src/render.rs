@@ -6,7 +6,8 @@ use crate::query::{
     ContextResult, SymbolInfo, SymbolRef, SymbolTreeRef, dataflow::DataflowEdge,
     dataflow::DataflowEdgeKind, dataflow::DataflowNode, dataflow::DataflowNodeKind,
     dataflow::DataflowResult, entries::EntriesResult, impact::ImpactResult, impact::ImpactTreeNode,
-    reverse::AffectedEntry, reverse::ReverseResult, trace::Flow, trace::TraceResult,
+    localize::LocalizeResult, reverse::AffectedEntry, reverse::ReverseResult, trace::Flow,
+    trace::TraceResult, usages::UsagesResult,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -375,6 +376,190 @@ pub fn render_entries_with_options(result: &EntriesResult, options: RenderOption
 
     render_tree(&TreeNode::branch(
         format_section_count("entry points", result.total, options),
+        children,
+    ))
+}
+
+#[allow(dead_code)]
+pub fn render_localize(result: &LocalizeResult) -> String {
+    render_localize_with_options(result, RenderOptions::plain())
+}
+
+pub fn render_localize_with_options(result: &LocalizeResult, options: RenderOptions) -> String {
+    let mut children = Vec::new();
+    children.push(TreeNode::leaf(format_summary(
+        &[
+            ("matches", result.matches.len().to_string()),
+            ("unmatched", result.unmatched.len().to_string()),
+        ],
+        options,
+    )));
+
+    if !result.matches.is_empty() {
+        let match_nodes = result
+            .matches
+            .iter()
+            .map(|item| {
+                let mut item_children = Vec::new();
+                if !item.ui_path.is_empty() {
+                    item_children.push(TreeNode::leaf(format_key_value(
+                        "ui_path",
+                        &item.ui_path.join(" -> "),
+                        options,
+                    )));
+                }
+                if let Some(wrapper_name) = item.reference.wrapper_name.as_deref() {
+                    item_children.push(TreeNode::leaf(format_key_value(
+                        "wrapper",
+                        wrapper_name,
+                        options,
+                    )));
+                }
+                item_children.push(TreeNode::leaf(format_key_value(
+                    "record",
+                    &format!(
+                        "{}.{} {}",
+                        item.record.table,
+                        item.record.key,
+                        Palette::new(options).file(format!("({})", item.record.file))
+                    ),
+                    options,
+                )));
+                item_children.push(TreeNode::leaf(format_key_value(
+                    "source_value",
+                    &item.record.source_value,
+                    options,
+                )));
+                item_children.push(TreeNode::leaf(format_key_value(
+                    "status",
+                    &item.record.status,
+                    options,
+                )));
+                if let Some(comment) = item.record.comment.as_deref() {
+                    item_children.push(TreeNode::leaf(format_key_value(
+                        "comment", comment, options,
+                    )));
+                }
+                TreeNode::branch(format_symbol_info(&item.view, options), item_children)
+            })
+            .collect();
+
+        children.push(TreeNode::branch(
+            format_section_count("matches", result.matches.len(), options),
+            match_nodes,
+        ));
+    }
+
+    if !result.unmatched.is_empty() {
+        let unmatched_nodes = result
+            .unmatched
+            .iter()
+            .map(|item| {
+                let mut item_children = Vec::new();
+                if !item.ui_path.is_empty() {
+                    item_children.push(TreeNode::leaf(format_key_value(
+                        "ui_path",
+                        &item.ui_path.join(" -> "),
+                        options,
+                    )));
+                }
+                if let Some(wrapper_name) = item.reference.wrapper_name.as_deref() {
+                    item_children.push(TreeNode::leaf(format_key_value(
+                        "wrapper",
+                        wrapper_name,
+                        options,
+                    )));
+                }
+                if let Some(literal) = item.reference.literal.as_deref() {
+                    item_children.push(TreeNode::leaf(format_key_value(
+                        "literal", literal, options,
+                    )));
+                }
+                item_children.push(TreeNode::leaf(format_key_value(
+                    "reason",
+                    &item.reason,
+                    options,
+                )));
+                TreeNode::branch(format_symbol_info(&item.view, options), item_children)
+            })
+            .collect();
+
+        children.push(TreeNode::branch(
+            format_section_count("unmatched", result.unmatched.len(), options),
+            unmatched_nodes,
+        ));
+    }
+
+    render_tree(&TreeNode::branch(
+        format_symbol_info(&result.symbol, options),
+        children,
+    ))
+}
+
+#[allow(dead_code)]
+pub fn render_usages(result: &UsagesResult) -> String {
+    render_usages_with_options(result, RenderOptions::plain())
+}
+
+pub fn render_usages_with_options(result: &UsagesResult, options: RenderOptions) -> String {
+    let mut children = Vec::new();
+    children.push(TreeNode::leaf(format_summary(
+        &[
+            ("records", result.records.len().to_string()),
+            (
+                "usages",
+                result
+                    .records
+                    .iter()
+                    .map(|record| record.usages.len())
+                    .sum::<usize>()
+                    .to_string(),
+            ),
+        ],
+        options,
+    )));
+
+    for record in &result.records {
+        let usage_children = record
+            .usages
+            .iter()
+            .map(|usage| {
+                let mut item_children = Vec::new();
+                item_children.push(TreeNode::leaf(format_key_value(
+                    "owner",
+                    &usage.owner.name,
+                    options,
+                )));
+                if !usage.ui_path.is_empty() {
+                    item_children.push(TreeNode::leaf(format_key_value(
+                        "ui_path",
+                        &usage.ui_path.join(" -> "),
+                        options,
+                    )));
+                }
+                if let Some(wrapper_name) = usage.reference.wrapper_name.as_deref() {
+                    item_children.push(TreeNode::leaf(format_key_value(
+                        "wrapper",
+                        wrapper_name,
+                        options,
+                    )));
+                }
+                TreeNode::branch(format_symbol_info(&usage.view, options), item_children)
+            })
+            .collect();
+        children.push(TreeNode::branch(
+            format!(
+                "{} {}",
+                Palette::new(options)
+                    .symbol_name(format!("{}.{}", record.record.table, record.record.key)),
+                Palette::new(options).file(format!("({})", record.record.file))
+            ),
+            usage_children,
+        ));
+    }
+
+    render_tree(&TreeNode::branch(
+        Palette::new(options).section_header(format!("usages for {}", result.query.key)),
         children,
     ))
 }

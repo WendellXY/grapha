@@ -7,6 +7,7 @@ mod discover;
 mod error;
 mod extract;
 mod filter;
+mod localization;
 mod merge;
 mod module;
 mod progress;
@@ -167,6 +168,31 @@ enum Commands {
     },
     /// List auto-detected entry points
     Entries {
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
+        format: QueryOutputFormat,
+    },
+    /// Resolve localization records reachable from a SwiftUI symbol subtree
+    Localize {
+        /// Symbol name or ID
+        symbol: String,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
+        format: QueryOutputFormat,
+    },
+    /// Find SwiftUI usage sites for a localization key
+    Usages {
+        /// Localization key
+        key: String,
+        /// Optional table/catalog name
+        #[arg(long)]
+        table: Option<String>,
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
@@ -829,6 +855,46 @@ fn main() -> anyhow::Result<()> {
                     println!(
                         "{}",
                         render::render_entries_with_options(&result, render_options)
+                    )
+                }
+            }
+        }
+        Commands::Localize {
+            symbol,
+            path,
+            format,
+        } => {
+            let graph = load_graph(&path)?;
+            let catalogs = localization::load_catalog_index(&path)?;
+            let result = resolve_query_result(
+                query::localize::query_localize(&graph, &catalogs, &symbol),
+                "symbol",
+            )?;
+            match format {
+                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
+                QueryOutputFormat::Tree => {
+                    println!(
+                        "{}",
+                        render::render_localize_with_options(&result, render_options)
+                    )
+                }
+            }
+        }
+        Commands::Usages {
+            key,
+            table,
+            path,
+            format,
+        } => {
+            let graph = load_graph(&path)?;
+            let catalogs = localization::load_catalog_index(&path)?;
+            let result = query::usages::query_usages(&graph, &catalogs, &key, table.as_deref());
+            match format {
+                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
+                QueryOutputFormat::Tree => {
+                    println!(
+                        "{}",
+                        render::render_usages_with_options(&result, render_options)
                     )
                 }
             }

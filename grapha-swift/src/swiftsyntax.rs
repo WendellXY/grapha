@@ -97,9 +97,10 @@ mod tests {
             EdgeKind::Calls
         ));
         assert!(
-            default_config.signature.as_deref().is_some_and(|signature| {
-                signature.contains("func defaultConfig() -> Config")
-            }),
+            default_config
+                .signature
+                .as_deref()
+                .is_some_and(|signature| { signature.contains("func defaultConfig() -> Config") }),
             "SwiftSyntax should preserve function signatures"
         );
         assert_eq!(config.kind, NodeKind::Struct);
@@ -164,8 +165,7 @@ mod tests {
         }
         "#;
 
-        let result =
-            extract_swift(source, Path::new("ContentView.swift"), None, None).unwrap();
+        let result = extract_swift(source, Path::new("ContentView.swift"), None, None).unwrap();
 
         let body = result
             .nodes

@@ -164,6 +164,32 @@ fn output_contains_version() {
         .stdout(predicate::str::contains("\"version\": \"0.1.0\""));
 }
 
+fn write_localizable_fixture(path: &std::path::Path, key: &str, value: &str, comment: &str) {
+    std::fs::write(
+        path,
+        format!(
+            r#"{{
+  "sourceLanguage" : "en",
+  "strings" : {{
+    "{key}" : {{
+      "comment" : "{comment}",
+      "localizations" : {{
+        "en" : {{
+          "stringUnit" : {{
+            "state" : "translated",
+            "value" : "{value}"
+          }}
+        }}
+      }}
+    }}
+  }},
+  "version" : "1.0"
+}}"#
+        ),
+    )
+    .unwrap();
+}
+
 #[test]
 fn index_creates_sqlite_db() {
     let dir = tempfile::tempdir().unwrap();
@@ -201,6 +227,164 @@ fn index_json_format() {
         .success();
 
     assert!(store_dir.join("graph.json").exists());
+}
+
+#[test]
+fn localize_and_usages_commands_resolve_swiftui_xcstrings() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+
+    std::fs::write(
+        dir.path().join("ContentView.swift"),
+        r#"
+        import SwiftUI
+
+        struct ContentView: View {
+            var body: some View {
+                VStack {
+                    Text(.accountForgetPassword)
+                }
+            }
+        }
+        "#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        dir.path().join("Strings.generated.swift"),
+        r#"
+        import Foundation
+
+        public enum L10n {
+            public static var accountForgetPassword: String {
+                L10n.tr("Localizable", "account_forget_password", fallback: "Forgot Password")
+            }
+
+            private static func tr(_ table: String, _ key: String, fallback: String) -> String {
+                fallback
+            }
+        }
+        "#,
+    )
+    .unwrap();
+
+    write_localizable_fixture(
+        &dir.path().join("Localizable.xcstrings"),
+        "account_forget_password",
+        "Forgot Password",
+        "Shown on the login screen",
+    );
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    grapha()
+        .args(["localize", "body", "-p", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"key\": \"account_forget_password\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"source_value\": \"Forgot Password\"",
+        ))
+        .stdout(predicate::str::contains(
+            "\"wrapper_name\": \"accountForgetPassword\"",
+        ));
+
+    grapha()
+        .args([
+            "usages",
+            "account_forget_password",
+            "--table",
+            "Localizable",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"name\": \"body\""))
+        .stdout(predicate::str::contains("\"name\": \"Text\""))
+        .stdout(predicate::str::contains(
+            "\"wrapper_name\": \"accountForgetPassword\"",
+        ));
+}
+
+#[test]
+fn usages_groups_duplicate_keys_across_catalogs() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+
+    std::fs::write(
+        dir.path().join("ContentView.swift"),
+        r#"
+        import SwiftUI
+
+        struct ContentView: View {
+            var body: some View {
+                VStack {
+                    Text(.sharedTitle)
+                }
+            }
+        }
+        "#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        dir.path().join("Strings.generated.swift"),
+        r#"
+        import Foundation
+
+        public enum L10n {
+            public static var sharedTitle: String {
+                L10n.tr("Localizable", "shared_title", fallback: "Shared")
+            }
+
+            private static func tr(_ table: String, _ key: String, fallback: String) -> String {
+                fallback
+            }
+        }
+        "#,
+    )
+    .unwrap();
+
+    write_localizable_fixture(
+        &dir.path().join("Localizable.xcstrings"),
+        "shared_title",
+        "Shared",
+        "Default catalog",
+    );
+    write_localizable_fixture(
+        &dir.path().join("Alternate.xcstrings"),
+        "shared_title",
+        "Shared Alt",
+        "Alternate catalog",
+    );
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    grapha()
+        .args(["usages", "shared_title", "-p", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"table\": \"Localizable\""))
+        .stdout(predicate::str::contains("\"table\": \"Alternate\""));
 }
 
 #[test]

@@ -4,7 +4,8 @@ use std::sync::OnceLock;
 use libloading::Library;
 
 type IndexStoreOpenFn = unsafe extern "C" fn(*const i8) -> *mut std::ffi::c_void;
-type IndexStoreExtractFn = unsafe extern "C" fn(*mut std::ffi::c_void, *const i8, *mut u32) -> *const u8;
+type IndexStoreExtractFn =
+    unsafe extern "C" fn(*mut std::ffi::c_void, *const i8, *mut u32) -> *const u8;
 type IndexStoreCloseFn = unsafe extern "C" fn(*mut std::ffi::c_void);
 type SwiftSyntaxExtractFn = unsafe extern "C" fn(*const i8, usize, *const i8) -> *const i8;
 type FreeStringFn = unsafe extern "C" fn(*mut i8);

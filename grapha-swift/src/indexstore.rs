@@ -39,9 +39,8 @@ pub fn extract_from_indexstore(
 
     let file_path_c = CString::new(file_path.to_str()?).ok()?;
     let mut buf_len: u32 = 0;
-    let buf_ptr = unsafe {
-        (bridge.indexstore_extract)(handle, file_path_c.as_ptr(), &mut buf_len)
-    };
+    let buf_ptr =
+        unsafe { (bridge.indexstore_extract)(handle, file_path_c.as_ptr(), &mut buf_len) };
 
     if buf_ptr.is_null() || buf_len == 0 {
         return None;
