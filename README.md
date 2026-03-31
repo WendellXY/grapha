@@ -37,6 +37,9 @@ grapha search sendMessage
 # 360° context for a symbol
 grapha context sendMessage
 
+# Human-readable tree output for graph queries
+grapha reverse handleSendResult --format tree
+
 # Impact analysis: what breaks if this changes?
 grapha impact bootstrapGame --depth 5
 
@@ -80,6 +83,7 @@ grapha analyze src/ -o graph.json      # Write to file
 ```bash
 grapha context Config                  # Callers, callees, implements
 grapha context bootstrapGame           # Fuzzy name matching
+grapha context bootstrapGame --format tree
 ```
 
 ### `grapha impact` — Blast radius
@@ -87,6 +91,7 @@ grapha context bootstrapGame           # Fuzzy name matching
 ```bash
 grapha impact bootstrapGame            # Who depends on this?
 grapha impact bootstrapGame --depth 5  # Deeper traversal
+grapha impact bootstrapGame --format tree
 ```
 
 ### `grapha trace` — Forward dataflow
@@ -94,18 +99,21 @@ grapha impact bootstrapGame --depth 5  # Deeper traversal
 ```bash
 grapha trace bootstrapGame             # Entry → service → terminal ops
 grapha trace sendMessage --depth 10
+grapha trace bootstrapGame --format tree
 ```
 
 ### `grapha reverse` — Entry point impact
 
 ```bash
 grapha reverse handleSendResult        # Which Views/entry points reach this?
+grapha reverse handleSendResult --format tree
 ```
 
 ### `grapha entries` — List entry points
 
 ```bash
 grapha entries                         # All detected entry points
+grapha entries --format tree
 ```
 
 ### `grapha search` — Full-text search

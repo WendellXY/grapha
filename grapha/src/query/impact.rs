@@ -2,9 +2,15 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::Serialize;
 
-use grapha_core::graph::{EdgeKind, Graph};
+use grapha_core::graph::{EdgeKind, Graph, Node};
 
 use super::{QueryResolveError, SymbolRef};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImpactTreeNode {
+    pub symbol: SymbolRef,
+    pub children: Vec<ImpactTreeNode>,
+}
 
 #[derive(Debug, Serialize)]
 pub struct ImpactResult {
@@ -13,6 +19,56 @@ pub struct ImpactResult {
     pub depth_2: Vec<SymbolRef>,
     pub depth_3_plus: Vec<SymbolRef>,
     pub total_affected: usize,
+    #[serde(skip)]
+    pub(crate) source_ref: SymbolRef,
+    #[serde(skip)]
+    pub(crate) tree: ImpactTreeNode,
+}
+
+fn to_symbol_ref(node: &Node) -> SymbolRef {
+    SymbolRef {
+        id: node.id.clone(),
+        name: node.name.clone(),
+        kind: node.kind,
+        file: node.file.to_string_lossy().to_string(),
+    }
+}
+
+fn cmp_node_ids<'a>(
+    left: &&'a str,
+    right: &&'a str,
+    node_index: &HashMap<&'a str, &'a Node>,
+) -> std::cmp::Ordering {
+    match (node_index.get(*left), node_index.get(*right)) {
+        (Some(left_node), Some(right_node)) => left_node
+            .name
+            .cmp(&right_node.name)
+            .then_with(|| left_node.file.cmp(&right_node.file))
+            .then_with(|| left_node.id.cmp(&right_node.id)),
+        _ => left.cmp(right),
+    }
+}
+
+fn build_impact_tree<'a>(
+    node_id: &'a str,
+    node_index: &HashMap<&'a str, &'a Node>,
+    children_by_parent: &HashMap<&'a str, Vec<&'a str>>,
+) -> ImpactTreeNode {
+    let node = node_index
+        .get(node_id)
+        .copied()
+        .expect("tree nodes must exist in the node index");
+    let children = children_by_parent
+        .get(node_id)
+        .into_iter()
+        .flat_map(|children| children.iter().copied())
+        .map(|child_id| build_impact_tree(child_id, node_index, children_by_parent))
+        .collect();
+
+    ImpactTreeNode {
+        symbol: to_symbol_ref(node),
+        children,
+    }
 }
 
 pub fn query_impact(
@@ -37,6 +93,9 @@ pub fn query_impact(
                 .push(&edge.source);
         }
     }
+    for dependents in reverse_adj.values_mut() {
+        dependents.sort_unstable_by(|left, right| cmp_node_ids(left, right, &node_index));
+    }
 
     let mut visited: HashSet<&str> = HashSet::new();
     visited.insert(&node.id);
@@ -44,6 +103,7 @@ pub fn query_impact(
     let mut depth_1 = Vec::new();
     let mut depth_2 = Vec::new();
     let mut depth_3_plus = Vec::new();
+    let mut parents: HashMap<&str, &str> = HashMap::new();
 
     let mut queue: VecDeque<(&str, usize)> = VecDeque::new();
     queue.push_back((&node.id, 0));
@@ -59,12 +119,8 @@ pub fn query_impact(
                 }
                 visited.insert(dep_id);
                 if let Some(dep_node) = node_index.get(dep_id) {
-                    let sym_ref = SymbolRef {
-                        id: dep_node.id.clone(),
-                        name: dep_node.name.clone(),
-                        kind: dep_node.kind,
-                        file: dep_node.file.to_string_lossy().to_string(),
-                    };
+                    parents.insert(dep_id, current);
+                    let sym_ref = to_symbol_ref(dep_node);
                     match depth + 1 {
                         1 => depth_1.push(sym_ref),
                         2 => depth_2.push(sym_ref),
@@ -77,12 +133,24 @@ pub fn query_impact(
     }
 
     let total = depth_1.len() + depth_2.len() + depth_3_plus.len();
+    let mut children_by_parent: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (child, parent) in parents {
+        children_by_parent.entry(parent).or_default().push(child);
+    }
+    for children in children_by_parent.values_mut() {
+        children.sort_unstable_by(|left, right| cmp_node_ids(left, right, &node_index));
+    }
+    let source_ref = to_symbol_ref(node);
+    let tree = build_impact_tree(&node.id, &node_index, &children_by_parent);
+
     Ok(ImpactResult {
         source: node.id.clone(),
         depth_1,
         depth_2,
         depth_3_plus,
         total_affected: total,
+        source_ref,
+        tree,
     })
 }
 
@@ -175,5 +243,76 @@ mod tests {
             query_impact(&graph, "z", 5),
             Err(QueryResolveError::NotFound { .. })
         ));
+    }
+
+    #[test]
+    fn impact_tree_reflects_bfs_parentage() {
+        let graph = make_chain_graph();
+        let result = query_impact(&graph, "d", 5).unwrap();
+
+        assert_eq!(result.source_ref.name, "d");
+        assert_eq!(result.tree.symbol.name, "d");
+        assert_eq!(result.tree.children.len(), 1);
+        assert_eq!(result.tree.children[0].symbol.name, "c");
+        assert_eq!(result.tree.children[0].children[0].symbol.name, "b");
+        assert_eq!(
+            result.tree.children[0].children[0].children[0].symbol.name,
+            "a"
+        );
+    }
+
+    #[test]
+    fn impact_tree_is_deterministic_when_multiple_dependents_exist() {
+        let mk = |id: &str| Node {
+            id: id.into(),
+            kind: NodeKind::Function,
+            name: id.into(),
+            file: "test.rs".into(),
+            span: Span {
+                start: [0, 0],
+                end: [1, 0],
+            },
+            visibility: Visibility::Public,
+            metadata: StdHashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+        };
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![mk("alpha"), mk("beta"), mk("source")],
+            edges: vec![
+                Edge {
+                    source: "beta".into(),
+                    target: "source".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                },
+                Edge {
+                    source: "alpha".into(),
+                    target: "source".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                },
+            ],
+        };
+
+        let result = query_impact(&graph, "source", 5).unwrap();
+        let child_names: Vec<_> = result
+            .tree
+            .children
+            .iter()
+            .map(|child| child.symbol.name.as_str())
+            .collect();
+        assert_eq!(child_names, vec!["alpha", "beta"]);
     }
 }

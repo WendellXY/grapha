@@ -10,6 +10,7 @@ mod merge;
 mod module;
 mod progress;
 mod query;
+mod render;
 mod search;
 mod serve;
 mod store;
@@ -18,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{Context, anyhow};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use store::Store;
 
@@ -31,6 +32,12 @@ use store::Store;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum QueryOutputFormat {
+    Json,
+    Tree,
 }
 
 #[derive(Subcommand)]
@@ -67,6 +74,9 @@ enum Commands {
         /// Project directory (reads from .grapha/)
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
+        format: QueryOutputFormat,
     },
     /// Analyze blast radius of changing a symbol
     Impact {
@@ -78,6 +88,9 @@ enum Commands {
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
+        format: QueryOutputFormat,
     },
     /// Detect code changes and analyze their impact
     Changes {
@@ -109,6 +122,9 @@ enum Commands {
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
+        format: QueryOutputFormat,
     },
     /// Reverse query: which entry points are affected by this symbol?
     Reverse {
@@ -117,12 +133,18 @@ enum Commands {
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
+        format: QueryOutputFormat,
     },
     /// List auto-detected entry points
     Entries {
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
+        format: QueryOutputFormat,
     },
     /// Launch web UI for interactive graph exploration
     Serve {
@@ -447,23 +469,34 @@ fn main() -> anyhow::Result<()> {
                 total_start.elapsed().as_secs_f64(),
             ));
         }
-        Commands::Context { symbol, path } => {
+        Commands::Context {
+            symbol,
+            path,
+            format,
+        } => {
             let graph = load_graph(&path)?;
             let result =
                 resolve_query_result(query::context::query_context(&graph, &symbol), "symbol")?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            match format {
+                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
+                QueryOutputFormat::Tree => println!("{}", render::render_context(&result)),
+            }
         }
         Commands::Impact {
             symbol,
             depth,
             path,
+            format,
         } => {
             let graph = load_graph(&path)?;
             let result = resolve_query_result(
                 query::impact::query_impact(&graph, &symbol, depth),
                 "symbol",
             )?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            match format {
+                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
+                QueryOutputFormat::Tree => println!("{}", render::render_impact(&result)),
+            }
         }
         Commands::Changes { scope, path } => {
             let graph = load_graph(&path)?;
@@ -486,24 +519,42 @@ fn main() -> anyhow::Result<()> {
             let results = search::search(&index, &q, limit)?;
             println!("{}", serde_json::to_string_pretty(&results)?);
         }
-        Commands::Trace { entry, depth, path } => {
+        Commands::Trace {
+            entry,
+            depth,
+            path,
+            format,
+        } => {
             let graph = load_graph(&path)?;
             let result = resolve_query_result(
                 query::trace::query_trace(&graph, &entry, depth),
                 "entry point",
             )?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            match format {
+                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
+                QueryOutputFormat::Tree => println!("{}", render::render_trace(&result)),
+            }
         }
-        Commands::Reverse { symbol, path } => {
+        Commands::Reverse {
+            symbol,
+            path,
+            format,
+        } => {
             let graph = load_graph(&path)?;
             let result =
                 resolve_query_result(query::reverse::query_reverse(&graph, &symbol), "symbol")?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            match format {
+                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
+                QueryOutputFormat::Tree => println!("{}", render::render_reverse(&result)),
+            }
         }
-        Commands::Entries { path } => {
+        Commands::Entries { path, format } => {
             let graph = load_graph(&path)?;
             let result = query::entries::query_entries(&graph);
-            println!("{}", serde_json::to_string_pretty(&result)?);
+            match format {
+                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
+                QueryOutputFormat::Tree => println!("{}", render::render_entries(&result)),
+            }
         }
         Commands::Serve { path, port } => {
             let graph = load_graph(&path)?;

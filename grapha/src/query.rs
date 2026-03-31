@@ -168,7 +168,7 @@ pub struct ContextResult {
     pub type_refs: Vec<SymbolRef>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SymbolInfo {
     pub id: String,
     pub name: String,
@@ -177,7 +177,7 @@ pub struct SymbolInfo {
     pub span: [usize; 2],
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SymbolRef {
     pub id: String,
     pub name: String,

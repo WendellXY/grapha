@@ -11,6 +11,8 @@ pub struct ReverseResult {
     pub symbol: String,
     pub affected_entries: Vec<AffectedEntry>,
     pub total_entries: usize,
+    #[serde(skip)]
+    pub(crate) target_ref: SymbolRef,
 }
 
 #[derive(Debug, Serialize)]
@@ -298,6 +300,7 @@ pub fn query_reverse(graph: &Graph, symbol: &str) -> Result<ReverseResult, Query
         symbol: target_node.id.clone(),
         affected_entries,
         total_entries,
+        target_ref: to_symbol_ref(target_node),
     })
 }
 

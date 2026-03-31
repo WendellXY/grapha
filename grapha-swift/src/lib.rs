@@ -138,7 +138,9 @@ pub fn extract_swift(
                 .unwrap_or_else(|_| file_path.to_path_buf())
         };
         let canonical_file = std::fs::canonicalize(&abs_file).unwrap_or(abs_file);
-        if let Some(result) = indexstore::extract_from_indexstore(&canonical_file, store_path) {
+        if let Some(mut result) = indexstore::extract_from_indexstore(&canonical_file, store_path) {
+            // Index store doesn't provide doc comments — enrich via tree-sitter.
+            let _ = treesitter::enrich_doc_comments(source, &mut result);
             return Ok(result);
         }
     }

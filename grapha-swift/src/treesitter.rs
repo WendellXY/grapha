@@ -901,6 +901,86 @@ fn extract_swift_signature(node: tree_sitter::Node, source: &[u8]) -> Option<Str
     }
 }
 
+/// Enrich an existing `ExtractionResult` (e.g. from the index store) with doc
+/// comments extracted via tree-sitter.  The index store does not provide doc
+/// comments, so we do a lightweight tree-sitter parse and match nodes by
+/// `(name, start_line)`.
+///
+/// Index store lines are **1-based**; tree-sitter rows are **0-based**, so we
+/// compare with `row + 1`.
+pub fn enrich_doc_comments(source: &[u8], result: &mut ExtractionResult) -> anyhow::Result<()> {
+    let mut parser = Parser::new();
+    parser.set_language(&tree_sitter_swift::LANGUAGE.into())?;
+    let tree = parser
+        .parse(source, None)
+        .ok_or_else(|| anyhow::anyhow!("tree-sitter failed to parse Swift source"))?;
+
+    // Collect (name, 1-based line) → doc_comment from tree-sitter AST.
+    let mut doc_map: HashMap<(String, usize), String> = HashMap::new();
+    collect_doc_comments(tree.root_node(), source, &mut doc_map);
+
+    // Patch nodes that are missing a doc_comment.
+    for node in &mut result.nodes {
+        if node.doc_comment.is_some() {
+            continue;
+        }
+        let line_1based = node.span.start[0];
+        if let Some(doc) = doc_map.remove(&(node.name.clone(), line_1based)) {
+            node.doc_comment = Some(doc);
+        }
+    }
+
+    Ok(())
+}
+
+/// Recursively walk the tree-sitter AST and collect doc comments for every
+/// declaration that has one.  Results are keyed by `(name, 1-based line)`.
+fn collect_doc_comments(
+    node: tree_sitter::Node,
+    source: &[u8],
+    out: &mut HashMap<(String, usize), String>,
+) {
+    match node.kind() {
+        "class_declaration" | "protocol_declaration" => {
+            if let Some(name) = type_identifier_text(node, source) {
+                if let Some(doc) = extract_swift_doc_comment(node, source) {
+                    out.insert((name, node.start_position().row + 1), doc);
+                }
+            }
+        }
+        "function_declaration"
+        | "init_declaration"
+        | "deinit_declaration"
+        | "protocol_function_declaration" => {
+            let name = if node.kind() == "init_declaration" {
+                Some("init".to_string())
+            } else if node.kind() == "deinit_declaration" {
+                Some("deinit".to_string())
+            } else {
+                simple_identifier_text(node, source)
+            };
+            if let Some(name) = name {
+                if let Some(doc) = extract_swift_doc_comment(node, source) {
+                    out.insert((name, node.start_position().row + 1), doc);
+                }
+            }
+        }
+        "property_declaration" => {
+            if let Some(name) = find_pattern_name(node, source) {
+                if let Some(doc) = extract_swift_doc_comment(node, source) {
+                    out.insert((name, node.start_position().row + 1), doc);
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_doc_comments(child, source, out);
+    }
+}
+
 /// Extract doc comments from previous sibling comment nodes.
 fn extract_swift_doc_comment(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut comments = Vec::new();
@@ -1377,6 +1457,138 @@ mod tests {
         );
         let doc = node.doc_comment.as_ref().unwrap();
         assert!(doc.contains("documented"), "should contain comment text");
+    }
+
+    #[test]
+    fn extracts_doc_comment_with_attributes() {
+        let result = extract(
+            r#"
+            class GameManager {
+                /// Setup the initial running context and load the game scene, this method should be called when
+                /// the game view is appeared.
+                @MainActor public func bootstrapGame(with launchContext: WebGameLaunchContext) async {
+                }
+            }
+            "#,
+        );
+        let node = find_node(&result, "bootstrapGame");
+        assert!(
+            node.doc_comment.is_some(),
+            "doc_comment should be extracted for method with @MainActor attribute"
+        );
+        let doc = node.doc_comment.as_ref().unwrap();
+        assert!(
+            doc.contains("Setup the initial running context"),
+            "should contain comment text, got: {}",
+            doc
+        );
+    }
+
+    #[test]
+    fn enrich_doc_comments_patches_missing_docs() {
+        let source = br#"
+class GameManager {
+    /// Setup the initial running context and load the game scene.
+    /// This method should be called when the game view is appeared.
+    @MainActor public func bootstrapGame(with launchContext: WebGameLaunchContext) async {
+    }
+
+    /// Returns the current score.
+    var score: Int { 0 }
+}
+"#;
+        // Simulate index-store output: correct names and 1-based lines, no doc comments.
+        let mut result = ExtractionResult::new();
+        result.nodes.push(Node {
+            id: "s:GameManager".into(),
+            kind: NodeKind::Struct,
+            name: "GameManager".into(),
+            file: "test.swift".into(),
+            span: Span {
+                start: [1, 0],
+                end: [1, 0],
+            },
+            visibility: Visibility::Public,
+            metadata: HashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+        });
+        result.nodes.push(Node {
+            id: "s:GameManager.bootstrapGame".into(),
+            kind: NodeKind::Function,
+            name: "bootstrapGame".into(),
+            file: "test.swift".into(),
+            span: Span {
+                start: [5, 4],
+                end: [5, 4],
+            },
+            visibility: Visibility::Public,
+            metadata: HashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+        });
+        result.nodes.push(Node {
+            id: "s:GameManager.score".into(),
+            kind: NodeKind::Property,
+            name: "score".into(),
+            file: "test.swift".into(),
+            span: Span {
+                start: [9, 4],
+                end: [9, 4],
+            },
+            visibility: Visibility::Public,
+            metadata: HashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+        });
+
+        enrich_doc_comments(source, &mut result).unwrap();
+
+        let game_mgr = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "GameManager")
+            .unwrap();
+        // class_declaration on line 1 (0-based row 1 → 1-based line 2 actually)
+        // Let's just check the function and property which are the real targets.
+
+        let bootstrap = result
+            .nodes
+            .iter()
+            .find(|n| n.name == "bootstrapGame")
+            .unwrap();
+        assert!(
+            bootstrap.doc_comment.is_some(),
+            "bootstrapGame should have doc_comment after enrichment"
+        );
+        assert!(
+            bootstrap
+                .doc_comment
+                .as_ref()
+                .unwrap()
+                .contains("Setup the initial running context"),
+            "doc should contain expected text"
+        );
+
+        let score = result.nodes.iter().find(|n| n.name == "score").unwrap();
+        assert!(
+            score.doc_comment.is_some(),
+            "score property should have doc_comment after enrichment"
+        );
+        assert!(
+            score
+                .doc_comment
+                .as_ref()
+                .unwrap()
+                .contains("current score"),
+            "doc should contain expected text"
+        );
     }
 
     #[test]

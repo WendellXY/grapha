@@ -24,6 +24,9 @@ grapha search Config
 # 获取符号的 360° 上下文
 grapha context Config
 
+# 图查询的人类可读树形输出
+grapha reverse Config --format tree
+
 # 分析变更的影响范围
 grapha impact Config --depth 3
 
@@ -56,6 +59,7 @@ grapha index . --store-dir /tmp/idx    # 自定义存储位置
 ```bash
 grapha context Config           # 调用者、被调用者、实现者
 grapha context Config -p /path/to/project
+grapha context Config --format tree
 ```
 
 ### `grapha impact` — 影响范围分析
@@ -63,6 +67,7 @@ grapha context Config -p /path/to/project
 ```bash
 grapha impact Config            # 如果 Config 变更，谁会受影响？
 grapha impact Config --depth 5  # 更深层遍历
+grapha impact Config --format tree
 ```
 
 ### `grapha search` — BM25 全文搜索
