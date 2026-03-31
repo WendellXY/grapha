@@ -687,7 +687,7 @@ fn main() -> anyhow::Result<()> {
                     } else {
                         s.save_incremental(previous_graph.as_ref(), &graph)?
                     };
-                    Ok::<_, anyhow::Error>((t, stats))
+                    Ok::<_, anyhow::Error>((t.elapsed(), stats))
                 });
 
                 let search_handle = scope.spawn(|| {
@@ -698,14 +698,14 @@ fn main() -> anyhow::Result<()> {
                         &search_index_path,
                         full_rebuild,
                     )?;
-                    Ok::<_, anyhow::Error>((t, stats))
+                    Ok::<_, anyhow::Error>((t.elapsed(), stats))
                 });
 
                 let localization_handle = scope.spawn(|| {
                     let t = Instant::now();
                     let stats =
                         localization::build_and_save_catalog_snapshot(&index_root, &store_path)?;
-                    Ok::<_, anyhow::Error>((t, stats))
+                    Ok::<_, anyhow::Error>((t.elapsed(), stats))
                 });
 
                 let save = save_handle.join().expect("save thread panicked")?;
@@ -715,27 +715,30 @@ fn main() -> anyhow::Result<()> {
                     .expect("localization thread panicked")?;
                 Ok::<_, anyhow::Error>((save, search, localization))
             });
-            let ((save_t, save_stats), (search_t, search_stats), (localize_t, localize_stats)) =
-                save_result?;
-            progress::done(
+            let (
+                (save_elapsed, save_stats),
+                (search_elapsed, search_stats),
+                (localize_elapsed, localize_stats),
+            ) = save_result?;
+            progress::done_elapsed(
                 &format!(
                     "saved to {} ({}; {})",
                     store_path.display(),
                     format,
                     save_stats.summary()
                 ),
-                save_t,
+                save_elapsed,
             );
-            progress::done(
+            progress::done_elapsed(
                 &format!("built search index ({})", search_stats.summary()),
-                search_t,
+                search_elapsed,
             );
-            progress::done(
+            progress::done_elapsed(
                 &format!(
                     "saved localization snapshot ({} records)",
                     localize_stats.record_count
                 ),
-                localize_t,
+                localize_elapsed,
             );
             for warning in &localize_stats.warnings {
                 eprintln!(

@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -17,7 +17,11 @@ pub fn bar(len: u64, msg: &str) -> ProgressBar {
 
 /// Print a completed step with elapsed time.
 pub fn done(msg: &str, start: Instant) {
-    let elapsed = start.elapsed();
+    done_elapsed(msg, start.elapsed());
+}
+
+/// Print a completed step with a precomputed elapsed duration.
+pub fn done_elapsed(msg: &str, elapsed: Duration) {
     if elapsed.as_secs() >= 1 {
         eprintln!("  \x1b[32m✓\x1b[0m {} ({:.1}s)", msg, elapsed.as_secs_f64());
     } else {
