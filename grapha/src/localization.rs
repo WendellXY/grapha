@@ -56,6 +56,18 @@ impl LocalizationSnapshot {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalizationSnapshotWarning {
+    pub catalog_file: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalizationSnapshotBuildStats {
+    pub record_count: usize,
+    pub warnings: Vec<LocalizationSnapshotWarning>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LocalizationReference {
     pub ref_kind: String,
@@ -153,11 +165,17 @@ impl LocalizationCatalogIndex {
     }
 }
 
-pub fn build_and_save_catalog_snapshot(root: &Path, store_dir: &Path) -> anyhow::Result<usize> {
-    let snapshot = build_catalog_snapshot(root)?;
+pub fn build_and_save_catalog_snapshot(
+    root: &Path,
+    store_dir: &Path,
+) -> anyhow::Result<LocalizationSnapshotBuildStats> {
+    let (snapshot, warnings) = build_catalog_snapshot(root)?;
     let count = snapshot.record_count();
     save_catalog_snapshot(store_dir, &snapshot)?;
-    Ok(count)
+    Ok(LocalizationSnapshotBuildStats {
+        record_count: count,
+        warnings,
+    })
 }
 
 pub fn load_catalog_index(project_root: &Path) -> anyhow::Result<LocalizationCatalogIndex> {
@@ -171,19 +189,29 @@ pub(crate) fn load_catalog_index_from_store(
     Ok(LocalizationCatalogIndex::from_records(snapshot.records))
 }
 
-fn build_catalog_snapshot(root: &Path) -> anyhow::Result<LocalizationSnapshot> {
+fn build_catalog_snapshot(
+    root: &Path,
+) -> anyhow::Result<(LocalizationSnapshot, Vec<LocalizationSnapshotWarning>)> {
     if root.is_file() {
-        return Ok(LocalizationSnapshot::new(Vec::new()));
+        return Ok((LocalizationSnapshot::new(Vec::new()), Vec::new()));
     }
 
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let files = crate::discover::discover_files(&root, &["xcstrings"])?;
     let mut records = Vec::new();
+    let mut warnings = Vec::new();
     for file in files {
         let mut codec = Codec::new();
-        codec
+        if let Err(error) = codec
             .read_file_by_extension(&file, None)
-            .with_context(|| format!("failed to read xcstrings catalog {}", file.display()))?;
+            .with_context(|| format!("failed to read xcstrings catalog {}", file.display()))
+        {
+            warnings.push(LocalizationSnapshotWarning {
+                catalog_file: path_to_snapshot_string(&path_relative_to_root(&root, &file)),
+                reason: error.to_string(),
+            });
+            continue;
+        }
 
         let Some(source_resource) = source_resource_for_codec(&codec) else {
             continue;
@@ -217,7 +245,7 @@ fn build_catalog_snapshot(root: &Path) -> anyhow::Result<LocalizationSnapshot> {
         }
     }
 
-    Ok(LocalizationSnapshot::new(records))
+    Ok((LocalizationSnapshot::new(records), warnings))
 }
 
 fn save_catalog_snapshot(store_dir: &Path, snapshot: &LocalizationSnapshot) -> anyhow::Result<()> {
@@ -558,8 +586,9 @@ mod tests {
         )
         .unwrap();
 
-        let count = build_and_save_catalog_snapshot(dir.path(), &store_dir).unwrap();
-        assert_eq!(count, 1);
+        let stats = build_and_save_catalog_snapshot(dir.path(), &store_dir).unwrap();
+        assert_eq!(stats.record_count, 1);
+        assert!(stats.warnings.is_empty());
         assert!(store_dir.join("localization.json").exists());
 
         let index = load_catalog_index_from_store(&store_dir).unwrap();
@@ -593,6 +622,59 @@ mod tests {
                 .contains("unsupported localization snapshot version"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn skips_invalid_xcstrings_catalogs_and_keeps_valid_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_dir = dir.path().join(".grapha");
+        fs::write(
+            dir.path().join("Localizable.xcstrings"),
+            r#"{
+              "sourceLanguage" : "en",
+              "strings" : {
+                "welcome_title" : {
+                  "localizations" : {
+                    "en" : {
+                      "stringUnit" : {
+                        "state" : "translated",
+                        "value" : "Welcome"
+                      }
+                    }
+                  }
+                }
+              },
+              "version" : "1.0"
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("Broken.xcstrings"),
+            r#"{
+              "sourceLanguage" : "en",
+              "strings" : {
+                "broken" : {},
+              },
+              "version" : "1.0"
+            }"#,
+        )
+        .unwrap();
+
+        let stats = build_and_save_catalog_snapshot(dir.path(), &store_dir).unwrap();
+        assert_eq!(stats.record_count, 1);
+        assert_eq!(stats.warnings.len(), 1);
+        assert_eq!(stats.warnings[0].catalog_file, "Broken.xcstrings");
+        assert!(
+            stats.warnings[0]
+                .reason
+                .contains("failed to read xcstrings catalog"),
+            "unexpected warning: {}",
+            stats.warnings[0].reason
+        );
+
+        let index = load_catalog_index_from_store(&store_dir).unwrap();
+        let records = index.records_for("Localizable", "welcome_title");
+        assert_eq!(records.len(), 1);
     }
 
     #[test]

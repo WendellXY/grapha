@@ -233,6 +233,56 @@ fn index_json_format() {
 }
 
 #[test]
+fn index_skips_invalid_xcstrings_catalogs() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+
+    std::fs::write(
+        dir.path().join("ContentView.swift"),
+        r#"
+        import SwiftUI
+
+        struct ContentView: View {
+            var body: some View { Text("Hello") }
+        }
+        "#,
+    )
+    .unwrap();
+    write_localizable_fixture(
+        &dir.path().join("Localizable.xcstrings"),
+        "hello",
+        "Hello",
+        "Greeting",
+    );
+    std::fs::write(
+        dir.path().join("Broken.xcstrings"),
+        r#"{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "broken" : {},
+  },
+  "version" : "1.0"
+}"#,
+    )
+    .unwrap();
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "skipped invalid localization catalog Broken.xcstrings",
+        ));
+
+    assert!(store_dir.join("localization.json").exists());
+}
+
+#[test]
 fn localize_and_usages_commands_resolve_swiftui_xcstrings() {
     let dir = tempfile::tempdir().unwrap();
     let store_dir = dir.path().join(".grapha");

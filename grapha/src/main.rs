@@ -703,9 +703,9 @@ fn main() -> anyhow::Result<()> {
 
                 let localization_handle = scope.spawn(|| {
                     let t = Instant::now();
-                    let count =
+                    let stats =
                         localization::build_and_save_catalog_snapshot(&index_root, &store_path)?;
-                    Ok::<_, anyhow::Error>((t, count))
+                    Ok::<_, anyhow::Error>((t, stats))
                 });
 
                 let save = save_handle.join().expect("save thread panicked")?;
@@ -715,7 +715,7 @@ fn main() -> anyhow::Result<()> {
                     .expect("localization thread panicked")?;
                 Ok::<_, anyhow::Error>((save, search, localization))
             });
-            let ((save_t, save_stats), (search_t, search_stats), (localize_t, localize_count)) =
+            let ((save_t, save_stats), (search_t, search_stats), (localize_t, localize_stats)) =
                 save_result?;
             progress::done(
                 &format!(
@@ -731,9 +731,18 @@ fn main() -> anyhow::Result<()> {
                 search_t,
             );
             progress::done(
-                &format!("saved localization snapshot ({} records)", localize_count),
+                &format!(
+                    "saved localization snapshot ({} records)",
+                    localize_stats.record_count
+                ),
                 localize_t,
             );
+            for warning in &localize_stats.warnings {
+                eprintln!(
+                    "  \x1b[33m!\x1b[0m skipped invalid localization catalog {}: {}",
+                    warning.catalog_file, warning.reason
+                );
+            }
 
             progress::summary(&format!(
                 "\n  {} nodes, {} edges indexed in {:.1}s",
