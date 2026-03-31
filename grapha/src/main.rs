@@ -2,6 +2,7 @@ mod changes;
 mod classify;
 mod compress;
 mod config;
+mod delta;
 mod discover;
 mod error;
 mod extract;
@@ -66,6 +67,9 @@ enum Commands {
         /// Storage directory (default: .grapha/ in project root)
         #[arg(long)]
         store_dir: Option<PathBuf>,
+        /// Force a full store/search rebuild instead of using incremental sync
+        #[arg(long)]
+        full_rebuild: bool,
     },
     /// Query symbol context (callers, callees, implementors)
     Context {
@@ -352,6 +356,45 @@ fn load_graph(path: &Path) -> anyhow::Result<grapha_core::graph::Graph> {
         .context("no index found — run `grapha index` first")
 }
 
+fn store_file_path(format: &str, store_path: &Path) -> anyhow::Result<PathBuf> {
+    match format {
+        "json" => Ok(store_path.join("graph.json")),
+        "sqlite" => Ok(store_path.join("grapha.db")),
+        other => Err(anyhow!("unknown store format: {other}")),
+    }
+}
+
+fn build_store(format: &str, store_path: &Path) -> anyhow::Result<Box<dyn store::Store + Send>> {
+    Ok(match format {
+        "json" => Box::new(store::json::JsonStore::new(store_path.join("graph.json"))),
+        "sqlite" => Box::new(store::sqlite::SqliteStore::new(
+            store_path.join("grapha.db"),
+        )),
+        other => anyhow::bail!("unknown store format: {other}"),
+    })
+}
+
+fn load_existing_graph(
+    format: &str,
+    store_path: &Path,
+) -> anyhow::Result<Option<grapha_core::graph::Graph>> {
+    let store_file = store_file_path(format, store_path)?;
+    if !store_file.exists() {
+        return Ok(None);
+    }
+
+    let store = build_store(format, store_path)?;
+    match store.load() {
+        Ok(graph) => Ok(Some(graph)),
+        Err(error) => {
+            eprintln!(
+                "  \x1b[33m!\x1b[0m failed to load existing store, falling back to full rebuild: {error}"
+            );
+            Ok(None)
+        }
+    }
+}
+
 fn kind_label(kind: grapha_core::graph::NodeKind) -> String {
     serde_json::to_string(&kind)
         .unwrap_or_else(|_| format!("{kind:?}"))
@@ -435,6 +478,7 @@ fn main() -> anyhow::Result<()> {
             path,
             format,
             store_dir,
+            full_rebuild,
         } => {
             let total_start = Instant::now();
             let store_path = store_dir.unwrap_or_else(|| path.join(".grapha"));
@@ -443,40 +487,61 @@ fn main() -> anyhow::Result<()> {
             std::fs::create_dir_all(&store_path)
                 .with_context(|| format!("failed to create store dir {}", store_path.display()))?;
 
-            // Run SQLite save and search index build in parallel — they're independent
+            let previous_graph = if full_rebuild {
+                None
+            } else {
+                load_existing_graph(&format, &store_path)?
+            };
+
+            // Run store sync and search sync in parallel — they're independent
             let search_index_path = store_path.join("search_index");
             let save_result = std::thread::scope(|scope| {
                 let save_handle = scope.spawn(|| {
                     let t = Instant::now();
-                    let s: Box<dyn store::Store + Send> = match format.as_str() {
-                        "json" => {
-                            Box::new(store::json::JsonStore::new(store_path.join("graph.json")))
-                        }
-                        "sqlite" => Box::new(store::sqlite::SqliteStore::new(
-                            store_path.join("grapha.db"),
-                        )),
-                        other => anyhow::bail!("unknown store format: {other}"),
+                    let s = build_store(&format, &store_path)?;
+                    let stats = if full_rebuild {
+                        let stats = store::StoreWriteStats::from_graphs(
+                            previous_graph.as_ref(),
+                            &graph,
+                            delta::SyncMode::FullRebuild,
+                        );
+                        s.save(&graph)?;
+                        stats
+                    } else {
+                        s.save_incremental(previous_graph.as_ref(), &graph)?
                     };
-                    s.save(&graph)?;
-                    Ok::<_, anyhow::Error>(t)
+                    Ok::<_, anyhow::Error>((t, stats))
                 });
 
                 let search_handle = scope.spawn(|| {
                     let t = Instant::now();
-                    search::build_index(&graph, &search_index_path)?;
-                    Ok::<_, anyhow::Error>(t)
+                    let stats = search::sync_index(
+                        previous_graph.as_ref(),
+                        &graph,
+                        &search_index_path,
+                        full_rebuild,
+                    )?;
+                    Ok::<_, anyhow::Error>((t, stats))
                 });
 
-                let save_t = save_handle.join().expect("save thread panicked")?;
-                let search_t = search_handle.join().expect("search thread panicked")?;
-                Ok::<_, anyhow::Error>((save_t, search_t))
+                let save = save_handle.join().expect("save thread panicked")?;
+                let search = search_handle.join().expect("search thread panicked")?;
+                Ok::<_, anyhow::Error>((save, search))
             });
-            let (save_t, search_t) = save_result?;
+            let ((save_t, save_stats), (search_t, search_stats)) = save_result?;
             progress::done(
-                &format!("saved to {} ({})", store_path.display(), format),
+                &format!(
+                    "saved to {} ({}; {})",
+                    store_path.display(),
+                    format,
+                    save_stats.summary()
+                ),
                 save_t,
             );
-            progress::done("built search index", search_t);
+            progress::done(
+                &format!("built search index ({})", search_stats.summary()),
+                search_t,
+            );
 
             progress::summary(&format!(
                 "\n  {} nodes, {} edges indexed in {:.1}s",

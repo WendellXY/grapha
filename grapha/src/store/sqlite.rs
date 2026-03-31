@@ -1,9 +1,12 @@
 use std::path::PathBuf;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
-use crate::store::Store;
+use crate::delta::{GraphDelta, edge_fingerprint};
+use crate::store::{Store, StoreWriteStats};
 use grapha_core::graph::{Edge, EdgeKind, Graph, Node, NodeKind, NodeRole, Span, Visibility};
+
+const STORE_SCHEMA_VERSION: &str = "2";
 
 pub struct SqliteStore {
     path: PathBuf,
@@ -55,6 +58,7 @@ impl SqliteStore {
                 module     TEXT
             );
             CREATE TABLE IF NOT EXISTS edges (
+                edge_id    TEXT PRIMARY KEY,
                 source     TEXT NOT NULL,
                 target     TEXT NOT NULL,
                 kind       TEXT NOT NULL,
@@ -73,6 +77,197 @@ impl SqliteStore {
             CREATE INDEX IF NOT EXISTS idx_nodes_role   ON nodes(role);
             CREATE INDEX IF NOT EXISTS idx_nodes_module ON nodes(module);",
         )?;
+        Ok(())
+    }
+
+    fn schema_version(conn: &Connection) -> anyhow::Result<Option<String>> {
+        let has_meta = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
+                [],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !has_meta {
+            return Ok(None);
+        }
+
+        Ok(conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'store_schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    fn write_meta(tx: &rusqlite::Transaction<'_>, graph: &Graph) -> anyhow::Result<()> {
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('version', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [&graph.version],
+        )?;
+        tx.execute(
+            "INSERT INTO meta (key, value) VALUES ('store_schema_version', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [STORE_SCHEMA_VERSION],
+        )?;
+        Ok(())
+    }
+
+    fn create_indexes(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
+             CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
+             CREATE INDEX IF NOT EXISTS idx_edges_kind   ON edges(kind);
+             CREATE INDEX IF NOT EXISTS idx_nodes_name   ON nodes(name);
+             CREATE INDEX IF NOT EXISTS idx_nodes_file   ON nodes(file);
+             CREATE INDEX IF NOT EXISTS idx_nodes_kind   ON nodes(kind);
+             CREATE INDEX IF NOT EXISTS idx_nodes_role   ON nodes(role);
+             CREATE INDEX IF NOT EXISTS idx_nodes_module ON nodes(module);",
+        )?;
+        Ok(())
+    }
+
+    fn insert_nodes(
+        tx: &rusqlite::Transaction<'_>,
+        nodes: &[Node],
+        replace: bool,
+    ) -> anyhow::Result<()> {
+        let verb = if replace {
+            "INSERT OR REPLACE"
+        } else {
+            "INSERT"
+        };
+        let sql = format!(
+            "{verb} INTO nodes (id, kind, name, file,
+                span_start_line, span_start_col, span_end_line, span_end_col,
+                visibility, metadata, role, signature, doc_comment, module)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"
+        );
+        let mut stmt = tx.prepare(&sql)?;
+        let empty_meta = "{}";
+        for node in nodes {
+            let role_json: Option<String> =
+                node.role.as_ref().map(serde_json::to_string).transpose()?;
+            let meta_str = if node.metadata.is_empty() {
+                empty_meta.to_string()
+            } else {
+                serde_json::to_string(&node.metadata)?
+            };
+            stmt.execute(rusqlite::params![
+                node.id,
+                node_kind_str(&node.kind),
+                node.name,
+                node.file.to_string_lossy().as_ref(),
+                node.span.start[0] as i64,
+                node.span.start[1] as i64,
+                node.span.end[0] as i64,
+                node.span.end[1] as i64,
+                visibility_str(&node.visibility),
+                meta_str,
+                role_json,
+                node.signature,
+                node.doc_comment,
+                node.module,
+            ])?;
+        }
+        Ok(())
+    }
+
+    fn insert_edges<'a>(
+        tx: &rusqlite::Transaction<'_>,
+        edges: impl Iterator<Item = (String, &'a Edge)>,
+        replace: bool,
+    ) -> anyhow::Result<()> {
+        let verb = if replace {
+            "INSERT OR REPLACE"
+        } else {
+            "INSERT"
+        };
+        let sql = format!(
+            "{verb} INTO edges (edge_id, source, target, kind, confidence,
+                direction, operation, condition, async_boundary)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
+        );
+        let mut stmt = tx.prepare(&sql)?;
+        for (edge_id, edge) in edges {
+            let direction_str: Option<String> =
+                edge.direction.as_ref().map(enum_to_str).transpose()?;
+            let async_boundary_int: Option<i64> =
+                edge.async_boundary.map(|b| if b { 1 } else { 0 });
+            stmt.execute(rusqlite::params![
+                edge_id,
+                edge.source,
+                edge.target,
+                edge_kind_str(&edge.kind),
+                edge.confidence,
+                direction_str,
+                edge.operation,
+                edge.condition,
+                async_boundary_int,
+            ])?;
+        }
+        Ok(())
+    }
+
+    fn save_full(&self, graph: &Graph) -> anyhow::Result<()> {
+        let conn = self.open_for_write()?;
+
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS edges;
+             DROP TABLE IF EXISTS nodes;
+             DROP TABLE IF EXISTS meta;",
+        )?;
+
+        conn.execute_batch(
+            "CREATE TABLE meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE nodes (
+                id         TEXT PRIMARY KEY,
+                kind       TEXT NOT NULL,
+                name       TEXT NOT NULL,
+                file       TEXT NOT NULL,
+                span_start_line   INTEGER NOT NULL,
+                span_start_col    INTEGER NOT NULL,
+                span_end_line     INTEGER NOT NULL,
+                span_end_col      INTEGER NOT NULL,
+                visibility TEXT NOT NULL,
+                metadata   TEXT NOT NULL,
+                role       TEXT,
+                signature  TEXT,
+                doc_comment TEXT,
+                module     TEXT
+            );
+            CREATE TABLE edges (
+                edge_id    TEXT PRIMARY KEY,
+                source     TEXT NOT NULL,
+                target     TEXT NOT NULL,
+                kind       TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                direction  TEXT,
+                operation  TEXT,
+                condition  TEXT,
+                async_boundary INTEGER
+            );",
+        )?;
+
+        let tx = conn.unchecked_transaction()?;
+        Self::write_meta(&tx, graph)?;
+        Self::insert_nodes(&tx, &graph.nodes, false)?;
+        Self::insert_edges(
+            &tx,
+            graph
+                .edges
+                .iter()
+                .map(|edge| (edge_fingerprint(edge), edge)),
+            false,
+        )?;
+        tx.commit()?;
+        Self::create_indexes(&conn)?;
         Ok(())
     }
 }
@@ -136,135 +331,71 @@ fn str_to_enum<T: serde::de::DeserializeOwned>(s: &str) -> anyhow::Result<T> {
 
 impl Store for SqliteStore {
     fn save(&self, graph: &Graph) -> anyhow::Result<()> {
+        self.save_full(graph)
+    }
+
+    fn save_incremental(
+        &self,
+        previous: Option<&Graph>,
+        graph: &Graph,
+    ) -> anyhow::Result<StoreWriteStats> {
+        let current_stats =
+            StoreWriteStats::from_graphs(previous, graph, crate::delta::SyncMode::Incremental);
+        let full_stats =
+            StoreWriteStats::from_graphs(previous, graph, crate::delta::SyncMode::FullRebuild);
+
         let conn = self.open_for_write()?;
+        let schema_version = Self::schema_version(&conn)?;
+        if previous.is_none() || schema_version.as_deref() != Some(STORE_SCHEMA_VERSION) {
+            drop(conn);
+            self.save_full(graph)?;
+            return Ok(full_stats);
+        }
 
-        // DROP + CREATE is instant vs DELETE FROM on 766K rows
-        conn.execute_batch(
-            "DROP TABLE IF EXISTS edges;
-             DROP TABLE IF EXISTS nodes;
-             DROP TABLE IF EXISTS meta;",
-        )?;
-
-        // Create tables WITHOUT indexes — indexes are deferred until after bulk insert
-        conn.execute_batch(
-            "CREATE TABLE meta (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            CREATE TABLE nodes (
-                id         TEXT PRIMARY KEY,
-                kind       TEXT NOT NULL,
-                name       TEXT NOT NULL,
-                file       TEXT NOT NULL,
-                span_start_line   INTEGER NOT NULL,
-                span_start_col    INTEGER NOT NULL,
-                span_end_line     INTEGER NOT NULL,
-                span_end_col      INTEGER NOT NULL,
-                visibility TEXT NOT NULL,
-                metadata   TEXT NOT NULL,
-                role       TEXT,
-                signature  TEXT,
-                doc_comment TEXT,
-                module     TEXT
-            );
-            CREATE TABLE edges (
-                source     TEXT NOT NULL,
-                target     TEXT NOT NULL,
-                kind       TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                direction  TEXT,
-                operation  TEXT,
-                condition  TEXT,
-                async_boundary INTEGER
-            );",
-        )?;
-
+        Self::create_tables(&conn)?;
+        let previous_graph = previous.expect("checked is_some above");
+        let delta = GraphDelta::between(previous_graph, graph);
         let tx = conn.unchecked_transaction()?;
+        Self::write_meta(&tx, graph)?;
 
-        // Write version
-        tx.execute(
-            "INSERT INTO meta (key, value) VALUES ('version', ?1)",
-            [&graph.version],
+        {
+            let mut delete_edges = tx.prepare("DELETE FROM edges WHERE edge_id = ?1")?;
+            for edge_id in &delta.deleted_edge_ids {
+                delete_edges.execute([edge_id])?;
+            }
+        }
+
+        {
+            let mut delete_nodes = tx.prepare("DELETE FROM nodes WHERE id = ?1")?;
+            for node_id in &delta.deleted_node_ids {
+                delete_nodes.execute([node_id])?;
+            }
+        }
+
+        let mut changed_nodes = Vec::new();
+        changed_nodes.extend(delta.added_nodes.iter().copied().cloned());
+        changed_nodes.extend(delta.updated_nodes.iter().copied().cloned());
+        Self::insert_nodes(&tx, &changed_nodes, true)?;
+
+        {
+            let mut delete_edges = tx.prepare("DELETE FROM edges WHERE edge_id = ?1")?;
+            for edge in &delta.updated_edges {
+                delete_edges.execute([&edge.id])?;
+            }
+        }
+        Self::insert_edges(
+            &tx,
+            delta
+                .added_edges
+                .iter()
+                .chain(delta.updated_edges.iter())
+                .map(|edge| (edge.id.clone(), edge.edge)),
+            true,
         )?;
-
-        // Pre-compute the empty metadata string once (most nodes have empty metadata)
-        let empty_meta = "{}";
-
-        // Insert nodes — direct enum → &str, no serde round-trip
-        {
-            let mut stmt = tx.prepare(
-                "INSERT OR REPLACE INTO nodes (id, kind, name, file,
-                    span_start_line, span_start_col, span_end_line, span_end_col,
-                    visibility, metadata, role, signature, doc_comment, module)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-            )?;
-            for node in &graph.nodes {
-                let role_json: Option<String> =
-                    node.role.as_ref().map(serde_json::to_string).transpose()?;
-                let meta_str = if node.metadata.is_empty() {
-                    empty_meta.to_string()
-                } else {
-                    serde_json::to_string(&node.metadata)?
-                };
-                stmt.execute(rusqlite::params![
-                    node.id,
-                    node_kind_str(&node.kind),
-                    node.name,
-                    node.file.to_string_lossy().as_ref(),
-                    node.span.start[0] as i64,
-                    node.span.start[1] as i64,
-                    node.span.end[0] as i64,
-                    node.span.end[1] as i64,
-                    visibility_str(&node.visibility),
-                    meta_str,
-                    role_json,
-                    node.signature,
-                    node.doc_comment,
-                    node.module,
-                ])?;
-            }
-        }
-
-        // Insert edges — direct enum → &str, no serde round-trip
-        {
-            let mut stmt = tx.prepare(
-                "INSERT INTO edges (source, target, kind, confidence,
-                    direction, operation, condition, async_boundary)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            )?;
-            for edge in &graph.edges {
-                let direction_str: Option<String> =
-                    edge.direction.as_ref().map(enum_to_str).transpose()?;
-                let async_boundary_int: Option<i64> =
-                    edge.async_boundary.map(|b| if b { 1 } else { 0 });
-                stmt.execute(rusqlite::params![
-                    edge.source,
-                    edge.target,
-                    edge_kind_str(&edge.kind),
-                    edge.confidence,
-                    direction_str,
-                    edge.operation,
-                    edge.condition,
-                    async_boundary_int,
-                ])?;
-            }
-        }
-
         tx.commit()?;
+        Self::create_indexes(&conn)?;
 
-        // Create indexes AFTER bulk insert — avoids per-row index maintenance
-        conn.execute_batch(
-            "CREATE INDEX idx_edges_source ON edges(source);
-             CREATE INDEX idx_edges_target ON edges(target);
-             CREATE INDEX idx_edges_kind   ON edges(kind);
-             CREATE INDEX idx_nodes_name   ON nodes(name);
-             CREATE INDEX idx_nodes_file   ON nodes(file);
-             CREATE INDEX idx_nodes_kind   ON nodes(kind);
-             CREATE INDEX idx_nodes_role   ON nodes(role);
-             CREATE INDEX idx_nodes_module ON nodes(module);",
-        )?;
-
-        Ok(())
+        Ok(current_stats)
     }
 
     fn load(&self) -> anyhow::Result<Graph> {
@@ -416,6 +547,7 @@ mod tests {
     use super::*;
     use grapha_core::graph::*;
     use std::collections::HashMap;
+    use std::path::Path;
 
     #[test]
     fn sqlite_store_round_trips() {
@@ -673,5 +805,223 @@ mod tests {
 
         let loaded = store.load().unwrap();
         assert_eq!(loaded.nodes.len(), 0);
+    }
+
+    #[test]
+    fn sqlite_incremental_save_updates_added_updated_and_deleted_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grapha.db");
+        let store = SqliteStore::new(path);
+
+        let previous = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                Node {
+                    id: "a".to_string(),
+                    kind: NodeKind::Function,
+                    name: "a".to_string(),
+                    file: "a.rs".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [1, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: None,
+                },
+                Node {
+                    id: "b".to_string(),
+                    kind: NodeKind::Function,
+                    name: "b".to_string(),
+                    file: "b.rs".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [1, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: None,
+                },
+            ],
+            edges: vec![Edge {
+                source: "a".to_string(),
+                target: "b".to_string(),
+                kind: EdgeKind::Calls,
+                confidence: 0.8,
+                direction: None,
+                operation: None,
+                condition: None,
+                async_boundary: None,
+            }],
+        };
+        store.save(&previous).unwrap();
+
+        let mut updated_a = previous.nodes[0].clone();
+        updated_a.signature = Some("fn a()".to_string());
+        let next = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                updated_a,
+                Node {
+                    id: "c".to_string(),
+                    kind: NodeKind::Function,
+                    name: "c".to_string(),
+                    file: "c.rs".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [1, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: None,
+                },
+            ],
+            edges: vec![
+                Edge {
+                    source: "a".to_string(),
+                    target: "b".to_string(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.95,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                },
+                Edge {
+                    source: "a".to_string(),
+                    target: "c".to_string(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.7,
+                    direction: Some(FlowDirection::Pure),
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                },
+            ],
+        };
+
+        let stats = store.save_incremental(Some(&previous), &next).unwrap();
+        assert_eq!(stats.mode, crate::delta::SyncMode::Incremental);
+        assert_eq!(
+            stats.nodes,
+            crate::delta::EntitySyncStats {
+                added: 1,
+                updated: 1,
+                deleted: 1,
+            }
+        );
+        assert_eq!(
+            stats.edges,
+            crate::delta::EntitySyncStats {
+                added: 1,
+                updated: 1,
+                deleted: 0,
+            }
+        );
+
+        let loaded = store.load().unwrap();
+        assert_eq!(loaded.nodes.len(), 2);
+        assert!(loaded.nodes.iter().any(|node| node.id == "c"));
+        assert!(loaded.nodes.iter().all(|node| node.id != "b"));
+        let edge = loaded
+            .edges
+            .iter()
+            .find(|edge| edge.target == "b")
+            .expect("updated edge should exist");
+        assert_eq!(edge.confidence, 0.95);
+    }
+
+    #[test]
+    fn sqlite_incremental_save_rebuilds_legacy_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.db");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE nodes (
+                id         TEXT PRIMARY KEY,
+                kind       TEXT NOT NULL,
+                name       TEXT NOT NULL,
+                file       TEXT NOT NULL,
+                span_start_line   INTEGER NOT NULL,
+                span_start_col    INTEGER NOT NULL,
+                span_end_line     INTEGER NOT NULL,
+                span_end_col      INTEGER NOT NULL,
+                visibility TEXT NOT NULL,
+                metadata   TEXT NOT NULL,
+                role       TEXT,
+                signature  TEXT,
+                doc_comment TEXT,
+                module     TEXT
+            );
+            CREATE TABLE edges (
+                source     TEXT NOT NULL,
+                target     TEXT NOT NULL,
+                kind       TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                direction  TEXT,
+                operation  TEXT,
+                condition  TEXT,
+                async_boundary INTEGER
+            );
+            INSERT INTO meta (key, value) VALUES ('version', '0.1.0');",
+        )
+        .unwrap();
+        drop(conn);
+
+        let store = SqliteStore::new(path.clone());
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![Node {
+                id: "main".to_string(),
+                kind: NodeKind::Function,
+                name: "main".to_string(),
+                file: Path::new("main.rs").into(),
+                span: Span {
+                    start: [0, 0],
+                    end: [1, 0],
+                },
+                visibility: Visibility::Public,
+                metadata: HashMap::new(),
+                role: None,
+                signature: None,
+                doc_comment: None,
+                module: None,
+            }],
+            edges: vec![],
+        };
+
+        let stats = store.save_incremental(None, &graph).unwrap();
+        assert_eq!(stats.mode, crate::delta::SyncMode::FullRebuild);
+
+        let conn = Connection::open(path).unwrap();
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'store_schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, STORE_SCHEMA_VERSION);
+        let edge_columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('edges') WHERE name = 'edge_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(edge_columns, 1);
     }
 }

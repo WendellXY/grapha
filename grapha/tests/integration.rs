@@ -186,6 +186,54 @@ fn index_json_format() {
 }
 
 #[test]
+fn repeated_index_uses_incremental_store_and_search() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+    let source_path = dir.path().join("main.rs");
+    std::fs::write(
+        &source_path,
+        "pub fn alpha() {}\npub fn beta() { alpha(); }\n",
+    )
+    .unwrap();
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("full_rebuild"));
+
+    std::fs::write(
+        &source_path,
+        "pub fn gamma() {}\npub fn beta() { gamma(); }\n",
+    )
+    .unwrap();
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("incremental"))
+        .stderr(predicate::str::contains("docs +1 ~0 -1"));
+
+    grapha()
+        .args(["search", "gamma", "-p", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"name\": \"gamma\""))
+        .stdout(predicate::str::contains("\"name\": \"alpha\"").not());
+}
+
+#[test]
 fn context_command_returns_symbol_info() {
     let dir = tempfile::tempdir().unwrap();
     let store_dir = dir.path().join(".grapha");
