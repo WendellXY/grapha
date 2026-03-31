@@ -31,8 +31,18 @@ use store::Store;
     about = "Structural code graph for LLM consumption"
 )]
 struct Cli {
+    /// ANSI color mode for tree output
+    #[arg(long, global = true, value_enum, default_value_t = ColorMode::Auto)]
+    color: ColorMode,
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ColorMode {
+    Auto,
+    Always,
+    Never,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -555,8 +565,25 @@ fn resolve_query_result<T>(
     }
 }
 
+fn tree_render_options(color: ColorMode) -> render::RenderOptions {
+    use std::io::IsTerminal;
+
+    match color {
+        ColorMode::Always => render::RenderOptions::color(),
+        ColorMode::Never => render::RenderOptions::plain(),
+        ColorMode::Auto => {
+            if std::io::stdout().is_terminal() {
+                render::RenderOptions::color()
+            } else {
+                render::RenderOptions::plain()
+            }
+        }
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let render_options = tree_render_options(cli.color);
 
     match cli.command {
         Commands::Analyze {
@@ -683,7 +710,12 @@ fn main() -> anyhow::Result<()> {
                 resolve_query_result(query::context::query_context(&graph, &symbol), "symbol")?;
             match format {
                 QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => println!("{}", render::render_context(&result)),
+                QueryOutputFormat::Tree => {
+                    println!(
+                        "{}",
+                        render::render_context_with_options(&result, render_options)
+                    )
+                }
             }
         }
         Commands::Impact {
@@ -699,7 +731,12 @@ fn main() -> anyhow::Result<()> {
             )?;
             match format {
                 QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => println!("{}", render::render_impact(&result)),
+                QueryOutputFormat::Tree => {
+                    println!(
+                        "{}",
+                        render::render_impact_with_options(&result, render_options)
+                    )
+                }
             }
         }
         Commands::Changes { scope, path } => {
@@ -736,7 +773,12 @@ fn main() -> anyhow::Result<()> {
             )?;
             match format {
                 QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => println!("{}", render::render_trace(&result)),
+                QueryOutputFormat::Tree => {
+                    println!(
+                        "{}",
+                        render::render_trace_with_options(&result, render_options)
+                    )
+                }
             }
         }
         Commands::Dataflow {
@@ -752,7 +794,12 @@ fn main() -> anyhow::Result<()> {
             )?;
             match format {
                 QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => println!("{}", render::render_dataflow(&result)),
+                QueryOutputFormat::Tree => {
+                    println!(
+                        "{}",
+                        render::render_dataflow_with_options(&result, render_options)
+                    )
+                }
             }
         }
         Commands::Reverse {
@@ -765,7 +812,12 @@ fn main() -> anyhow::Result<()> {
                 resolve_query_result(query::reverse::query_reverse(&graph, &symbol), "symbol")?;
             match format {
                 QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => println!("{}", render::render_reverse(&result)),
+                QueryOutputFormat::Tree => {
+                    println!(
+                        "{}",
+                        render::render_reverse_with_options(&result, render_options)
+                    )
+                }
             }
         }
         Commands::Entries { path, format } => {
@@ -773,7 +825,12 @@ fn main() -> anyhow::Result<()> {
             let result = query::entries::query_entries(&graph);
             match format {
                 QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => println!("{}", render::render_entries(&result)),
+                QueryOutputFormat::Tree => {
+                    println!(
+                        "{}",
+                        render::render_entries_with_options(&result, render_options)
+                    )
+                }
             }
         }
         Commands::Serve { path, port } => {

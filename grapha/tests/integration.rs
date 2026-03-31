@@ -5,6 +5,24 @@ fn grapha() -> Command {
     Command::cargo_bin("grapha").unwrap()
 }
 
+fn strip_ansi(input: &str) -> String {
+    let mut stripped = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for next in chars.by_ref() {
+                if next.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+        stripped.push(ch);
+    }
+    stripped
+}
+
 #[test]
 fn analyzes_single_file() {
     grapha()
@@ -293,6 +311,107 @@ operation = "UPSERT"
         .stdout(predicate::str::contains("summary: symbols="))
         .stdout(predicate::str::contains("[effect:persistence]"))
         .stdout(predicate::str::contains("read ->"));
+}
+
+#[test]
+fn tree_output_respects_color_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+    std::fs::write(
+        dir.path().join("main.rs"),
+        "pub fn handler() { persist(); }\nfn persist() {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("grapha.toml"),
+        r#"
+[[classifiers]]
+pattern = "persist"
+terminal = "persistence"
+direction = "read_write"
+operation = "UPSERT"
+"#,
+    )
+    .unwrap();
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let plain = grapha()
+        .args([
+            "dataflow",
+            "handler",
+            "-p",
+            dir.path().to_str().unwrap(),
+            "--format",
+            "tree",
+            "--color",
+            "never",
+        ])
+        .output()
+        .unwrap();
+    assert!(plain.status.success());
+    let plain_stdout = String::from_utf8(plain.stdout).unwrap();
+    assert!(!plain_stdout.contains("\x1b["));
+
+    let colored = grapha()
+        .args([
+            "dataflow",
+            "handler",
+            "-p",
+            dir.path().to_str().unwrap(),
+            "--format",
+            "tree",
+            "--color",
+            "always",
+        ])
+        .output()
+        .unwrap();
+    assert!(colored.status.success());
+    let colored_stdout = String::from_utf8(colored.stdout).unwrap();
+    assert!(colored_stdout.contains("\x1b["));
+    assert_eq!(strip_ansi(&colored_stdout), plain_stdout);
+}
+
+#[test]
+fn json_output_ignores_color_mode() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+
+    grapha()
+        .args([
+            "index",
+            "tests/fixtures/simple.rs",
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let output = grapha()
+        .args([
+            "context",
+            "default_config",
+            "-p",
+            dir.path().to_str().unwrap(),
+            "--color",
+            "always",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!stdout.contains("\x1b["));
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(parsed["symbol"]["name"], "default_config");
 }
 
 #[test]

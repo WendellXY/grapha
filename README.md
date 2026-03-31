@@ -70,6 +70,9 @@ grapha context sendMessage
 # Human-readable tree output for graph queries
 grapha reverse handleSendResult --format tree
 
+# Force ANSI-highlighted tree output for CI logs
+grapha --color always reverse handleSendResult --format tree
+
 # Impact analysis: what breaks if this changes?
 grapha impact bootstrapGame --depth 5
 
@@ -118,6 +121,7 @@ grapha analyze src/ -o graph.json      # Write to file
 grapha context Config                  # Callers, callees, implements
 grapha context bootstrapGame           # Fuzzy name matching
 grapha context bootstrapGame --format tree
+grapha --color always context bootstrapGame --format tree
 ```
 
 ### `grapha impact` — Blast radius
@@ -126,6 +130,7 @@ grapha context bootstrapGame --format tree
 grapha impact bootstrapGame            # Who depends on this?
 grapha impact bootstrapGame --depth 5  # Deeper traversal
 grapha impact bootstrapGame --format tree
+grapha --color always impact bootstrapGame --format tree
 ```
 
 ### `grapha trace` — Forward dataflow
@@ -134,6 +139,7 @@ grapha impact bootstrapGame --format tree
 grapha trace bootstrapGame             # Entry → service → terminal ops
 grapha trace sendMessage --depth 10
 grapha trace bootstrapGame --format tree
+grapha --color always trace bootstrapGame --format tree
 ```
 
 ### `grapha dataflow` — Derived semantic effect graph
@@ -142,6 +148,7 @@ grapha trace bootstrapGame --format tree
 grapha dataflow bootstrapGame
 grapha dataflow sendMessage --depth 10
 grapha dataflow bootstrapGame --format tree
+grapha --color always dataflow bootstrapGame --format tree
 ```
 
 ### `grapha reverse` — Entry point impact
@@ -149,6 +156,7 @@ grapha dataflow bootstrapGame --format tree
 ```bash
 grapha reverse handleSendResult        # Which Views/entry points reach this?
 grapha reverse handleSendResult --format tree
+grapha --color always reverse handleSendResult --format tree
 ```
 
 ### `grapha entries` — List entry points
@@ -156,7 +164,10 @@ grapha reverse handleSendResult --format tree
 ```bash
 grapha entries                         # All detected entry points
 grapha entries --format tree
+grapha --color always entries --format tree
 ```
+
+`--color auto|always|never` controls ANSI styling for tree output. `auto` colors only when stdout is a terminal, `always` forces color for CI/log capture, and `never` keeps tree output plain. JSON output is always uncolored.
 
 ### `grapha search` — Full-text search
 
