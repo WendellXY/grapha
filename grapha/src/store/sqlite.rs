@@ -20,6 +20,18 @@ impl SqliteStore {
         Ok(conn)
     }
 
+    fn open_for_write(&self) -> anyhow::Result<Connection> {
+        let conn = Connection::open(&self.path)?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=OFF;
+             PRAGMA temp_store=MEMORY;
+             PRAGMA cache_size=-64000;
+             PRAGMA mmap_size=268435456;",
+        )?;
+        Ok(conn)
+    }
+
     fn create_tables(conn: &Connection) -> anyhow::Result<()> {
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS meta (
@@ -71,6 +83,51 @@ fn enum_to_str<T: serde::Serialize>(value: &T) -> anyhow::Result<String> {
     Ok(json.trim_matches('"').to_string())
 }
 
+// Direct enum → &str conversions — avoids ~1M serde_json round-trips during save.
+
+fn node_kind_str(k: &NodeKind) -> &'static str {
+    match k {
+        NodeKind::Function => "function",
+        NodeKind::Struct => "struct",
+        NodeKind::Enum => "enum",
+        NodeKind::Trait => "trait",
+        NodeKind::Impl => "impl",
+        NodeKind::Module => "module",
+        NodeKind::Field => "field",
+        NodeKind::Variant => "variant",
+        NodeKind::Property => "property",
+        NodeKind::Constant => "constant",
+        NodeKind::TypeAlias => "type_alias",
+        NodeKind::Protocol => "protocol",
+        NodeKind::Extension => "extension",
+        NodeKind::View => "view",
+        NodeKind::Branch => "branch",
+    }
+}
+
+fn edge_kind_str(k: &EdgeKind) -> &'static str {
+    match k {
+        EdgeKind::Calls => "calls",
+        EdgeKind::Uses => "uses",
+        EdgeKind::Implements => "implements",
+        EdgeKind::Contains => "contains",
+        EdgeKind::TypeRef => "type_ref",
+        EdgeKind::Inherits => "inherits",
+        EdgeKind::Reads => "reads",
+        EdgeKind::Writes => "writes",
+        EdgeKind::Publishes => "publishes",
+        EdgeKind::Subscribes => "subscribes",
+    }
+}
+
+fn visibility_str(v: &Visibility) -> &'static str {
+    match v {
+        Visibility::Public => "public",
+        Visibility::Crate => "crate",
+        Visibility::Private => "private",
+    }
+}
+
 /// Deserialize a snake_case string back into a serde enum value.
 fn str_to_enum<T: serde::de::DeserializeOwned>(s: &str) -> anyhow::Result<T> {
     let quoted = format!("\"{s}\"");
@@ -79,17 +136,50 @@ fn str_to_enum<T: serde::de::DeserializeOwned>(s: &str) -> anyhow::Result<T> {
 
 impl Store for SqliteStore {
     fn save(&self, graph: &Graph) -> anyhow::Result<()> {
-        let conn = self.open()?;
-        Self::create_tables(&conn)?;
+        let conn = self.open_for_write()?;
+
+        // DROP + CREATE is instant vs DELETE FROM on 766K rows
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS edges;
+             DROP TABLE IF EXISTS nodes;
+             DROP TABLE IF EXISTS meta;",
+        )?;
+
+        // Create tables WITHOUT indexes — indexes are deferred until after bulk insert
+        conn.execute_batch(
+            "CREATE TABLE meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE nodes (
+                id         TEXT PRIMARY KEY,
+                kind       TEXT NOT NULL,
+                name       TEXT NOT NULL,
+                file       TEXT NOT NULL,
+                span_start_line   INTEGER NOT NULL,
+                span_start_col    INTEGER NOT NULL,
+                span_end_line     INTEGER NOT NULL,
+                span_end_col      INTEGER NOT NULL,
+                visibility TEXT NOT NULL,
+                metadata   TEXT NOT NULL,
+                role       TEXT,
+                signature  TEXT,
+                doc_comment TEXT,
+                module     TEXT
+            );
+            CREATE TABLE edges (
+                source     TEXT NOT NULL,
+                target     TEXT NOT NULL,
+                kind       TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                direction  TEXT,
+                operation  TEXT,
+                condition  TEXT,
+                async_boundary INTEGER
+            );",
+        )?;
 
         let tx = conn.unchecked_transaction()?;
-
-        // Clear previous data
-        tx.execute_batch(
-            "DELETE FROM edges;
-             DELETE FROM nodes;
-             DELETE FROM meta;",
-        )?;
 
         // Write version
         tx.execute(
@@ -97,7 +187,10 @@ impl Store for SqliteStore {
             [&graph.version],
         )?;
 
-        // Insert nodes
+        // Pre-compute the empty metadata string once (most nodes have empty metadata)
+        let empty_meta = "{}";
+
+        // Insert nodes — direct enum → &str, no serde round-trip
         {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO nodes (id, kind, name, file,
@@ -108,17 +201,22 @@ impl Store for SqliteStore {
             for node in &graph.nodes {
                 let role_json: Option<String> =
                     node.role.as_ref().map(serde_json::to_string).transpose()?;
+                let meta_str = if node.metadata.is_empty() {
+                    empty_meta.to_string()
+                } else {
+                    serde_json::to_string(&node.metadata)?
+                };
                 stmt.execute(rusqlite::params![
                     node.id,
-                    enum_to_str(&node.kind)?,
+                    node_kind_str(&node.kind),
                     node.name,
                     node.file.to_string_lossy().as_ref(),
                     node.span.start[0] as i64,
                     node.span.start[1] as i64,
                     node.span.end[0] as i64,
                     node.span.end[1] as i64,
-                    enum_to_str(&node.visibility)?,
-                    serde_json::to_string(&node.metadata)?,
+                    visibility_str(&node.visibility),
+                    meta_str,
                     role_json,
                     node.signature,
                     node.doc_comment,
@@ -127,7 +225,7 @@ impl Store for SqliteStore {
             }
         }
 
-        // Insert edges
+        // Insert edges — direct enum → &str, no serde round-trip
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO edges (source, target, kind, confidence,
@@ -142,7 +240,7 @@ impl Store for SqliteStore {
                 stmt.execute(rusqlite::params![
                     edge.source,
                     edge.target,
-                    enum_to_str(&edge.kind)?,
+                    edge_kind_str(&edge.kind),
                     edge.confidence,
                     direction_str,
                     edge.operation,
@@ -153,6 +251,19 @@ impl Store for SqliteStore {
         }
 
         tx.commit()?;
+
+        // Create indexes AFTER bulk insert — avoids per-row index maintenance
+        conn.execute_batch(
+            "CREATE INDEX idx_edges_source ON edges(source);
+             CREATE INDEX idx_edges_target ON edges(target);
+             CREATE INDEX idx_edges_kind   ON edges(kind);
+             CREATE INDEX idx_nodes_name   ON nodes(name);
+             CREATE INDEX idx_nodes_file   ON nodes(file);
+             CREATE INDEX idx_nodes_kind   ON nodes(kind);
+             CREATE INDEX idx_nodes_role   ON nodes(role);
+             CREATE INDEX idx_nodes_module ON nodes(module);",
+        )?;
+
         Ok(())
     }
 
