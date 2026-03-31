@@ -20,14 +20,16 @@ public func indexstoreOpen(_ path: UnsafePointer<CChar>) -> UnsafeMutableRawPoin
 @c(grapha_indexstore_extract)
 public func indexstoreExtract(
     _ handle: UnsafeMutableRawPointer,
-    _ filePath: UnsafePointer<CChar>
-) -> UnsafePointer<CChar>? {
+    _ filePath: UnsafePointer<CChar>,
+    _ outLen: UnsafeMutablePointer<UInt32>
+) -> UnsafeRawPointer? {
     let key = Int(bitPattern: handle)
     let reader = _readers.withLock { $0[key] }
     guard let reader else { return nil }
     let file = String(cString: filePath)
-    guard let json = reader.extractFile(file) else { return nil }
-    return strdup(json).map { UnsafePointer($0) }
+    guard let (ptr, len) = reader.extractFile(file) else { return nil }
+    outLen.pointee = len
+    return UnsafeRawPointer(ptr)
 }
 
 @c(grapha_indexstore_close)
@@ -51,5 +53,10 @@ public func swiftsyntaxExtract(
 
 @c(grapha_free_string)
 public func freeString(_ ptr: UnsafeMutablePointer<CChar>) {
-    free(ptr)  // strdup allocates via malloc; must use free, not Swift's deallocate
+    free(ptr)
+}
+
+@c(grapha_free_buffer)
+public func freeBuffer(_ ptr: UnsafeMutableRawPointer) {
+    free(ptr)
 }
