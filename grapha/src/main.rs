@@ -238,6 +238,46 @@ fn stamp_module(
 }
 
 fn normalize_graph(mut graph: grapha_core::graph::Graph) -> grapha_core::graph::Graph {
+    fn visibility_rank(visibility: &grapha_core::graph::Visibility) -> u8 {
+        match visibility {
+            grapha_core::graph::Visibility::Private => 0,
+            grapha_core::graph::Visibility::Crate => 1,
+            grapha_core::graph::Visibility::Public => 2,
+        }
+    }
+
+    fn merge_node(existing: &mut grapha_core::graph::Node, incoming: grapha_core::graph::Node) {
+        if visibility_rank(&incoming.visibility) > visibility_rank(&existing.visibility) {
+            existing.visibility = incoming.visibility;
+        }
+        if existing.role.is_none() {
+            existing.role = incoming.role;
+        }
+        if existing.signature.is_none() {
+            existing.signature = incoming.signature;
+        }
+        if existing.doc_comment.is_none() {
+            existing.doc_comment = incoming.doc_comment;
+        }
+        if existing.module.is_none() {
+            existing.module = incoming.module;
+        }
+        for (key, value) in incoming.metadata {
+            existing.metadata.entry(key).or_insert(value);
+        }
+    }
+
+    let mut node_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut normalized_nodes: Vec<grapha_core::graph::Node> = Vec::with_capacity(graph.nodes.len());
+    for node in graph.nodes {
+        if let Some(existing_index) = node_index.get(&node.id).copied() {
+            merge_node(&mut normalized_nodes[existing_index], node);
+        } else {
+            node_index.insert(node.id.clone(), normalized_nodes.len());
+            normalized_nodes.push(node);
+        }
+    }
+
     let mut edge_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let mut normalized_edges: Vec<grapha_core::graph::Edge> = Vec::with_capacity(graph.edges.len());
 
@@ -261,6 +301,7 @@ fn normalize_graph(mut graph: grapha_core::graph::Graph) -> grapha_core::graph::
         }
     }
 
+    graph.nodes = normalized_nodes;
     graph.edges = normalized_edges;
     graph
 }
@@ -860,5 +901,61 @@ mod tests {
         assert_eq!(normalized.edges.len(), 1);
         assert_eq!(normalized.edges[0].confidence, 0.9);
         assert_eq!(normalized.edges[0].provenance.len(), 2);
+    }
+
+    #[test]
+    fn normalize_graph_merges_duplicate_nodes_by_id() {
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                Node {
+                    id: "s:RoomPage.centerContentView".to_string(),
+                    kind: NodeKind::Property,
+                    name: "centerContentView".to_string(),
+                    file: PathBuf::from("RoomPage.swift"),
+                    span: Span {
+                        start: [0, 0],
+                        end: [0, 0],
+                    },
+                    visibility: Visibility::Private,
+                    metadata: std::collections::HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: None,
+                },
+                Node {
+                    id: "s:RoomPage.centerContentView".to_string(),
+                    kind: NodeKind::Property,
+                    name: "centerContentView".to_string(),
+                    file: PathBuf::from("RoomPage.swift"),
+                    span: Span {
+                        start: [10, 4],
+                        end: [10, 20],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: std::collections::HashMap::new(),
+                    role: Some(grapha_core::graph::NodeRole::EntryPoint),
+                    signature: Some("var centerContentView: some View".to_string()),
+                    doc_comment: Some("helper".to_string()),
+                    module: Some("Room".to_string()),
+                },
+            ],
+            edges: vec![],
+        };
+
+        let normalized = normalize_graph(graph);
+        assert_eq!(normalized.nodes.len(), 1);
+        assert_eq!(normalized.nodes[0].visibility, Visibility::Public);
+        assert_eq!(
+            normalized.nodes[0].role,
+            Some(grapha_core::graph::NodeRole::EntryPoint)
+        );
+        assert_eq!(
+            normalized.nodes[0].signature.as_deref(),
+            Some("var centerContentView: some View")
+        );
+        assert_eq!(normalized.nodes[0].doc_comment.as_deref(), Some("helper"));
+        assert_eq!(normalized.nodes[0].module.as_deref(), Some("Room"));
     }
 }

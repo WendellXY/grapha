@@ -2211,20 +2211,60 @@ fn matching_swiftui_declaration_id(
     file_path: &Path,
     decl_node: tree_sitter::Node,
     source: &[u8],
+    candidate_owner_names: &HashMap<String, Vec<String>>,
 ) -> Option<String> {
     let decl_line = decl_node.start_position().row;
     let decl_name = declaration_name(decl_node, source)?;
     let decl_kind = declaration_kind(decl_node)?;
+    let owner_name = enclosing_owner_type_name(decl_node, source);
 
-    result
+    let candidates: Vec<_> = result
         .nodes
         .iter()
         .filter(|node| {
-            node.kind == decl_kind
-                && node.name == decl_name
-                && file_matches(&node.file, file_path)
-                && line_matches(node.span.start[0], decl_line)
+            node.kind == decl_kind && node.name == decl_name && file_matches(&node.file, file_path)
         })
+        .collect();
+
+    let line_matches: Vec<_> = candidates
+        .iter()
+        .copied()
+        .filter(|node| line_matches(node.span.start[0], decl_line))
+        .collect();
+    if !line_matches.is_empty() {
+        return line_matches
+            .into_iter()
+            .min_by_key(|node| node.span.start[0].abs_diff(decl_line))
+            .map(|node| node.id.clone());
+    }
+
+    if let Some(owner_name) = owner_name {
+        let owner_matches: Vec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|node| {
+                candidate_owner_names
+                    .get(&node.id)
+                    .is_some_and(|owners| owners.iter().any(|owner| owner == &owner_name))
+            })
+            .collect();
+        if owner_matches.len() == 1 {
+            return Some(owner_matches[0].id.clone());
+        }
+        if !owner_matches.is_empty() {
+            return owner_matches
+                .into_iter()
+                .min_by_key(|node| node.span.start[0].abs_diff(decl_line))
+                .map(|node| node.id.clone());
+        }
+    }
+
+    if candidates.len() == 1 {
+        return Some(candidates[0].id.clone());
+    }
+
+    candidates
+        .into_iter()
         .min_by_key(|node| node.span.start[0].abs_diff(decl_line))
         .map(|node| node.id.clone())
 }
@@ -2295,10 +2335,39 @@ pub fn enrich_swiftui_structure(
     let mut declaration_nodes = Vec::new();
     collect_swiftui_declaration_nodes(tree.root_node(), source, &mut declaration_nodes);
 
+    let id_to_name: HashMap<&str, &str> = result
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node.name.as_str()))
+        .collect();
+    let mut candidate_owner_names: HashMap<String, Vec<String>> = HashMap::new();
+    for edge in &result.edges {
+        if edge.kind == EdgeKind::Contains
+            && let Some(owner_name) = id_to_name.get(edge.source.as_str())
+        {
+            candidate_owner_names
+                .entry(edge.target.clone())
+                .or_default()
+                .push((*owner_name).to_string());
+        } else if edge.kind == EdgeKind::Implements
+            && let Some(owner_name) = id_to_name.get(edge.target.as_str())
+        {
+            candidate_owner_names
+                .entry(edge.source.clone())
+                .or_default()
+                .push((*owner_name).to_string());
+        }
+    }
+
     let file_str = file_path.to_string_lossy().to_string();
     for decl_node in declaration_nodes {
-        let Some(decl_id) = matching_swiftui_declaration_id(result, file_path, decl_node, source)
-        else {
+        let Some(decl_id) = matching_swiftui_declaration_id(
+            result,
+            file_path,
+            decl_node,
+            source,
+            &candidate_owner_names,
+        ) else {
             continue;
         };
         extract_swiftui_declaration_structure(decl_node, source, &file_str, &[], &decl_id, result);
@@ -3095,6 +3164,87 @@ struct ContentView: View {
             &row_view.id,
             "test.swift::Row",
             EdgeKind::TypeRef
+        ));
+    }
+
+    #[test]
+    fn enrich_swiftui_structure_matches_view_helpers_by_owner_when_line_metadata_drifts() {
+        let source = br#"
+import SwiftUI
+
+extension RoomPage {
+    @ViewBuilder
+    private var centerContentView: some View {
+        ZStack {
+            Text("Hello")
+        }
+    }
+}
+"#;
+        let mut result = ExtractionResult::new();
+        result.nodes.push(Node {
+            id: "s:e:s:4Room0A4PageV".into(),
+            kind: NodeKind::Extension,
+            name: "RoomPage".into(),
+            file: "RoomPage.swift".into(),
+            span: Span {
+                start: [2, 0],
+                end: [9, 0],
+            },
+            visibility: Visibility::Crate,
+            metadata: HashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: Some("Room".into()),
+        });
+        result.nodes.push(Node {
+            id: "s:4Room0A4PageV17centerContentViewQrvp".into(),
+            kind: NodeKind::Property,
+            name: "centerContentView".into(),
+            file: "RoomPage.swift".into(),
+            span: Span {
+                start: [0, 0],
+                end: [0, 0],
+            },
+            visibility: Visibility::Private,
+            metadata: HashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: Some("Room".into()),
+        });
+        result.edges.push(Edge {
+            source: "s:4Room0A4PageV17centerContentViewQrvp".into(),
+            target: "s:e:s:4Room0A4PageV".into(),
+            kind: EdgeKind::Implements,
+            confidence: 0.9,
+            direction: None,
+            operation: None,
+            condition: None,
+            async_boundary: None,
+            provenance: Vec::new(),
+        });
+
+        enrich_swiftui_structure(source, Path::new("RoomPage.swift"), &mut result).unwrap();
+
+        let zstack = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == NodeKind::View
+                    && node.name == "ZStack"
+                    && node
+                        .id
+                        .starts_with("s:4Room0A4PageV17centerContentViewQrvp::view:")
+            })
+            .expect("centerContentView should gain a ZStack subtree despite line drift");
+
+        assert!(has_edge(
+            &result,
+            "s:4Room0A4PageV17centerContentViewQrvp",
+            &zstack.id,
+            EdgeKind::Contains
         ));
     }
 
