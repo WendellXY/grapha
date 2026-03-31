@@ -4,10 +4,11 @@ use std::sync::OnceLock;
 use libloading::Library;
 
 type IndexStoreOpenFn = unsafe extern "C" fn(*const i8) -> *mut std::ffi::c_void;
-type IndexStoreExtractFn = unsafe extern "C" fn(*mut std::ffi::c_void, *const i8) -> *const i8;
+type IndexStoreExtractFn = unsafe extern "C" fn(*mut std::ffi::c_void, *const i8, *mut u32) -> *const u8;
 type IndexStoreCloseFn = unsafe extern "C" fn(*mut std::ffi::c_void);
 type SwiftSyntaxExtractFn = unsafe extern "C" fn(*const i8, usize, *const i8) -> *const i8;
 type FreeStringFn = unsafe extern "C" fn(*mut i8);
+type FreeBufferFn = unsafe extern "C" fn(*mut u8);
 
 #[allow(dead_code)] // Fields used in Phase 3/4 implementations
 pub struct SwiftBridge {
@@ -17,6 +18,7 @@ pub struct SwiftBridge {
     pub indexstore_close: IndexStoreCloseFn,
     pub swiftsyntax_extract: SwiftSyntaxExtractFn,
     pub free_string: FreeStringFn,
+    pub free_buffer: FreeBufferFn,
 }
 
 static BRIDGE: OnceLock<Option<SwiftBridge>> = OnceLock::new();
@@ -40,6 +42,7 @@ impl SwiftBridge {
                 .get::<SwiftSyntaxExtractFn>(b"grapha_swiftsyntax_extract")
                 .ok()?;
             let free_string = *lib.get::<FreeStringFn>(b"grapha_free_string").ok()?;
+            let free_buffer = *lib.get::<FreeBufferFn>(b"grapha_free_buffer").ok()?;
 
             Some(SwiftBridge {
                 _lib: lib,
@@ -48,6 +51,7 @@ impl SwiftBridge {
                 indexstore_close,
                 swiftsyntax_extract,
                 free_string,
+                free_buffer,
             })
         }
     }
