@@ -276,6 +276,7 @@ mod tests {
             operation: None,
             condition: None,
             async_boundary: None,
+            provenance: Vec::new(),
         }
     }
 

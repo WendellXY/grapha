@@ -3,7 +3,9 @@ use std::path::Path;
 
 use tree_sitter::Parser;
 
-use grapha_core::graph::{Edge, EdgeKind, Node, NodeKind, NodeRole, Span, Visibility};
+use grapha_core::graph::{
+    Edge, EdgeKind, EdgeProvenance, Node, NodeKind, NodeRole, Span, Visibility,
+};
 
 use super::{ExtractionResult, LanguageExtractor};
 
@@ -24,6 +26,19 @@ impl LanguageExtractor for RustExtractor {
 
         Ok(result)
     }
+}
+
+fn edge_provenance(file: &str, node: tree_sitter::Node, symbol_id: &str) -> Vec<EdgeProvenance> {
+    let start = node.start_position();
+    let end = node.end_position();
+    vec![EdgeProvenance {
+        file: file.into(),
+        span: Span {
+            start: [start.row, start.column],
+            end: [end.row, end.column],
+        },
+        symbol_id: symbol_id.to_string(),
+    }]
 }
 
 /// Recursively walk a tree-sitter node, extracting symbols and edges.
@@ -51,6 +66,7 @@ fn walk_node(
                         operation: None,
                         condition: None,
                         async_boundary: None,
+                        provenance: edge_provenance(file, node, pid),
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -73,6 +89,7 @@ fn walk_node(
                             operation: None,
                             condition: None,
                             async_boundary: None,
+                            provenance: edge_provenance(file, return_type_node, &node_id),
                         });
                     }
                 }
@@ -98,6 +115,7 @@ fn walk_node(
                         operation: None,
                         condition: None,
                         async_boundary: None,
+                        provenance: edge_provenance(file, node, pid),
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -132,6 +150,7 @@ fn walk_node(
                         operation: None,
                         condition: None,
                         async_boundary: None,
+                        provenance: edge_provenance(file, node, pid),
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -166,6 +185,7 @@ fn walk_node(
                         operation: None,
                         condition: None,
                         async_boundary: None,
+                        provenance: edge_provenance(file, node, pid),
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -188,6 +208,7 @@ fn walk_node(
                                 operation: None,
                                 condition: None,
                                 async_boundary: None,
+                                provenance: edge_provenance(file, child, &node_id),
                             });
                         }
                     }
@@ -210,6 +231,7 @@ fn walk_node(
                         operation: None,
                         condition: None,
                         async_boundary: None,
+                        provenance: edge_provenance(file, node, pid),
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -231,6 +253,7 @@ fn walk_node(
                         operation: None,
                         condition: None,
                         async_boundary: None,
+                        provenance: edge_provenance(file, trait_node, &node_id),
                     });
                 }
 
@@ -255,6 +278,7 @@ fn walk_node(
                         operation: None,
                         condition: None,
                         async_boundary: None,
+                        provenance: edge_provenance(file, node, pid),
                     });
                 }
                 let mod_name = graph_node.name.clone();
@@ -314,6 +338,7 @@ fn walk_node(
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: edge_provenance(file, node, file),
                 });
             }
         }
@@ -709,6 +734,7 @@ fn extract_struct_fields(
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: edge_provenance(file, child, parent_id),
             });
 
             result.nodes.push(Node {
@@ -785,6 +811,7 @@ fn extract_calls(
                     operation: None,
                     condition,
                     async_boundary,
+                    provenance: edge_provenance(file, node, caller_id),
                 });
             }
         }
@@ -826,6 +853,7 @@ fn extract_enum_variants(
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: edge_provenance(file, child, parent_id),
             });
 
             result.nodes.push(Node {
@@ -1138,6 +1166,11 @@ mod tests {
             cond_edge.condition.is_some(),
             "condition should be set on call inside if"
         );
+        assert!(
+            !cond_edge.provenance.is_empty(),
+            "call edges should carry provenance"
+        );
+        assert_eq!(cond_edge.provenance[0].symbol_id, "test.rs::run");
     }
 
     #[test]

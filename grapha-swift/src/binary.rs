@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use grapha_core::graph::{Edge, EdgeKind, Node, NodeKind, Span, Visibility};
 use grapha_core::ExtractionResult;
+use grapha_core::graph::{Edge, EdgeKind, EdgeProvenance, Node, NodeKind, Span, Visibility};
 
 const MAGIC: u32 = 0x47524148; // "GRAH"
 const VERSION: u8 = 1;
@@ -32,7 +32,8 @@ pub fn parse_binary_buffer(buf: &[u8]) -> Option<ExtractionResult> {
     let edge_count = read_u32(buf, 12) as usize;
     let string_table_offset = read_u32(buf, 16) as usize;
 
-    let expected_offset = HEADER_SIZE + node_count * PACKED_NODE_SIZE + edge_count * PACKED_EDGE_SIZE;
+    let expected_offset =
+        HEADER_SIZE + node_count * PACKED_NODE_SIZE + edge_count * PACKED_EDGE_SIZE;
     if string_table_offset != expected_offset {
         return None;
     }
@@ -57,6 +58,25 @@ pub fn parse_binary_buffer(buf: &[u8]) -> Option<ExtractionResult> {
         let offset = edges_start + i * PACKED_EDGE_SIZE;
         let chunk = buf.get(offset..offset + PACKED_EDGE_SIZE)?;
         edges.push(read_edge(chunk, string_table)?);
+    }
+
+    let node_provenance: HashMap<&str, EdgeProvenance> = nodes
+        .iter()
+        .map(|node| {
+            (
+                node.id.as_str(),
+                EdgeProvenance {
+                    file: node.file.clone(),
+                    span: node.span.clone(),
+                    symbol_id: node.id.clone(),
+                },
+            )
+        })
+        .collect();
+    for edge in &mut edges {
+        if let Some(provenance) = node_provenance.get(edge.source.as_str()) {
+            edge.provenance.push(provenance.clone());
+        }
     }
 
     Some(ExtractionResult {
@@ -185,6 +205,7 @@ fn read_edge(chunk: &[u8], string_table: &[u8]) -> Option<Edge> {
         operation: None,
         condition: None,
         async_boundary: None,
+        provenance: Vec::new(),
     })
 }
 
@@ -200,8 +221,9 @@ mod tests {
     ) -> Vec<u8> {
         let node_count = node_chunks.len() as u32;
         let edge_count = edge_chunks.len() as u32;
-        let string_table_offset =
-            HEADER_SIZE as u32 + node_count * PACKED_NODE_SIZE as u32 + edge_count * PACKED_EDGE_SIZE as u32;
+        let string_table_offset = HEADER_SIZE as u32
+            + node_count * PACKED_NODE_SIZE as u32
+            + edge_count * PACKED_EDGE_SIZE as u32;
 
         let mut buf = Vec::new();
         // Header
@@ -310,20 +332,20 @@ mod tests {
         let string_table = b"s::MyApp::foofoo/src/main.swiftMyApps::MyApp::bar";
 
         let node = make_packed_node(
-            0, 13,  // id: "s::MyApp::foo"
-            13, 3,  // name: "foo"
+            0, 13, // id: "s::MyApp::foo"
+            13, 3, // name: "foo"
             16, 15, // file: "/src/main.swift"
-            31, 5,  // module: "MyApp"
+            31, 5, // module: "MyApp"
             42, 10, // line 42, col 10
-            0,      // kind: Function
-            0,      // visibility: Public
+            0,  // kind: Function
+            0,  // visibility: Public
         );
 
         let edge = make_packed_edge(
-            0, 13,  // source: "s::MyApp::foo"
+            0, 13, // source: "s::MyApp::foo"
             36, 13, // target: "s::MyApp::bar"
-            0,      // kind: Calls
-            95,     // confidence: 95%
+            0,  // kind: Calls
+            95, // confidence: 95%
         );
 
         let buf = build_buffer(&[node], &[edge], string_table);
@@ -353,11 +375,7 @@ mod tests {
         // Node references string at offset 999 which is beyond the string table
         let node = make_packed_node(
             999, 5, // id offset way out of bounds
-            0, 3,
-            0, 3,
-            NO_MODULE, 0,
-            1, 0,
-            0, 0,
+            0, 3, 0, 3, NO_MODULE, 0, 1, 0, 0, 0,
         );
 
         let buf = build_buffer(&[node], &[], b"abc");

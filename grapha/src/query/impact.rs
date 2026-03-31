@@ -202,6 +202,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "b".into(),
@@ -212,6 +213,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "c".into(),
@@ -222,6 +224,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
             ],
         }
@@ -304,6 +307,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "alpha".into(),
@@ -314,6 +318,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
             ],
         };
@@ -359,6 +364,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "alpha".into(),
@@ -369,6 +375,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
             ],
         };
@@ -425,6 +432,7 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
         };
 

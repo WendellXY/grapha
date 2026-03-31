@@ -340,6 +340,7 @@ mod tests {
             operation: None,
             condition: None,
             async_boundary: None,
+            provenance: Vec::new(),
         }
     }
 
@@ -491,6 +492,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "getter:viewModel".into(),
@@ -501,6 +503,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 make_edge("getter:body", "getter:viewModel"),
                 make_edge("getter:viewModel", "sendMessage"),
@@ -542,6 +545,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "body::view:Row@10:12".into(),
@@ -552,6 +556,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
             ],
         };

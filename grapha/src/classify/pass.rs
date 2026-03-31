@@ -274,6 +274,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "src::caller".to_string(),
@@ -284,6 +285,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "src::caller".to_string(),
@@ -294,6 +296,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
             ],
         }

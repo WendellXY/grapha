@@ -4,9 +4,11 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::delta::{GraphDelta, edge_fingerprint};
 use crate::store::{Store, StoreWriteStats};
-use grapha_core::graph::{Edge, EdgeKind, Graph, Node, NodeKind, NodeRole, Span, Visibility};
+use grapha_core::graph::{
+    Edge, EdgeKind, EdgeProvenance, Graph, Node, NodeKind, NodeRole, Span, Visibility,
+};
 
-const STORE_SCHEMA_VERSION: &str = "2";
+const STORE_SCHEMA_VERSION: &str = "3";
 
 pub struct SqliteStore {
     path: PathBuf,
@@ -66,7 +68,8 @@ impl SqliteStore {
                 direction  TEXT,
                 operation  TEXT,
                 condition  TEXT,
-                async_boundary INTEGER
+                async_boundary INTEGER,
+                provenance TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_edges_source ON edges(source);
             CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target);
@@ -188,8 +191,8 @@ impl SqliteStore {
         };
         let sql = format!(
             "{verb} INTO edges (edge_id, source, target, kind, confidence,
-                direction, operation, condition, async_boundary)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
+                direction, operation, condition, async_boundary, provenance)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
         );
         let mut stmt = tx.prepare(&sql)?;
         for (edge_id, edge) in edges {
@@ -197,6 +200,7 @@ impl SqliteStore {
                 edge.direction.as_ref().map(enum_to_str).transpose()?;
             let async_boundary_int: Option<i64> =
                 edge.async_boundary.map(|b| if b { 1 } else { 0 });
+            let provenance = serde_json::to_string(&edge.provenance)?;
             stmt.execute(rusqlite::params![
                 edge_id,
                 edge.source,
@@ -207,6 +211,7 @@ impl SqliteStore {
                 edge.operation,
                 edge.condition,
                 async_boundary_int,
+                provenance,
             ])?;
         }
         Ok(())
@@ -251,7 +256,8 @@ impl SqliteStore {
                 direction  TEXT,
                 operation  TEXT,
                 condition  TEXT,
-                async_boundary INTEGER
+                async_boundary INTEGER,
+                provenance TEXT NOT NULL
             );",
         )?;
 
@@ -400,6 +406,7 @@ impl Store for SqliteStore {
 
     fn load(&self) -> anyhow::Result<Graph> {
         let conn = self.open()?;
+        let schema_version = Self::schema_version(&conn)?;
         Self::create_tables(&conn)?;
 
         let version: String = conn
@@ -482,7 +489,61 @@ impl Store for SqliteStore {
             nodes
         };
 
-        let edges = {
+        let edges = if schema_version.as_deref() == Some(STORE_SCHEMA_VERSION) {
+            let mut stmt = conn.prepare(
+                "SELECT source, target, kind, confidence,
+                        direction, operation, condition, async_boundary, provenance
+                 FROM edges",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, f64>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            })?;
+
+            let mut edges = Vec::new();
+            for row in rows {
+                let (
+                    source,
+                    target,
+                    kind_str,
+                    confidence,
+                    direction_str,
+                    operation,
+                    condition,
+                    async_boundary_int,
+                    provenance_json,
+                ) = row?;
+                let kind: EdgeKind = str_to_enum(&kind_str)
+                    .map_err(|e| anyhow::anyhow!("invalid edge kind '{kind_str}': {e}"))?;
+                let direction = direction_str
+                    .map(|s| str_to_enum(&s))
+                    .transpose()
+                    .map_err(|e| anyhow::anyhow!("invalid flow direction: {e}"))?;
+                let async_boundary = async_boundary_int.map(|v| v != 0);
+                let provenance: Vec<EdgeProvenance> = serde_json::from_str(&provenance_json)?;
+                edges.push(Edge {
+                    source,
+                    target,
+                    kind,
+                    confidence,
+                    direction,
+                    operation,
+                    condition,
+                    async_boundary,
+                    provenance,
+                });
+            }
+            edges
+        } else {
             let mut stmt = conn.prepare(
                 "SELECT source, target, kind, confidence,
                         direction, operation, condition, async_boundary
@@ -529,6 +590,7 @@ impl Store for SqliteStore {
                     operation,
                     condition,
                     async_boundary,
+                    provenance: Vec::new(),
                 });
             }
             edges
@@ -582,6 +644,14 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: vec![EdgeProvenance {
+                    file: "test.rs".into(),
+                    span: Span {
+                        start: [2, 4],
+                        end: [2, 10],
+                    },
+                    symbol_id: "test.rs::main".to_string(),
+                }],
             }],
         };
 
@@ -597,6 +667,7 @@ mod tests {
         );
         assert_eq!(loaded.edges.len(), 1);
         assert_eq!(loaded.edges[0].confidence, 0.85);
+        assert_eq!(loaded.edges[0].provenance, graph.edges[0].provenance);
     }
 
     #[test]
@@ -669,6 +740,14 @@ mod tests {
                     operation: Some("SELECT".to_string()),
                     condition: Some("user.isActive".to_string()),
                     async_boundary: Some(true),
+                    provenance: vec![EdgeProvenance {
+                        file: "api.rs".into(),
+                        span: Span {
+                            start: [4, 8],
+                            end: [4, 18],
+                        },
+                        symbol_id: "api::handler".to_string(),
+                    }],
                 },
                 Edge {
                     source: "api::handler".to_string(),
@@ -679,6 +758,7 @@ mod tests {
                     operation: Some("INSERT".to_string()),
                     condition: None,
                     async_boundary: Some(false),
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "api::handler".to_string(),
@@ -689,6 +769,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
             ],
         };
@@ -750,6 +831,7 @@ mod tests {
         assert_eq!(read_edge.operation.as_deref(), Some("SELECT"));
         assert_eq!(read_edge.condition.as_deref(), Some("user.isActive"));
         assert_eq!(read_edge.async_boundary, Some(true));
+        assert_eq!(read_edge.provenance, graph.edges[0].provenance);
 
         let write_edge = loaded
             .edges
@@ -858,6 +940,7 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
         };
         store.save(&previous).unwrap();
@@ -895,6 +978,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "a".to_string(),
@@ -905,6 +989,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
             ],
         };

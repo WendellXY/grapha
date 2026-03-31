@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use git2::{DiffOptions, Repository};
@@ -55,29 +55,7 @@ pub fn detect_changes(
         .into_iter()
         .collect();
 
-    let mut changed_symbols = Vec::new();
-    let mut seen_ids = HashSet::new();
-
-    for hunk in &changed_hunks {
-        for node in &graph.nodes {
-            let node_file = node.file.to_string_lossy();
-            if node_file.as_ref() == hunk.file
-                && ranges_overlap(
-                    hunk.start_line,
-                    hunk.end_line,
-                    node.span.start[0],
-                    node.span.end[0],
-                )
-                && seen_ids.insert(node.id.clone())
-            {
-                changed_symbols.push(ChangedSymbol {
-                    id: node.id.clone(),
-                    name: node.name.clone(),
-                    file: hunk.file.clone(),
-                });
-            }
-        }
-    }
+    let changed_symbols = collect_changed_symbols(&changed_hunks, graph);
 
     let mut affected_symbols = Vec::new();
     for sym in &changed_symbols {
@@ -121,6 +99,59 @@ struct Hunk {
     file: String,
     start_line: usize,
     end_line: usize,
+}
+
+fn collect_changed_symbols(changed_hunks: &[Hunk], graph: &Graph) -> Vec<ChangedSymbol> {
+    let node_index: HashMap<&str, &grapha_core::graph::Node> = graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect();
+    let mut changed_symbols = Vec::new();
+    let mut seen_ids = HashSet::new();
+
+    for hunk in changed_hunks {
+        for node in &graph.nodes {
+            let node_file = node.file.to_string_lossy();
+            if node_file.as_ref() == hunk.file
+                && ranges_overlap(
+                    hunk.start_line,
+                    hunk.end_line,
+                    node.span.start[0],
+                    node.span.end[0],
+                )
+                && seen_ids.insert(node.id.clone())
+            {
+                changed_symbols.push(ChangedSymbol {
+                    id: node.id.clone(),
+                    name: node.name.clone(),
+                    file: hunk.file.clone(),
+                });
+            }
+        }
+
+        for edge in &graph.edges {
+            if edge.provenance.iter().any(|provenance| {
+                provenance.file.to_string_lossy().as_ref() == hunk.file
+                    && ranges_overlap(
+                        hunk.start_line,
+                        hunk.end_line,
+                        provenance.span.start[0],
+                        provenance.span.end[0],
+                    )
+            }) && let Some(source_node) = node_index.get(edge.source.as_str())
+                && seen_ids.insert(source_node.id.clone())
+            {
+                changed_symbols.push(ChangedSymbol {
+                    id: source_node.id.clone(),
+                    name: source_node.name.clone(),
+                    file: hunk.file.clone(),
+                });
+            }
+        }
+    }
+
+    changed_symbols
 }
 
 fn ranges_overlap(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
@@ -173,6 +204,10 @@ fn extract_hunks(diff: &git2::Diff) -> anyhow::Result<Vec<Hunk>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grapha_core::graph::{
+        Edge, EdgeKind, EdgeProvenance, Graph, Node, NodeKind, Span, Visibility,
+    };
+    use std::path::PathBuf;
 
     #[test]
     fn ranges_overlap_works() {
@@ -180,5 +215,58 @@ mod tests {
         assert!(ranges_overlap(5, 15, 0, 10));
         assert!(!ranges_overlap(0, 5, 10, 15));
         assert!(ranges_overlap(0, 10, 10, 20));
+    }
+
+    #[test]
+    fn collect_changed_symbols_matches_edge_provenance() {
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![Node {
+                id: "src/lib.rs::handler".to_string(),
+                kind: NodeKind::Function,
+                name: "handler".to_string(),
+                file: PathBuf::from("src/lib.rs"),
+                span: Span {
+                    start: [0, 0],
+                    end: [1, 0],
+                },
+                visibility: Visibility::Public,
+                metadata: HashMap::new(),
+                role: None,
+                signature: None,
+                doc_comment: None,
+                module: None,
+            }],
+            edges: vec![Edge {
+                source: "src/lib.rs::handler".to_string(),
+                target: "src/lib.rs::db_call".to_string(),
+                kind: EdgeKind::Calls,
+                confidence: 0.9,
+                direction: None,
+                operation: None,
+                condition: None,
+                async_boundary: None,
+                provenance: vec![EdgeProvenance {
+                    file: PathBuf::from("src/lib.rs"),
+                    span: Span {
+                        start: [8, 4],
+                        end: [8, 20],
+                    },
+                    symbol_id: "src/lib.rs::handler".to_string(),
+                }],
+            }],
+        };
+
+        let changed_symbols = collect_changed_symbols(
+            &[Hunk {
+                file: "src/lib.rs".to_string(),
+                start_line: 8,
+                end_line: 8,
+            }],
+            &graph,
+        );
+
+        assert_eq!(changed_symbols.len(), 1);
+        assert_eq!(changed_symbols[0].id, "src/lib.rs::handler");
     }
 }

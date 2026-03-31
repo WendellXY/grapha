@@ -80,6 +80,13 @@ pub struct Span {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EdgeProvenance {
+    pub file: PathBuf,
+    pub span: Span,
+    pub symbol_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Node {
     pub id: String,
     pub kind: NodeKind,
@@ -112,6 +119,8 @@ pub struct Edge {
     pub condition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub async_boundary: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provenance: Vec<EdgeProvenance>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -192,6 +201,7 @@ mod tests {
             operation: None,
             condition: None,
             async_boundary: None,
+            provenance: Vec::new(),
         };
         let json = serde_json::to_string(&edge).unwrap();
         assert!(json.contains("\"confidence\":0.95"));
@@ -255,6 +265,7 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
         };
         let json = serde_json::to_string(&graph).unwrap();
@@ -419,12 +430,14 @@ mod tests {
             operation: None,
             condition: None,
             async_boundary: None,
+            provenance: Vec::new(),
         };
         let json = serde_json::to_string(&edge).unwrap();
         assert!(!json.contains("direction"));
         assert!(!json.contains("operation"));
         assert!(!json.contains("condition"));
         assert!(!json.contains("async_boundary"));
+        assert!(!json.contains("provenance"));
     }
 
     #[test]
@@ -438,6 +451,14 @@ mod tests {
             operation: Some("INSERT".to_string()),
             condition: Some("user.isAdmin".to_string()),
             async_boundary: Some(true),
+            provenance: vec![EdgeProvenance {
+                file: PathBuf::from("main.rs"),
+                span: Span {
+                    start: [1, 0],
+                    end: [1, 12],
+                },
+                symbol_id: "main.rs::main".to_string(),
+            }],
         };
         let json = serde_json::to_string(&edge).unwrap();
         let deserialized: Edge = serde_json::from_str(&json).unwrap();
@@ -446,6 +467,7 @@ mod tests {
         assert!(json.contains("INSERT"));
         assert!(json.contains("user.isAdmin"));
         assert!(json.contains("true"));
+        assert!(json.contains("provenance"));
     }
 
     #[test]
@@ -479,6 +501,14 @@ mod tests {
                 operation: Some("SELECT".to_string()),
                 condition: None,
                 async_boundary: Some(true),
+                provenance: vec![EdgeProvenance {
+                    file: PathBuf::from("api.rs"),
+                    span: Span {
+                        start: [2, 4],
+                        end: [2, 18],
+                    },
+                    symbol_id: "api::handler".to_string(),
+                }],
             }],
         };
         let json = serde_json::to_string(&graph).unwrap();

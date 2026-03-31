@@ -259,6 +259,7 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
         }
     }
@@ -372,6 +373,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "view.swift::ContentView::body".into(),
@@ -382,6 +384,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -392,6 +395,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -402,6 +406,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
             ],
         };
@@ -621,6 +626,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "view.swift::ContentView::body".into(),
@@ -631,6 +637,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -641,6 +648,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -651,6 +659,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -661,6 +670,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "view.swift::ContentView::panel".into(),
@@ -671,6 +681,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "view.swift::ContentView::helper".into(),
@@ -681,6 +692,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:panel@4:12".into(),
@@ -691,6 +703,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "view.swift::ContentView::helper@5:12".into(),
@@ -701,6 +714,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:Row@6:12".into(),
@@ -711,6 +725,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
             ],
         };

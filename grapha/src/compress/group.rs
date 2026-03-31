@@ -204,6 +204,7 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
         };
         let grouped = group(&graph);
@@ -252,6 +253,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "a.rs::handler".to_string(),
@@ -262,6 +264,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "a.rs::handler".to_string(),
@@ -272,6 +275,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
             ],
         };

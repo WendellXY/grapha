@@ -314,6 +314,7 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
             imports: vec![],
         };
@@ -337,6 +338,7 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
             imports: vec![],
         };
@@ -357,6 +359,7 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
             imports: vec![],
         };
@@ -382,6 +385,7 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
             imports: vec![],
         };
@@ -412,6 +416,7 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
             imports: vec![],
         };
@@ -456,6 +461,7 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
             imports: vec![],
         };
@@ -494,6 +500,7 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
             imports: vec![],
         };
@@ -532,6 +539,7 @@ mod tests {
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
             imports: vec![],
         };
@@ -588,6 +596,7 @@ mod tests {
                 operation: Some("RoomPage".to_string()),
                 condition: None,
                 async_boundary: None,
+                provenance: Vec::new(),
             }],
             imports: vec![],
         };
@@ -603,6 +612,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
                 Edge {
                     source: "room::KRoomPage::chatRoomFragViewPanel".to_string(),
@@ -613,6 +623,7 @@ mod tests {
                     operation: None,
                     condition: None,
                     async_boundary: None,
+                    provenance: Vec::new(),
                 },
             ],
             imports: vec![],

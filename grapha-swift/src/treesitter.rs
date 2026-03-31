@@ -3,7 +3,9 @@ use std::path::Path;
 
 use tree_sitter::Parser;
 
-use grapha_core::graph::{Edge, EdgeKind, Node, NodeKind, NodeRole, Span, Visibility};
+use grapha_core::graph::{
+    Edge, EdgeKind, EdgeProvenance, Node, NodeKind, NodeRole, Span, Visibility,
+};
 
 use grapha_core::{ExtractionResult, LanguageExtractor};
 
@@ -208,7 +210,60 @@ fn make_span(node: tree_sitter::Node) -> Span {
     }
 }
 
-fn emit_contains_edge(parent_id: Option<&str>, child_id: &str, result: &mut ExtractionResult) {
+fn edge_provenance(file: &str, span: Span, symbol_id: &str) -> Vec<EdgeProvenance> {
+    vec![EdgeProvenance {
+        file: file.into(),
+        span,
+        symbol_id: symbol_id.to_string(),
+    }]
+}
+
+fn node_edge_provenance(
+    file: &str,
+    node: tree_sitter::Node,
+    symbol_id: &str,
+) -> Vec<EdgeProvenance> {
+    edge_provenance(file, make_span(node), symbol_id)
+}
+
+fn span_from_text_range(
+    node: tree_sitter::Node,
+    text: &str,
+    start: usize,
+    end: usize,
+) -> Option<Span> {
+    let bytes = text.as_bytes();
+    if start > end || end > bytes.len() {
+        return None;
+    }
+
+    fn absolute_position(base: tree_sitter::Point, bytes: &[u8]) -> [usize; 2] {
+        let newline_count = bytes.iter().filter(|&&byte| byte == b'\n').count();
+        if newline_count == 0 {
+            [base.row, base.column + bytes.len()]
+        } else {
+            let last_newline = bytes
+                .iter()
+                .rposition(|&byte| byte == b'\n')
+                .expect("counted newlines above");
+            [base.row + newline_count, bytes.len() - last_newline - 1]
+        }
+    }
+
+    let base = node.start_position();
+    Some(Span {
+        start: absolute_position(base, &bytes[..start]),
+        end: absolute_position(base, &bytes[..end]),
+    })
+}
+
+fn emit_contains_edge(
+    parent_id: Option<&str>,
+    child_id: &str,
+    file: &str,
+    edge_node: tree_sitter::Node,
+    result: &mut ExtractionResult,
+) {
     if let Some(pid) = parent_id {
         result.edges.push(Edge {
             source: pid.to_string(),
@@ -219,6 +274,7 @@ fn emit_contains_edge(parent_id: Option<&str>, child_id: &str, result: &mut Extr
             operation: None,
             condition: None,
             async_boundary: None,
+            provenance: node_edge_provenance(file, edge_node, pid),
         });
     }
 }
@@ -239,7 +295,7 @@ fn extract_struct_or_class(
     let id = make_decl_id(file, module_path, parent_id, &name);
     let visibility = extract_visibility(node, source);
 
-    emit_contains_edge(parent_id, &id, result);
+    emit_contains_edge(parent_id, &id, file, node, result);
 
     // Extract inheritance/conformance edges
     extract_inheritance_edges(node, source, file, module_path, &id, result);
@@ -351,7 +407,7 @@ fn extract_property_as_entry_point(
     let id = make_decl_id(file, module_path, parent_id, &name);
     let visibility = extract_visibility(node, source);
 
-    emit_contains_edge(parent_id, &id, result);
+    emit_contains_edge(parent_id, &id, file, node, result);
 
     result.nodes.push(Node {
         id: id.clone(),
@@ -372,7 +428,7 @@ fn extract_property_as_entry_point(
     // Always run regex fallback to catch calls inside closures/ViewBuilder
     // bodies that tree-sitter doesn't parse as call_expression nodes.
     if let Ok(text) = node.utf8_text(source) {
-        extract_calls_from_text(text, file, module_path, &id, result);
+        extract_calls_from_text(text, node, file, module_path, &id, result);
     }
     extract_swiftui_declaration_structure(node, source, file, module_path, &id, result);
 }
@@ -411,7 +467,7 @@ fn extract_function_with_entry_hint(
         None
     };
 
-    emit_contains_edge(parent_id, &id, result);
+    emit_contains_edge(parent_id, &id, file, node, result);
 
     result.nodes.push(Node {
         id: id.clone(),
@@ -470,7 +526,7 @@ fn extract_enum(
     let id = make_decl_id(file, module_path, parent_id, &name);
     let visibility = extract_visibility(node, source);
 
-    emit_contains_edge(parent_id, &id, result);
+    emit_contains_edge(parent_id, &id, file, node, result);
 
     result.nodes.push(Node {
         id: id.clone(),
@@ -520,6 +576,7 @@ fn extract_enum_entries(
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: node_edge_provenance(file, child, parent_id),
             });
 
             result.nodes.push(Node {
@@ -553,7 +610,7 @@ fn extract_extension(
     let ext_name = format!("ext_{}", name);
     let id = make_decl_id(file, module_path, parent_id, &ext_name);
 
-    emit_contains_edge(parent_id, &id, result);
+    emit_contains_edge(parent_id, &id, file, node, result);
 
     result.nodes.push(Node {
         id: id.clone(),
@@ -604,7 +661,7 @@ fn extract_protocol(
     let id = make_decl_id(file, module_path, parent_id, &name);
     let visibility = extract_visibility(node, source);
 
-    emit_contains_edge(parent_id, &id, result);
+    emit_contains_edge(parent_id, &id, file, node, result);
 
     result.nodes.push(Node {
         id: id.clone(),
@@ -653,7 +710,7 @@ fn extract_function(
     let signature = extract_swift_signature(node, source);
     let doc_comment = extract_swift_doc_comment(node, source);
 
-    emit_contains_edge(parent_id, &id, result);
+    emit_contains_edge(parent_id, &id, file, node, result);
 
     result.nodes.push(Node {
         id: id.clone(),
@@ -717,7 +774,7 @@ fn extract_property(
     let id = make_decl_id(file, module_path, parent_id, &name);
     let visibility = extract_visibility(node, source);
 
-    emit_contains_edge(parent_id, &id, result);
+    emit_contains_edge(parent_id, &id, file, node, result);
 
     result.nodes.push(Node {
         id: id.clone(),
@@ -748,7 +805,7 @@ fn extract_property(
     if calls_before == 0
         && let Ok(text) = node.utf8_text(source)
     {
-        extract_calls_from_text(text, file, module_path, &id, result);
+        extract_calls_from_text(text, node, file, module_path, &id, result);
     }
 
     if declaration_returns_swiftui_view(node, source) {
@@ -761,6 +818,7 @@ fn extract_property(
 /// (e.g., SwiftUI View body with result builders).
 fn extract_calls_from_text(
     text: &str,
+    node: tree_sitter::Node,
     file: &str,
     module_path: &[String],
     caller_id: &str,
@@ -783,6 +841,10 @@ fn extract_calls_from_text(
             continue;
         }
         let target_id = make_id(file, module_path, fn_name);
+        let span = cap
+            .get(1)
+            .and_then(|capture| span_from_text_range(node, text, capture.start(), capture.end()))
+            .unwrap_or_else(|| make_span(node));
         result.edges.push(Edge {
             source: caller_id.to_string(),
             target: target_id,
@@ -792,6 +854,7 @@ fn extract_calls_from_text(
             operation: None,
             condition: None,
             async_boundary: None,
+            provenance: edge_provenance(file, span, caller_id),
         });
     }
 
@@ -808,6 +871,8 @@ fn extract_calls_from_text(
             seen.insert(last.to_string());
             let prefix = parts[..parts.len() - 1].join(".");
             let target_id = make_id(file, module_path, last);
+            let span = span_from_text_range(node, text, mat.start(), mat.end())
+                .unwrap_or_else(|| make_span(node));
             result.edges.push(Edge {
                 source: caller_id.to_string(),
                 target: target_id,
@@ -817,6 +882,7 @@ fn extract_calls_from_text(
                 operation: Some(prefix),
                 condition: None,
                 async_boundary: None,
+                provenance: edge_provenance(file, span, caller_id),
             });
         }
     }
@@ -848,7 +914,7 @@ fn extract_typealias(
     let id = make_decl_id(file, module_path, parent_id, &name);
     let visibility = extract_visibility(node, source);
 
-    emit_contains_edge(parent_id, &id, result);
+    emit_contains_edge(parent_id, &id, file, node, result);
 
     result.nodes.push(Node {
         id,
@@ -895,6 +961,7 @@ fn extract_import(
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: node_edge_provenance(file, node, file),
             });
         }
     }
@@ -1171,6 +1238,7 @@ fn extract_inheritance_edges(
                 operation: None,
                 condition: None,
                 async_boundary: None,
+                provenance: node_edge_provenance(file, child, type_id),
             });
         }
     }
@@ -1219,6 +1287,7 @@ fn extract_calls(
             operation: None,
             condition,
             async_boundary,
+            provenance: node_edge_provenance(file, node, caller_id),
         });
     }
 
@@ -1253,6 +1322,7 @@ fn extract_calls(
                 operation: prefix,
                 condition,
                 async_boundary: None,
+                provenance: node_edge_provenance(file, node, caller_id),
             });
         }
     }
@@ -1355,6 +1425,7 @@ fn emit_swiftui_node(
             operation: None,
             condition: None,
             async_boundary: None,
+            provenance: node_edge_provenance(file, node, parent_id),
         },
     );
     id
@@ -1557,6 +1628,7 @@ fn emit_swiftui_view_reference(
                 operation: owner_hint,
                 condition: None,
                 async_boundary: None,
+                provenance: node_edge_provenance(file, node, &view_id),
             },
         );
     }
@@ -1600,6 +1672,7 @@ fn emit_swiftui_call_reference(
             operation: owner_hint,
             condition: None,
             async_boundary: None,
+            provenance: node_edge_provenance(file, node, &view_id),
         },
     );
     for lambda in call_suffix_lambda_children(node) {
@@ -1845,6 +1918,7 @@ fn extract_swiftui_structure(
                             operation: None,
                             condition: None,
                             async_boundary: None,
+                            provenance: node_edge_provenance(file, node, &view_id),
                         },
                     );
                 }
@@ -2323,6 +2397,20 @@ mod tests {
             "test.swift::greet",
             EdgeKind::Calls,
         ));
+        let call_edge = result
+            .edges
+            .iter()
+            .find(|edge| {
+                edge.source == "test.swift::launch"
+                    && edge.target == "test.swift::greet"
+                    && edge.kind == EdgeKind::Calls
+            })
+            .expect("should find call edge");
+        assert!(
+            !call_edge.provenance.is_empty(),
+            "call edges should carry provenance"
+        );
+        assert_eq!(call_edge.provenance[0].symbol_id, "test.swift::launch");
     }
 
     #[test]
