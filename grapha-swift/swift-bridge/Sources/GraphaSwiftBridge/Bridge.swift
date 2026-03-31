@@ -51,5 +51,5 @@ public func swiftsyntaxExtract(
 
 @c(grapha_free_string)
 public func freeString(_ ptr: UnsafeMutablePointer<CChar>) {
-    ptr.deallocate()
+    free(ptr)  // strdup allocates via malloc; must use free, not Swift's deallocate
 }

@@ -56,17 +56,10 @@ private struct ExtractedEdge: Hashable {
 
 // MARK: - Callback Context Types
 
-private final class UnitCollector: @unchecked Sendable {
-    var names: [String] = []
-}
-
-private final class DepCollector: @unchecked Sendable {
-    var recordName: String?
-}
-
 private final class OccCollector: @unchecked Sendable {
     var nodes: [String: ExtractedNode] = [:]
-    var edges: [ExtractedEdge] = []
+    /// Set gives O(1) insertion with automatic deduplication (no post-pass needed).
+    var edges: Set<ExtractedEdge> = []
     let fileName: String
     let moduleName: String?
 
@@ -76,19 +69,7 @@ private final class OccCollector: @unchecked Sendable {
     }
 }
 
-private final class RelCollector: @unchecked Sendable {
-    let symbolUSR: String
-    let roles: UInt64
-    var edges: [ExtractedEdge] = []
-
-    init(symbolUSR: String, roles: UInt64) {
-        self.symbolUSR = symbolUSR
-        self.roles = roles
-    }
-}
-
 // MARK: - IndexStoreReader
-
 
 import Synchronization
 
@@ -99,20 +80,29 @@ import Synchronization
 private let _cbLock = Mutex<Void>(())
 nonisolated(unsafe) private var _cbStore: indexstore_t? = nil
 nonisolated(unsafe) private var _cbFileIndex: [String: UnitInfo] = [:]
-nonisolated(unsafe) private var _cbSearchPath: String = ""
-nonisolated(unsafe) private var _cbSearchFileName: String = ""
-nonisolated(unsafe) private var _cbMatchedUnit: String? = nil
-nonisolated(unsafe) private var _cbMatchedModule: String? = nil
 nonisolated(unsafe) private var _cbRecordName: String? = nil
 nonisolated(unsafe) private var _cbCollector: OccCollector? = nil
-nonisolated(unsafe) private var _cbRelEdges: [ExtractedEdge] = []
 nonisolated(unsafe) private var _cbRelSymbolUSR: String = ""
 nonisolated(unsafe) private var _cbRelRoles: UInt64 = 0
 
-/// Pre-built lookup: mainFile path → (unitName, moduleName)
+/// Pre-built lookup: mainFile path → (unitName, moduleName, recordName).
+/// recordName is pre-fetched during buildFileIndex to avoid a second unit reader open per extraction.
 private struct UnitInfo {
     let unitName: String
     let moduleName: String?
+    let recordName: String?
+}
+
+// MARK: - File-level dependency callback
+// Extracted from buildFileIndex to satisfy @convention(c)'s no-capture requirement.
+
+private func _collectRecordName(_ ctx: UnsafeMutableRawPointer?, _ dep: indexstore_unit_dependency_t?) -> Bool {
+    guard let dep else { return true }
+    if indexstore_unit_dependency_get_kind(dep) == 2 {
+        let name = str(indexstore_unit_dependency_get_name(dep))
+        if !name.isEmpty { _cbRecordName = name }
+    }
+    return true
 }
 
 final class IndexStoreReader: @unchecked Sendable {
@@ -146,16 +136,12 @@ final class IndexStoreReader: @unchecked Sendable {
         let resolved = resolvePath(filePath)
         let fileName = URL(fileURLWithPath: filePath).lastPathComponent
 
-        // O(1) lookup instead of scanning 9,458 units
-        let unitInfo = fileIndex?[resolved]
-            ?? fileIndex?.values.first(where: { _ in
-                // Fallback: check by filename suffix
-                fileIndex?.keys.first(where: { $0.hasSuffix("/" + fileName) }).flatMap { fileIndex?[$0] } != nil
-            })
-            ?? findByFileName(fileName)
+        // O(1) lookup, fallback to suffix search
+        let unitInfo = fileIndex?[resolved] ?? findByFileName(fileName)
 
         guard let unitInfo else { return nil }
-        guard let recordName = findRecordName(inUnit: unitInfo.unitName) else { return nil }
+        // recordName is pre-cached during buildFileIndex — no second unit reader open needed
+        guard let recordName = unitInfo.recordName else { return nil }
 
         let collector = readOccurrences(
             recordName: recordName,
@@ -185,7 +171,16 @@ final class IndexStoreReader: @unchecked Sendable {
             guard !mainFile.contains("/.build/") else { return true }
 
             let mod = str(indexstore_unit_reader_get_module_name(reader))
-            _cbFileIndex[mainFile] = UnitInfo(unitName: unitName, moduleName: mod.isEmpty ? nil : mod)
+
+            // Collect record name while reader is already open (avoids reopening on every extractFile call)
+            _cbRecordName = nil
+            _ = indexstore_unit_reader_dependencies_apply_f(reader, nil, _collectRecordName)
+
+            _cbFileIndex[mainFile] = UnitInfo(
+                unitName: unitName,
+                moduleName: mod.isEmpty ? nil : mod,
+                recordName: _cbRecordName
+            )
             return true
         }
 
@@ -195,33 +190,6 @@ final class IndexStoreReader: @unchecked Sendable {
 
     private func findByFileName(_ fileName: String) -> UnitInfo? {
         fileIndex?.first(where: { $0.key.hasSuffix("/" + fileName) })?.value
-    }
-    // MARK: - Record Discovery
-
-    private func findRecordName(inUnit unitName: String) -> String? {
-        guard let reader = unitName.withCString({
-            indexstore_unit_reader_create(store, $0, nil)
-        }) else {
-            return nil
-        }
-        defer { indexstore_unit_reader_dispose(reader) }
-
-        _cbRecordName = nil
-        
-        let cb: @convention(c) (UnsafeMutableRawPointer?, indexstore_unit_dependency_t?) -> Bool = {
-            _, dep in
-            guard let dep else { return true }
-            if indexstore_unit_dependency_get_kind(dep) == 2 {
-                let name = str(indexstore_unit_dependency_get_name(dep))
-                if !name.isEmpty {
-                    _cbRecordName = name
-                }
-            }
-            return true
-        }
-
-        _ = indexstore_unit_reader_dependencies_apply_f(reader, nil, cb)
-        return _cbRecordName
     }
 
     // MARK: - Occurrence Reading
@@ -279,23 +247,21 @@ private func processOccurrence(collector c: OccCollector, occ: indexstore_occurr
         )
     }
 
-    // Extract edges from relations
-    extractRelationEdges(collector: c, occ: occ, symbolUSR: usr, roles: roles)
+    // Extract edges from relations — writes directly into _cbCollector (c)
+    extractRelationEdges(occ: occ, symbolUSR: usr, roles: roles)
 }
 
 private func extractRelationEdges(
-    collector c: OccCollector,
     occ: indexstore_occurrence_t,
     symbolUSR: String,
     roles: UInt64
 ) {
-    _cbRelEdges = []
     _cbRelSymbolUSR = symbolUSR
     _cbRelRoles = roles
 
     let cb: @convention(c) (UnsafeMutableRawPointer?, indexstore_symbol_relation_t?) -> Bool = {
         _, rel in
-        guard let rel else { return true }
+        guard let rel, let c = _cbCollector else { return true }
         let relSym = indexstore_symbol_relation_get_symbol(rel)!
         let relUSR = str(indexstore_symbol_get_usr(relSym))
         guard !relUSR.isEmpty else { return true }
@@ -304,33 +270,33 @@ private func extractRelationEdges(
         let combinedRoles = _cbRelRoles | relRoles
 
         if (combinedRoles & Roles.call) != 0 {
-            _cbRelEdges.append(ExtractedEdge(
+            c.edges.insert(ExtractedEdge(
                 source: relUSR, target: _cbRelSymbolUSR,
                 kind: "calls", confidence: 1.0
             ))
         } else if (combinedRoles & Roles.containedBy) != 0 {
-            _cbRelEdges.append(ExtractedEdge(
+            c.edges.insert(ExtractedEdge(
                 source: relUSR, target: _cbRelSymbolUSR,
                 kind: "contains", confidence: 1.0
             ))
         }
 
         if (combinedRoles & Roles.baseOf) != 0 {
-            _cbRelEdges.append(ExtractedEdge(
+            c.edges.insert(ExtractedEdge(
                 source: _cbRelSymbolUSR, target: relUSR,
                 kind: "inherits", confidence: 1.0
             ))
         }
 
         if (combinedRoles & Roles.conformsTo) != 0 {
-            _cbRelEdges.append(ExtractedEdge(
+            c.edges.insert(ExtractedEdge(
                 source: _cbRelSymbolUSR, target: relUSR,
                 kind: "implements", confidence: 1.0
             ))
         }
 
         if (combinedRoles & Roles.overrideOf) != 0 {
-            _cbRelEdges.append(ExtractedEdge(
+            c.edges.insert(ExtractedEdge(
                 source: _cbRelSymbolUSR, target: relUSR,
                 kind: "implements", confidence: 0.9
             ))
@@ -342,7 +308,7 @@ private func extractRelationEdges(
             && (combinedRoles & Roles.baseOf) == 0
             && (combinedRoles & Roles.conformsTo) == 0
         {
-            _cbRelEdges.append(ExtractedEdge(
+            c.edges.insert(ExtractedEdge(
                 source: _cbRelSymbolUSR, target: relUSR,
                 kind: "type_ref", confidence: 0.9
             ))
@@ -352,7 +318,6 @@ private func extractRelationEdges(
     }
 
     _ = indexstore_occurrence_relations_apply_f(occ, nil, cb)
-    c.edges.append(contentsOf: _cbRelEdges)
 }
 
 // MARK: - Symbol Kind Mapping
@@ -395,45 +360,58 @@ private func resolvePath(_ path: String) -> String {
     return URL(fileURLWithPath: path).standardized.path
 }
 
-private func buildJSON(nodes: [ExtractedNode], edges: [ExtractedEdge]) -> String {
-    var nodeEntries: [String] = []
-    for n in nodes {
-        var e = "{"
-        e += "\"id\":\(esc(n.id)),"
-        e += "\"kind\":\(esc(n.kind)),"
-        e += "\"name\":\(esc(n.name)),"
-        e += "\"file\":\(esc(n.file)),"
-        e += "\"span\":{\"start\":[\(n.line),\(n.col)],\"end\":[\(n.line),\(n.col)]},"
-        e += "\"visibility\":\(esc(n.visibility)),"
-        e += "\"metadata\":{}"
-        if let m = n.module { e += ",\"module\":\(esc(m))" }
-        e += "}"
-        nodeEntries.append(e)
+private func buildJSON(nodes: [ExtractedNode], edges: Set<ExtractedEdge>) -> String {
+    var out = ""
+    // Rough capacity: ~180 bytes/node, ~100 bytes/edge
+    out.reserveCapacity(nodes.count * 180 + edges.count * 100 + 32)
+    out += "{\"nodes\":["
+    for (i, n) in nodes.enumerated() {
+        if i > 0 { out += "," }
+        out += "{\"id\":"
+        appendEscaped(&out, n.id)
+        out += ",\"kind\":"
+        appendEscaped(&out, n.kind)
+        out += ",\"name\":"
+        appendEscaped(&out, n.name)
+        out += ",\"file\":"
+        appendEscaped(&out, n.file)
+        out += ",\"span\":{\"start\":[\(n.line),\(n.col)],\"end\":[\(n.line),\(n.col)]}"
+        out += ",\"visibility\":"
+        appendEscaped(&out, n.visibility)
+        out += ",\"metadata\":{}"
+        if let m = n.module {
+            out += ",\"module\":"
+            appendEscaped(&out, m)
+        }
+        out += "}"
     }
-
-    // Deduplicate edges
-    var seen = Set<ExtractedEdge>()
-    var edgeEntries: [String] = []
-    for edge in edges {
-        guard seen.insert(edge).inserted else { continue }
-        var e = "{"
-        e += "\"source\":\(esc(edge.source)),"
-        e += "\"target\":\(esc(edge.target)),"
-        e += "\"kind\":\(esc(edge.kind)),"
-        e += "\"confidence\":\(edge.confidence)"
-        e += "}"
-        edgeEntries.append(e)
+    out += "],\"edges\":["
+    for (i, edge) in edges.enumerated() {
+        if i > 0 { out += "," }
+        out += "{\"source\":"
+        appendEscaped(&out, edge.source)
+        out += ",\"target\":"
+        appendEscaped(&out, edge.target)
+        out += ",\"kind\":"
+        appendEscaped(&out, edge.kind)
+        out += ",\"confidence\":\(edge.confidence)}"
     }
-
-    return "{\"nodes\":[\(nodeEntries.joined(separator: ","))],\"edges\":[\(edgeEntries.joined(separator: ","))],\"imports\":[]}"
+    out += "],\"imports\":[]}"
+    return out
 }
 
-private func esc(_ s: String) -> String {
-    let escaped = s
-        .replacingOccurrences(of: "\\", with: "\\\\")
-        .replacingOccurrences(of: "\"", with: "\\\"")
-        .replacingOccurrences(of: "\n", with: "\\n")
-        .replacingOccurrences(of: "\r", with: "\\r")
-        .replacingOccurrences(of: "\t", with: "\\t")
-    return "\"\(escaped)\""
+/// Single-pass JSON string escaping — avoids 4× replacingOccurrences allocations.
+private func appendEscaped(_ out: inout String, _ s: String) {
+    out.append("\"")
+    for scalar in s.unicodeScalars {
+        switch scalar.value {
+        case 0x5C: out += "\\\\"  // backslash
+        case 0x22: out += "\\\""  // double quote
+        case 0x0A: out += "\\n"   // newline
+        case 0x0D: out += "\\r"   // carriage return
+        case 0x09: out += "\\t"   // tab
+        default:   out.unicodeScalars.append(scalar)
+        }
+    }
+    out.append("\"")
 }
