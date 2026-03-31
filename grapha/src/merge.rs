@@ -78,27 +78,34 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
         })
         .collect();
 
-    // Build child_id → parent type names from Contains edges for hint-based disambiguation.
+    // Build candidate_id → owner type names from structural edges for hint-based disambiguation.
     let id_to_name: HashMap<&str, &str> = graph
         .nodes
         .iter()
         .map(|n| (n.id.as_str(), n.name.as_str()))
         .collect();
-    let mut child_to_parent_names: HashMap<String, Vec<String>> = HashMap::new();
+    let mut candidate_to_owner_names: HashMap<String, Vec<String>> = HashMap::new();
     for r in &results {
         for edge in &r.edges {
             if edge.kind == EdgeKind::Contains
                 && let Some(parent_name) = id_to_name.get(edge.source.as_str())
             {
-                child_to_parent_names
+                candidate_to_owner_names
                     .entry(edge.target.clone())
                     .or_default()
                     .push(parent_name.to_string());
+            } else if edge.kind == EdgeKind::Implements
+                && let Some(owner_name) = id_to_name.get(edge.target.as_str())
+            {
+                candidate_to_owner_names
+                    .entry(edge.source.clone())
+                    .or_default()
+                    .push(owner_name.to_string());
             }
         }
     }
 
-    // Collect all edges to process (need to borrow results for child_to_parent_names above)
+    // Collect all edges to process (need to borrow results for candidate_to_owner_names above)
     let all_edges: Vec<_> = results.into_iter().flat_map(|r| r.edges).collect();
 
     for mut edge in all_edges {
@@ -153,7 +160,7 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
                         source_module,
                         source_imports,
                         prefix_hint,
-                        &child_to_parent_names,
+                        &candidate_to_owner_names,
                     );
 
                     for (candidate_id, factor) in resolved {
@@ -177,7 +184,7 @@ fn resolve_candidates(
     source_module: Option<&str>,
     source_imports: Option<&HashSet<String>>,
     prefix_hint: Option<&str>,
-    child_to_parent_names: &HashMap<String, Vec<String>>,
+    candidate_to_owner_names: &HashMap<String, Vec<String>>,
 ) -> Vec<(String, f64)> {
     // 1. Same-module candidates
     let same_module: Vec<&NameEntry> = candidates
@@ -193,10 +200,22 @@ fn resolve_candidates(
         if let Some(hint) = prefix_hint {
             // Last segment of the prefix is the receiver name (e.g., "gift" from "AppContext.gift")
             let hint_name = hint.rsplit('.').next().unwrap_or(hint).to_lowercase();
+            let exact: Vec<&&NameEntry> = same_module
+                .iter()
+                .filter(|c| {
+                    candidate_to_owner_names.get(&c.id).is_some_and(|parents| {
+                        parents.iter().any(|p| p.eq_ignore_ascii_case(&hint_name))
+                    })
+                })
+                .collect();
+            if exact.len() == 1 {
+                return vec![(exact[0].id.clone(), 0.85)];
+            }
+
             let narrowed: Vec<&&NameEntry> = same_module
                 .iter()
                 .filter(|c| {
-                    child_to_parent_names.get(&c.id).is_some_and(|parents| {
+                    candidate_to_owner_names.get(&c.id).is_some_and(|parents| {
                         parents
                             .iter()
                             .any(|p| p.to_lowercase().contains(&hint_name))
@@ -528,5 +547,86 @@ mod tests {
         let e = call_edge.unwrap();
         assert_eq!(e.target, "b.rs::helper");
         assert!(e.confidence < 0.8); // reduced confidence
+    }
+
+    #[test]
+    fn owner_hint_disambiguates_same_module_helper_view_refs() {
+        let mut room_page_ext = make_node("room::RoomPageExt", "RoomPage", NodeKind::Extension);
+        room_page_ext.module = Some("Room".to_string());
+        let mut kroom_page_ext = make_node("room::KRoomPageExt", "KRoomPage", NodeKind::Extension);
+        kroom_page_ext.module = Some("Room".to_string());
+
+        let mut room_helper = make_node(
+            "room::RoomPage::chatRoomFragViewPanel",
+            "chatRoomFragViewPanel",
+            NodeKind::Property,
+        );
+        room_helper.module = Some("Room".to_string());
+        let mut kroom_helper = make_node(
+            "room::KRoomPage::chatRoomFragViewPanel",
+            "chatRoomFragViewPanel",
+            NodeKind::Property,
+        );
+        kroom_helper.module = Some("Room".to_string());
+
+        let mut body_view = make_node(
+            "room::RoomPage::body::view:chatRoomFragViewPanel",
+            "chatRoomFragViewPanel",
+            NodeKind::View,
+        );
+        body_view.module = Some("Room".to_string());
+
+        let source = body_view.id.clone();
+        let r1 = ExtractionResult {
+            nodes: vec![body_view],
+            edges: vec![Edge {
+                source: source.clone(),
+                target: "room::RoomPage.swift::chatRoomFragViewPanel".to_string(),
+                kind: EdgeKind::TypeRef,
+                confidence: 1.0,
+                direction: None,
+                operation: Some("RoomPage".to_string()),
+                condition: None,
+                async_boundary: None,
+            }],
+            imports: vec![],
+        };
+        let r2 = ExtractionResult {
+            nodes: vec![room_page_ext, kroom_page_ext, room_helper, kroom_helper],
+            edges: vec![
+                Edge {
+                    source: "room::RoomPage::chatRoomFragViewPanel".to_string(),
+                    target: "room::RoomPageExt".to_string(),
+                    kind: EdgeKind::Implements,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                },
+                Edge {
+                    source: "room::KRoomPage::chatRoomFragViewPanel".to_string(),
+                    target: "room::KRoomPageExt".to_string(),
+                    kind: EdgeKind::Implements,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                },
+            ],
+            imports: vec![],
+        };
+
+        let graph = merge(vec![r1, r2]);
+        let type_refs: Vec<_> = graph
+            .edges
+            .iter()
+            .filter(|edge| edge.source == source && edge.kind == EdgeKind::TypeRef)
+            .collect();
+
+        assert_eq!(type_refs.len(), 1);
+        assert_eq!(type_refs[0].target, "room::RoomPage::chatRoomFragViewPanel");
+        assert!((type_refs[0].confidence - 0.85).abs() < 0.001);
     }
 }

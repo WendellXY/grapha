@@ -1365,6 +1365,20 @@ fn same_owner_member_id(owner_id: &str, name: &str) -> Option<String> {
     Some(format!("{owner_prefix}::{name}"))
 }
 
+fn enclosing_owner_type_name(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let mut current = Some(node);
+    while let Some(cursor) = current {
+        if cursor.kind() == "class_declaration" {
+            return match detect_class_declaration_type(cursor) {
+                ClassDeclarationType::Extension => find_user_type_name(cursor, source),
+                _ => type_identifier_text(cursor, source),
+            };
+        }
+        current = cursor.parent();
+    }
+    None
+}
+
 fn uppercase_identifier(name: &str) -> bool {
     name.chars()
         .next()
@@ -1531,6 +1545,7 @@ fn emit_swiftui_view_reference(
     if !is_builtin_swiftui_view(&name) {
         let target_id = same_owner_member_id(owner_id, &name)
             .unwrap_or_else(|| make_id(file, module_path, &name));
+        let owner_hint = enclosing_owner_type_name(node, source);
         emit_unique_edge(
             result,
             Edge {
@@ -1539,7 +1554,7 @@ fn emit_swiftui_view_reference(
                 kind: EdgeKind::TypeRef,
                 confidence: 0.85,
                 direction: None,
-                operation: None,
+                operation: owner_hint,
                 condition: None,
                 async_boundary: None,
             },
@@ -1573,6 +1588,7 @@ fn emit_swiftui_call_reference(
     );
     let target_id =
         same_owner_member_id(owner_id, &name).unwrap_or_else(|| make_id(file, module_path, &name));
+    let owner_hint = enclosing_owner_type_name(node, source);
     emit_unique_edge(
         result,
         Edge {
@@ -1581,7 +1597,7 @@ fn emit_swiftui_call_reference(
             kind: EdgeKind::TypeRef,
             confidence: 0.85,
             direction: None,
-            operation: None,
+            operation: owner_hint,
             condition: None,
             async_boundary: None,
         },
