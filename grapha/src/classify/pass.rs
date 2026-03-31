@@ -24,14 +24,7 @@ fn classify_by_module(target_usr: &str) -> Option<(TerminalKind, FlowDirection, 
     match module {
         // Network
         "FrameNetwork" | "FrameNetworkCore" | "Moya" | "Alamofire" => {
-            let dir = if target_usr.contains("request")
-                || target_usr.contains("fetch")
-                || target_usr.contains("get")
-            {
-                FlowDirection::ReadWrite
-            } else {
-                FlowDirection::ReadWrite
-            };
+            let dir = FlowDirection::ReadWrite;
             Some((TerminalKind::Network, dir, "request".to_string()))
         }
         // Persistence — database

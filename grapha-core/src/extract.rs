@@ -10,6 +10,12 @@ pub struct ExtractionResult {
     pub imports: Vec<Import>,
 }
 
+impl Default for ExtractionResult {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ExtractionResult {
     pub fn new() -> Self {
         Self {

@@ -175,10 +175,10 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
     // Pre-discover index store before starting the progress bar
     let t = Instant::now();
     grapha_swift::init_index_store(&abs_root);
-    if let Some(store) = grapha_swift::index_store_path() {
-        if verbose {
-            progress::done(&format!("index store: {}", store.display()), t);
-        }
+    if let Some(store) = grapha_swift::index_store_path()
+        && verbose
+    {
+        progress::done(&format!("index store: {}", store.display()), t);
     }
 
     let t = Instant::now();
@@ -250,12 +250,10 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
                 Ok(result) => Some(stamp_module(result, &file_module)),
                 Err(e) => {
                     skipped.fetch_add(1, Ordering::Relaxed);
-                    if verbose {
-                        if let Some(ref pb) = pb {
-                            pb.suspend(|| {
-                                eprintln!("  \x1b[33m!\x1b[0m skipping {}: {e}", file.display())
-                            });
-                        }
+                    if verbose && let Some(ref pb) = pb {
+                        pb.suspend(|| {
+                            eprintln!("  \x1b[33m!\x1b[0m skipping {}: {e}", file.display())
+                        });
                     }
                     None
                 }
