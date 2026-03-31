@@ -46,7 +46,7 @@ public func swiftsyntaxExtract(
     _ sourceLen: Int,
     _ filePath: UnsafePointer<CChar>
 ) -> UnsafePointer<CChar>? {
-    return nil // Phase 4
+    return extractWithSwiftSyntax(source: source, sourceLen: sourceLen, filePath: filePath)
 }
 
 // MARK: - Memory

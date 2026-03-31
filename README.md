@@ -4,7 +4,7 @@
 
 Blazingly fast code intelligence for LLM agents and developer tooling.
 
-Grapha transforms source code into a normalized, graph-based representation with compiler-grade accuracy. For Swift, it reads Xcode's pre-built index store via a binary FFI bridge for fully type-resolved symbol graphs, falling back to tree-sitter for instant parsing without a build. The resulting graph provides persistence, incremental search/index sync, dataflow tracing, semantic effect graphs, and impact analysis — giving agents and developers structured access to codebases at scale.
+Grapha transforms source code into a normalized, graph-based representation with compiler-grade accuracy. For Swift, it reads Xcode's pre-built index store via a binary FFI bridge for fully type-resolved symbol graphs, then falls back to SwiftSyntax and finally tree-sitter for instant parsing without a build. The resulting graph provides persistence, incremental search/index sync, dataflow tracing, semantic effect graphs, and impact analysis — giving agents and developers structured access to codebases at scale.
 
 > **1,991 Swift files — 123K nodes, 766K edges — indexed in 6 seconds.**
 
@@ -29,14 +29,15 @@ Tested on a production iOS app (1,991 Swift files, ~300K lines):
 | Terminal operations | 10,548 |
 
 **Why it's fast:**
-- **Zero-parse binary FFI** — Swift bridge returns packed structs + deduplicated string table instead of JSON. Rust reads with pointer arithmetic, no serde.
+- **Zero-parse index-store FFI** — the index-store bridge returns packed structs + a deduplicated string table. Rust reads with pointer arithmetic, no serde on the compiler-grade path.
 - **Index store reuse** — reads Xcode's already-compiled symbol database. No re-parsing, no re-resolving.
+- **Fast fallback tiers** — when no index is available, SwiftSyntax runs through the same bridge and tree-sitter remains the last-resort parser.
 - **Deferred indexing** — SQLite indexes built after bulk insert, not during.
 - **Parallel extraction** — rayon-powered concurrent file processing.
 
 ## Features
 
-- **Compiler-grade accuracy** — reads Xcode's pre-built index store for 100% type-resolved call graphs (Swift). Falls back to tree-sitter for instant parsing without a build.
+- **Compiler-grade accuracy** — reads Xcode's pre-built index store for 100% type-resolved call graphs (Swift). Falls back to SwiftSyntax, then tree-sitter, for instant parsing without a build.
 - **Incremental indexing** — SQLite storage and Tantivy search sync incrementally by default. Use `grapha index --full-rebuild` to force a cold rebuild.
 - **Dataflow tracing** — trace forward from entry points to terminal operations (network, persistence, cache). Trace backward from any symbol to affected entry points.
 - **Semantic dataflow graph** — derive a deduplicated effect graph from an entry point with `grapha dataflow`, including reads, writes, publishes, subscribes, and terminal side effects.
@@ -99,7 +100,7 @@ grapha index . --store-dir /tmp/idx    # Custom storage
 grapha index . --full-rebuild          # Force full store/search rebuild
 ```
 
-Auto-discovers Xcode's index store from DerivedData for compiler-resolved symbols. Falls back to tree-sitter when no index is available. SQLite storage and the search index sync incrementally by default when a compatible prior index exists.
+Auto-discovers Xcode's index store from DerivedData for compiler-resolved symbols. Falls back to SwiftSyntax and then tree-sitter when no index is available. SQLite storage and the search index sync incrementally by default when a compatible prior index exists.
 
 ### `grapha analyze` — One-shot extraction
 
@@ -197,23 +198,23 @@ grapha/          CLI binary, Rust extractor, pipeline, query engines, web UI
    → compiler-resolved USRs, confidence 1.0
    → auto-discovered from DerivedData
 
-2. SwiftSyntax (via Swift bridge FFI)
+2. SwiftSyntax (JSON-string FFI via Swift bridge)
    → accurate parsing, no type resolution, confidence 0.9
 
 3. tree-sitter-swift (bundled)
    → fast fallback, limited accuracy, confidence 0.6-0.8
 ```
 
-The Swift bridge (`libGraphaSwiftBridge.dylib`) is automatically compiled by `build.rs` when a Swift toolchain is detected. Data crosses the FFI boundary as a flat binary buffer (packed structs + string table) — no JSON serialization overhead. No Swift required for Rust-only projects.
+The Swift bridge (`libGraphaSwiftBridge.dylib`) is automatically compiled by `build.rs` when a Swift toolchain is detected. The index-store path crosses the FFI boundary as a flat binary buffer (packed structs + string table), while the SwiftSyntax path currently returns a JSON string that Rust decodes into the shared graph model. No Swift required for Rust-only projects.
 
 ### Pipeline
 
 ```
 Discover → Extract → Merge → Classify → Compress → Store → Query/Serve
               ↑          ↑        ↑
-         index store  module-   entry points
-         or tree-     aware     + terminals
-         sitter       resolution
+      index store /  module-   entry points
+      SwiftSyntax /  aware     + terminals
+      tree-sitter    resolution
 ```
 
 ### Graph Model

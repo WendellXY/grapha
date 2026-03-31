@@ -4,7 +4,7 @@ This file provides guidance to agents when working with code in this repository.
 
 ## Project Overview
 
-Grapha is a blazingly fast code intelligence CLI that transforms source code into a normalized, graph-based representation with compiler-grade accuracy. For Swift, it reads Xcode's pre-built index store (via `libIndexStore.dylib` FFI) for fully type-resolved symbol graphs, falling back to tree-sitter for instant parsing without a build. For Rust, it uses tree-sitter directly. The resulting graph provides persistence, search, dataflow tracing, and impact analysis for agent-driven and developer workflows.
+Grapha is a blazingly fast code intelligence CLI that transforms source code into a normalized, graph-based representation with compiler-grade accuracy. For Swift, it reads Xcode's pre-built index store (via `libIndexStore.dylib` FFI) for fully type-resolved symbol graphs, then falls back to SwiftSyntax and finally tree-sitter for instant parsing without a build. For Rust, it uses tree-sitter directly. The resulting graph provides persistence, search, dataflow tracing, and impact analysis for agent-driven and developer workflows.
 
 ## Workspace Structure
 
@@ -30,9 +30,9 @@ cargo fmt -- --check           # Check formatting without modifying
 ## Architecture
 
 - **Language**: Rust workspace, CLI-first (using `clap` with subcommands)
-- **Swift parsing**: Xcode index store (compiler-grade, via Swift bridge FFI) → tree-sitter-swift (fallback)
+- **Swift parsing**: Xcode index store (compiler-grade, binary FFI) → SwiftSyntax (JSON-string FFI) → tree-sitter-swift (fallback)
 - **Rust parsing**: tree-sitter-rust
-- **Swift bridge**: `grapha-swift/swift-bridge/` — Swift Package compiled by `build.rs`, exports `@c` functions, links `libIndexStore.dylib`
+- **Swift bridge**: `grapha-swift/swift-bridge/` — Swift Package compiled by `build.rs`, exports `@c` functions, links `libIndexStore.dylib`, uses binary FFI for index-store extraction and JSON-string FFI for SwiftSyntax extraction
 - **Persistence**: SQLite via `rusqlite` (production), JSON (debug)
 - **Search**: BM25 full-text search via `tantivy`
 - **Web UI**: Embedded axum server with vis-network frontend
@@ -85,8 +85,8 @@ Use `foo.rs` + `foo/` directory pattern (not `foo/mod.rs`).
 |--------|---------|
 | `lib.rs` | Public API: `extract_swift()` waterfall, index store auto-discovery |
 | `bridge.rs` | `dlopen` + FFI function pointers for Swift bridge dylib |
-| `indexstore.rs` | Index store reader (calls bridge, parses JSON) |
-| `swiftsyntax.rs` | SwiftSyntax parser (calls bridge, stub) |
+| `indexstore.rs` | Index store reader (calls bridge, parses binary buffer) |
+| `swiftsyntax.rs` | SwiftSyntax parser (calls bridge, parses JSON-string response) |
 | `treesitter.rs` | tree-sitter-swift fallback extractor |
 | `swift-bridge/` | Swift Package with `@c` exported functions, links `libIndexStore.dylib` |
 

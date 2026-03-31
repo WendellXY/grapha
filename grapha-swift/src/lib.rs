@@ -148,6 +148,7 @@ pub fn extract_swift(
     }
 
     if let Some(mut result) = swiftsyntax::extract_with_swiftsyntax(source, file_path) {
+        let _ = treesitter::enrich_doc_comments(source, &mut result);
         let _ = treesitter::enrich_swiftui_structure(source, file_path, &mut result);
         return Ok(result);
     }

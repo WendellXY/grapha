@@ -1057,12 +1057,19 @@ pub fn enrich_doc_comments(source: &[u8], result: &mut ExtractionResult) -> anyh
     collect_doc_comments(tree.root_node(), source, &mut doc_map);
 
     // Patch nodes that are missing a doc_comment.
+    // Index-store spans are 1-based, while tree-sitter/SwiftSyntax spans are
+    // 0-based. Try the node's stored line first, then a 1-based adjustment.
     for node in &mut result.nodes {
         if node.doc_comment.is_some() {
             continue;
         }
-        let line_1based = node.span.start[0];
-        if let Some(doc) = doc_map.remove(&(node.name.clone(), line_1based)) {
+        let line = node.span.start[0];
+        let key = (node.name.clone(), line);
+        let adjusted_key = (node.name.clone(), line + 1);
+        if let Some(doc) = doc_map
+            .remove(&key)
+            .or_else(|| doc_map.remove(&adjusted_key))
+        {
             node.doc_comment = Some(doc);
         }
     }

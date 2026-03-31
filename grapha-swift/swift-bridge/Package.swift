@@ -8,6 +8,7 @@ let package = Package(
         .library(name: "GraphaSwiftBridge", type: .dynamic, targets: ["GraphaSwiftBridge"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/WendellXY/CodableKit.git", from: "2.0.0"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.0"),
     ],
     targets: [
@@ -19,6 +20,7 @@ let package = Package(
             name: "GraphaSwiftBridge",
             dependencies: [
                 "CIndexStore",
+                .product(name: "CodableKit", package: "CodableKit"),
                 .product(name: "SwiftSyntax", package: "swift-syntax"),
                 .product(name: "SwiftParser", package: "swift-syntax"),
             ],
