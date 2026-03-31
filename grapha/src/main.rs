@@ -185,16 +185,84 @@ fn stamp_module(
         None => return result,
     };
 
-    let nodes = result
+    let manifest_id_remap: std::collections::HashMap<String, String> = result
         .nodes
-        .into_iter()
-        .map(|node| grapha_core::graph::Node {
-            module: Some(module_name.clone()),
-            ..node
+        .iter()
+        .filter(|node| {
+            node.file.file_name().and_then(|name| name.to_str()) == Some("Package.swift")
+        })
+        .map(|node| {
+            (
+                node.id.clone(),
+                format!("{}@@module:{}", node.id, module_name),
+            )
         })
         .collect();
 
-    extract::ExtractionResult { nodes, ..result }
+    let nodes = result
+        .nodes
+        .into_iter()
+        .map(|mut node| {
+            node.module = Some(module_name.clone());
+            if let Some(remapped_id) = manifest_id_remap.get(&node.id) {
+                node.id = remapped_id.clone();
+            }
+            node
+        })
+        .collect();
+
+    let edges = result
+        .edges
+        .into_iter()
+        .map(|mut edge| {
+            if let Some(remapped_id) = manifest_id_remap.get(&edge.source) {
+                edge.source = remapped_id.clone();
+            }
+            if let Some(remapped_id) = manifest_id_remap.get(&edge.target) {
+                edge.target = remapped_id.clone();
+            }
+            for provenance in &mut edge.provenance {
+                if let Some(remapped_id) = manifest_id_remap.get(&provenance.symbol_id) {
+                    provenance.symbol_id = remapped_id.clone();
+                }
+            }
+            edge
+        })
+        .collect();
+
+    extract::ExtractionResult {
+        nodes,
+        edges,
+        imports: result.imports,
+    }
+}
+
+fn normalize_graph(mut graph: grapha_core::graph::Graph) -> grapha_core::graph::Graph {
+    let mut edge_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut normalized_edges: Vec<grapha_core::graph::Edge> = Vec::with_capacity(graph.edges.len());
+
+    for edge in graph.edges {
+        let fingerprint = delta::edge_fingerprint(&edge);
+        if let Some(existing_index) = edge_index.get(&fingerprint).copied() {
+            let existing = &mut normalized_edges[existing_index];
+            existing.confidence = existing.confidence.max(edge.confidence);
+            for provenance in edge.provenance {
+                if !existing
+                    .provenance
+                    .iter()
+                    .any(|current| current == &provenance)
+                {
+                    existing.provenance.push(provenance);
+                }
+            }
+        } else {
+            edge_index.insert(fingerprint, normalized_edges.len());
+            normalized_edges.push(edge);
+        }
+    }
+
+    graph.edges = normalized_edges;
+    graph
 }
 
 /// Run the extraction pipeline on a path, returning a merged graph.
@@ -339,7 +407,7 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
         Box::new(classify::rust::RustClassifier::new()),
     ];
     let composite = classify::CompositeClassifier::new(classifiers);
-    let graph = classify::pass::classify_graph(&merged, &composite);
+    let graph = normalize_graph(classify::pass::classify_graph(&merged, &composite));
     if verbose {
         let terminal_count = graph
             .nodes
@@ -675,4 +743,122 @@ fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_graph, stamp_module};
+    use grapha_core::ExtractionResult;
+    use grapha_core::graph::{
+        Edge, EdgeKind, EdgeProvenance, Graph, Node, NodeKind, Span, Visibility,
+    };
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn stamp_module_namespaces_package_manifest_ids() {
+        let result = ExtractionResult {
+            nodes: vec![Node {
+                id: "s:4main7package18PackageDescription0C0Cvg".to_string(),
+                kind: NodeKind::Function,
+                name: "getter:package".to_string(),
+                file: PathBuf::from("Package.swift"),
+                span: Span {
+                    start: [0, 0],
+                    end: [0, 0],
+                },
+                visibility: Visibility::Public,
+                metadata: HashMap::new(),
+                role: None,
+                signature: None,
+                doc_comment: None,
+                module: None,
+            }],
+            edges: vec![Edge {
+                source: "s:4main7package18PackageDescription0C0Cvg".to_string(),
+                target: "external".to_string(),
+                kind: EdgeKind::Calls,
+                confidence: 1.0,
+                direction: None,
+                operation: None,
+                condition: None,
+                async_boundary: None,
+                provenance: vec![EdgeProvenance {
+                    file: PathBuf::from("Package.swift"),
+                    span: Span {
+                        start: [0, 0],
+                        end: [0, 0],
+                    },
+                    symbol_id: "s:4main7package18PackageDescription0C0Cvg".to_string(),
+                }],
+            }],
+            imports: vec![],
+        };
+
+        let stamped = stamp_module(result, &Some("Feature".to_string()));
+        assert_eq!(
+            stamped.nodes[0].id,
+            "s:4main7package18PackageDescription0C0Cvg@@module:Feature"
+        );
+        assert_eq!(
+            stamped.edges[0].source,
+            "s:4main7package18PackageDescription0C0Cvg@@module:Feature"
+        );
+        assert_eq!(
+            stamped.edges[0].provenance[0].symbol_id,
+            "s:4main7package18PackageDescription0C0Cvg@@module:Feature"
+        );
+        assert_eq!(stamped.nodes[0].module.as_deref(), Some("Feature"));
+    }
+
+    #[test]
+    fn normalize_graph_merges_duplicate_edges_and_provenance() {
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![],
+            edges: vec![
+                Edge {
+                    source: "a".to_string(),
+                    target: "b".to_string(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.4,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: vec![EdgeProvenance {
+                        file: PathBuf::from("a.swift"),
+                        span: Span {
+                            start: [1, 0],
+                            end: [1, 4],
+                        },
+                        symbol_id: "a".to_string(),
+                    }],
+                },
+                Edge {
+                    source: "a".to_string(),
+                    target: "b".to_string(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: vec![EdgeProvenance {
+                        file: PathBuf::from("a.swift"),
+                        span: Span {
+                            start: [2, 0],
+                            end: [2, 4],
+                        },
+                        symbol_id: "a".to_string(),
+                    }],
+                },
+            ],
+        };
+
+        let normalized = normalize_graph(graph);
+        assert_eq!(normalized.edges.len(), 1);
+        assert_eq!(normalized.edges[0].confidence, 0.9);
+        assert_eq!(normalized.edges[0].provenance.len(), 2);
+    }
 }

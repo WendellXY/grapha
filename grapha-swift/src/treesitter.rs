@@ -126,6 +126,26 @@ fn make_decl_id(file: &str, module_path: &[String], parent_id: Option<&str>, nam
         .unwrap_or_else(|| make_id(file, module_path, name))
 }
 
+fn unique_decl_id(
+    result: &ExtractionResult,
+    proposed_id: String,
+    node: tree_sitter::Node,
+) -> String {
+    if result
+        .nodes
+        .iter()
+        .all(|existing| existing.id != proposed_id)
+    {
+        return proposed_id;
+    }
+
+    let span = make_span(node);
+    format!(
+        "{proposed_id}@{}:{}:{}:{}",
+        span.start[0], span.start[1], span.end[0], span.end[1]
+    )
+}
+
 /// Extract the text of the first `simple_identifier` named child (used for function names).
 fn simple_identifier_text(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut cursor = node.walk();
@@ -292,7 +312,11 @@ fn extract_struct_or_class(
     let Some(name) = type_identifier_text(node, source) else {
         return;
     };
-    let id = make_decl_id(file, module_path, parent_id, &name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &name),
+        node,
+    );
     let visibility = extract_visibility(node, source);
 
     emit_contains_edge(parent_id, &id, file, node, result);
@@ -404,7 +428,11 @@ fn extract_property_as_entry_point(
 ) {
     let name = find_pattern_name(node, source);
     let Some(name) = name else { return };
-    let id = make_decl_id(file, module_path, parent_id, &name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &name),
+        node,
+    );
     let visibility = extract_visibility(node, source);
 
     emit_contains_edge(parent_id, &id, file, node, result);
@@ -454,7 +482,11 @@ fn extract_function_with_entry_hint(
         };
         n
     };
-    let id = make_decl_id(file, module_path, parent_id, &name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &name),
+        node,
+    );
     let visibility = extract_visibility(node, source);
     let signature = extract_swift_signature(node, source);
     let doc_comment = extract_swift_doc_comment(node, source);
@@ -523,7 +555,11 @@ fn extract_enum(
     let Some(name) = type_identifier_text(node, source) else {
         return;
     };
-    let id = make_decl_id(file, module_path, parent_id, &name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &name),
+        node,
+    );
     let visibility = extract_visibility(node, source);
 
     emit_contains_edge(parent_id, &id, file, node, result);
@@ -608,7 +644,11 @@ fn extract_extension(
     // Extension uses user_type > type_identifier for the extended type name
     let name = find_user_type_name(node, source).unwrap_or_else(|| "Unknown".to_string());
     let ext_name = format!("ext_{}", name);
-    let id = make_decl_id(file, module_path, parent_id, &ext_name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &ext_name),
+        node,
+    );
 
     emit_contains_edge(parent_id, &id, file, node, result);
 
@@ -658,7 +698,11 @@ fn extract_protocol(
     let Some(name) = type_identifier_text(node, source) else {
         return;
     };
-    let id = make_decl_id(file, module_path, parent_id, &name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &name),
+        node,
+    );
     let visibility = extract_visibility(node, source);
 
     emit_contains_edge(parent_id, &id, file, node, result);
@@ -705,7 +749,11 @@ fn extract_function(
         };
         n
     };
-    let id = make_decl_id(file, module_path, parent_id, &name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &name),
+        node,
+    );
     let visibility = extract_visibility(node, source);
     let signature = extract_swift_signature(node, source);
     let doc_comment = extract_swift_doc_comment(node, source);
@@ -771,7 +819,11 @@ fn extract_property(
     // Property name is in pattern > simple_identifier
     let name = find_pattern_name(node, source);
     let Some(name) = name else { return };
-    let id = make_decl_id(file, module_path, parent_id, &name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &name),
+        node,
+    );
     let visibility = extract_visibility(node, source);
 
     emit_contains_edge(parent_id, &id, file, node, result);
@@ -911,7 +963,11 @@ fn extract_typealias(
     let Some(name) = type_identifier_text(node, source) else {
         return;
     };
-    let id = make_decl_id(file, module_path, parent_id, &name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &name),
+        node,
+    );
     let visibility = extract_visibility(node, source);
 
     emit_contains_edge(parent_id, &id, file, node, result);
@@ -2341,6 +2397,59 @@ mod tests {
         let node = find_node(&result, "greet");
         assert_eq!(node.kind, NodeKind::Function);
         assert_eq!(node.visibility, Visibility::Public);
+    }
+
+    #[test]
+    fn overloaded_initializers_get_distinct_ids() {
+        let result = extract(
+            r#"
+            struct StringPair {
+                init(key: String, value: String) {}
+                init?(iosLine: String) {}
+            }
+            "#,
+        );
+
+        let init_nodes: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|node| node.name == "init")
+            .collect();
+        assert_eq!(init_nodes.len(), 2);
+
+        let unique_ids: std::collections::HashSet<_> =
+            init_nodes.iter().map(|node| node.id.as_str()).collect();
+        assert_eq!(unique_ids.len(), 2);
+    }
+
+    #[test]
+    fn multiple_extensions_get_distinct_ids() {
+        let result = extract(
+            r#"
+            struct Config {}
+
+            extension Config {
+                func alpha() {}
+            }
+
+            extension Config {
+                func beta() {}
+            }
+            "#,
+        );
+
+        let extension_nodes: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Extension)
+            .collect();
+        assert_eq!(extension_nodes.len(), 2);
+
+        let unique_ids: std::collections::HashSet<_> = extension_nodes
+            .iter()
+            .map(|node| node.id.as_str())
+            .collect();
+        assert_eq!(unique_ids.len(), 2);
     }
 
     #[test]
