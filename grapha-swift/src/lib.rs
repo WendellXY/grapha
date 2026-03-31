@@ -1,3 +1,4 @@
+mod binary;
 mod bridge;
 mod indexstore;
 mod swiftsyntax;
