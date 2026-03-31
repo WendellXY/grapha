@@ -1,19 +1,18 @@
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::path::Path;
 use std::sync::OnceLock;
 
 use grapha_core::ExtractionResult;
 
+use crate::binary;
 use crate::bridge;
 
-/// Cached store handle — opened once, reused for all files.
 static STORE_HANDLE: OnceLock<Option<StoreHandle>> = OnceLock::new();
 
 struct StoreHandle {
     ptr: *mut std::ffi::c_void,
 }
 
-// Store handles are thread-safe (protected by lock on Swift side)
 unsafe impl Send for StoreHandle {}
 unsafe impl Sync for StoreHandle {}
 
@@ -31,7 +30,6 @@ fn get_or_open_store(index_store_path: &Path) -> Option<*mut std::ffi::c_void> {
     handle.as_ref().map(|h| h.ptr)
 }
 
-/// Try to extract Swift symbols from Xcode's index store.
 pub fn extract_from_indexstore(
     file_path: &Path,
     index_store_path: &Path,
@@ -40,15 +38,18 @@ pub fn extract_from_indexstore(
     let handle = get_or_open_store(index_store_path)?;
 
     let file_path_c = CString::new(file_path.to_str()?).ok()?;
-    let json_ptr = unsafe { (bridge.indexstore_extract)(handle, file_path_c.as_ptr()) };
+    let mut buf_len: u32 = 0;
+    let buf_ptr = unsafe {
+        (bridge.indexstore_extract)(handle, file_path_c.as_ptr(), &mut buf_len)
+    };
 
-    if json_ptr.is_null() {
+    if buf_ptr.is_null() || buf_len == 0 {
         return None;
     }
 
-    let json_str = unsafe { CStr::from_ptr(json_ptr) }.to_str().ok()?;
-    let result: ExtractionResult = serde_json::from_str(json_str).ok()?;
-    unsafe { (bridge.free_string)(json_ptr as *mut i8) };
+    let buf = unsafe { std::slice::from_raw_parts(buf_ptr, buf_len as usize) };
+    let result = binary::parse_binary_buffer(buf);
+    unsafe { (bridge.free_buffer)(buf_ptr as *mut u8) };
 
-    Some(result)
+    result
 }
