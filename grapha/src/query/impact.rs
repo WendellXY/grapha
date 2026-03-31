@@ -34,18 +34,14 @@ fn to_symbol_ref(node: &Node) -> SymbolRef {
     }
 }
 
-fn cmp_node_ids<'a>(
-    left: &&'a str,
-    right: &&'a str,
-    node_index: &HashMap<&'a str, &'a Node>,
-) -> std::cmp::Ordering {
-    match (node_index.get(*left), node_index.get(*right)) {
-        (Some(left_node), Some(right_node)) => left_node
-            .name
-            .cmp(&right_node.name)
-            .then_with(|| left_node.file.cmp(&right_node.file))
-            .then_with(|| left_node.id.cmp(&right_node.id)),
-        _ => left.cmp(right),
+fn node_sort_key(node_id: &str, node_index: &HashMap<&str, &Node>) -> (String, String, String) {
+    match node_index.get(node_id).copied() {
+        Some(node) => (
+            node.name.clone(),
+            node.file.to_string_lossy().to_string(),
+            node.id.clone(),
+        ),
+        None => (node_id.to_string(), String::new(), node_id.to_string()),
     }
 }
 
@@ -94,7 +90,7 @@ pub fn query_impact(
         }
     }
     for dependents in reverse_adj.values_mut() {
-        dependents.sort_unstable_by(|left, right| cmp_node_ids(left, right, &node_index));
+        dependents.sort_unstable_by_key(|node_id| node_sort_key(node_id, &node_index));
     }
 
     let mut visited: HashSet<&str> = HashSet::new();
@@ -138,7 +134,7 @@ pub fn query_impact(
         children_by_parent.entry(parent).or_default().push(child);
     }
     for children in children_by_parent.values_mut() {
-        children.sort_unstable_by(|left, right| cmp_node_ids(left, right, &node_index));
+        children.sort_unstable_by_key(|node_id| node_sort_key(node_id, &node_index));
     }
     let source_ref = to_symbol_ref(node);
     let tree = build_impact_tree(&node.id, &node_index, &children_by_parent);
@@ -314,5 +310,55 @@ mod tests {
             .map(|child| child.symbol.name.as_str())
             .collect();
         assert_eq!(child_names, vec!["alpha", "beta"]);
+    }
+
+    #[test]
+    fn impact_ignores_unresolved_dependents_without_panicking_during_sort() {
+        let mk = |id: &str| Node {
+            id: id.into(),
+            kind: NodeKind::Function,
+            name: id.into(),
+            file: "test.rs".into(),
+            span: Span {
+                start: [0, 0],
+                end: [1, 0],
+            },
+            visibility: Visibility::Public,
+            metadata: StdHashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+        };
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![mk("alpha"), mk("source")],
+            edges: vec![
+                Edge {
+                    source: "ghost".into(),
+                    target: "source".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                },
+                Edge {
+                    source: "alpha".into(),
+                    target: "source".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                },
+            ],
+        };
+
+        let result = query_impact(&graph, "source", 5).unwrap();
+        assert_eq!(result.total_affected, 1);
+        assert_eq!(result.depth_1[0].name, "alpha");
     }
 }
