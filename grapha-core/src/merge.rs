@@ -91,6 +91,22 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
         .flat_map(|result| result.edges)
         .collect();
 
+    // Build child → parent type mapping for scoping Reads edges.
+    // If source X is contained by type T, reads from X should prefer
+    // targets that are also contained by T (siblings in the same type).
+    let mut child_to_parents: HashMap<String, Vec<String>> = HashMap::new();
+    for edge in &all_edges {
+        if edge.kind == EdgeKind::Contains
+            && node_ids.contains(edge.target.as_str())
+            && node_ids.contains(edge.source.as_str())
+        {
+            child_to_parents
+                .entry(edge.target.clone())
+                .or_default()
+                .push(edge.source.clone());
+        }
+    }
+
     for mut edge in all_edges {
         let is_external_usr_call = edge.target.starts_with("s:")
             && edge.kind == EdgeKind::Calls
@@ -145,6 +161,50 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
                 }
             }
             continue;
+        }
+
+        // For Reads edges: scope resolution to siblings of the same containing type.
+        // Without this, "viewModel" resolves to ALL viewModel properties in the module.
+        if edge.kind == EdgeKind::Reads {
+            if let Some(source_owners) = child_to_parents.get(&edge.source) {
+                let sibling_candidates: Vec<&NameEntry> = candidates
+                    .iter()
+                    .filter(|c| {
+                        candidate_to_owner_names
+                            .get(&c.id)
+                            .is_some_and(|owners| {
+                                owners.iter().any(|owner| {
+                                    source_owners.iter().any(|so| {
+                                        id_to_name.get(so.as_str()).is_some_and(|n| *n == owner)
+                                    })
+                                })
+                            })
+                    })
+                    .collect();
+                if sibling_candidates.len() == 1 {
+                    edge.target = sibling_candidates[0].id.clone();
+                    edge.confidence *= 0.9;
+                    graph.edges.push(edge);
+                    continue;
+                }
+                if !sibling_candidates.is_empty() {
+                    // Multiple siblings — pick the one in the same file
+                    let same_file: Vec<&&NameEntry> = sibling_candidates
+                        .iter()
+                        .filter(|c| {
+                            id_to_info.get(c.id.as_str())
+                                .is_some_and(|(_, f)| *f == source_file)
+                        })
+                        .collect();
+                    if same_file.len() == 1 {
+                        edge.target = same_file[0].id.clone();
+                        edge.confidence *= 0.9;
+                        graph.edges.push(edge);
+                        continue;
+                    }
+                    // Fall through to normal resolution if sibling scoping didn't narrow enough
+                }
+            }
         }
 
         let resolved = resolve_candidates(
