@@ -151,26 +151,30 @@ impl SqliteStore {
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"
         );
         let mut stmt = tx.prepare_cached(&sql)?;
-        let empty_meta = "{}";
+        let empty_meta = "{}".to_string();
+        let mut meta_buf = String::new();
         for node in nodes {
             let role_json: Option<String> =
                 node.role.as_ref().map(serde_json::to_string).transpose()?;
-            let meta_str = if node.metadata.is_empty() {
-                empty_meta.to_string()
+            let meta_ref: &str = if node.metadata.is_empty() {
+                &empty_meta
             } else {
-                serde_json::to_string(&node.metadata)?
+                meta_buf.clear();
+                serde_json::to_writer(unsafe { meta_buf.as_mut_vec() }, &node.metadata)?;
+                &meta_buf
             };
+            let file_str = node.file.to_string_lossy();
             stmt.execute(rusqlite::params![
                 node.id,
                 node_kind_str(&node.kind),
                 node.name,
-                node.file.to_string_lossy().as_ref(),
+                file_str.as_ref(),
                 node.span.start[0] as i64,
                 node.span.start[1] as i64,
                 node.span.end[0] as i64,
                 node.span.end[1] as i64,
                 visibility_str(&node.visibility),
-                meta_str,
+                meta_ref,
                 role_json,
                 node.signature,
                 node.doc_comment,
@@ -197,12 +201,17 @@ impl SqliteStore {
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
         );
         let mut stmt = tx.prepare_cached(&sql)?;
+        let empty_provenance = "[]";
         for (edge_id, edge) in edges {
-            let direction_str: Option<String> =
-                edge.direction.as_ref().map(enum_to_str).transpose()?;
+            let direction_str: Option<&str> =
+                edge.direction.as_ref().map(flow_direction_str);
             let async_boundary_int: Option<i64> =
                 edge.async_boundary.map(|b| if b { 1 } else { 0 });
-            let provenance = serde_json::to_string(&edge.provenance)?;
+            let provenance = if edge.provenance.is_empty() {
+                empty_provenance.to_string()
+            } else {
+                serde_json::to_string(&edge.provenance)?
+            };
             stmt.execute(rusqlite::params![
                 edge_id,
                 edge.source,
@@ -342,6 +351,16 @@ fn visibility_str(v: &Visibility) -> &'static str {
         Visibility::Public => "public",
         Visibility::Crate => "crate",
         Visibility::Private => "private",
+    }
+}
+
+fn flow_direction_str(d: &grapha_core::graph::FlowDirection) -> &'static str {
+    use grapha_core::graph::FlowDirection;
+    match d {
+        FlowDirection::Read => "read",
+        FlowDirection::Write => "write",
+        FlowDirection::ReadWrite => "read_write",
+        FlowDirection::Pure => "pure",
     }
 }
 

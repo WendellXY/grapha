@@ -79,7 +79,17 @@ pub fn edge_fingerprint(edge: &Edge) -> String {
     hasher.write_component(edge.operation.as_deref().unwrap_or(""));
     hasher.write_component(edge.condition.as_deref().unwrap_or(""));
     hasher.write_component(bool_tag(edge.async_boundary));
-    format!("{:016x}", hasher.finish())
+    // Fast hex encoding without format! allocation overhead
+    let hash = hasher.finish();
+    let mut buf = [0u8; 16];
+    let bytes = hash.to_be_bytes();
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (i, &b) in bytes.iter().enumerate() {
+        buf[i * 2] = HEX[(b >> 4) as usize];
+        buf[i * 2 + 1] = HEX[(b & 0xf) as usize];
+    }
+    // SAFETY: buf only contains ASCII hex chars
+    unsafe { String::from_utf8_unchecked(buf.to_vec()) }
 }
 
 fn edge_kind_tag(kind: EdgeKind) -> &'static str {
