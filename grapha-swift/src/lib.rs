@@ -20,6 +20,7 @@ pub static TIMING_TS_ENRICH_NS: AtomicU64 = AtomicU64::new(0);
 pub static TIMING_TS_DOC_NS: AtomicU64 = AtomicU64::new(0);
 pub static TIMING_TS_SWIFTUI_NS: AtomicU64 = AtomicU64::new(0);
 pub static TIMING_TS_L10N_NS: AtomicU64 = AtomicU64::new(0);
+pub static TIMING_TS_ASSET_NS: AtomicU64 = AtomicU64::new(0);
 pub static TIMING_SWIFTSYNTAX_NS: AtomicU64 = AtomicU64::new(0);
 pub static TIMING_TS_FALLBACK_NS: AtomicU64 = AtomicU64::new(0);
 
@@ -255,6 +256,11 @@ fn source_contains_l10n_markers(source: &[u8]) -> bool {
         || bytes_contains(source, b"Localizable")
 }
 
+/// Fast byte-level check for image asset markers.
+fn source_contains_asset_markers(source: &[u8]) -> bool {
+    treesitter::source_contains_image_asset_markers(source)
+}
+
 /// Extract Swift source code with waterfall strategy:
 /// 1. Xcode index store (confidence 1.0)
 /// 2. SwiftSyntax bridge (confidence 0.9)
@@ -301,8 +307,9 @@ pub fn extract_swift(
             // Check which enrichment passes are needed before parsing
             let has_swiftui = source_contains_swiftui_markers(source);
             let has_l10n = source_contains_l10n_markers(source);
+            let has_assets = source_contains_asset_markers(source);
             let needs_doc = result.nodes.iter().any(|n| n.doc_comment.is_none());
-            let needs_parse = needs_doc || has_swiftui || has_l10n;
+            let needs_parse = needs_doc || has_swiftui || has_l10n || has_assets;
 
             if needs_parse {
                 let t_parse = Instant::now();
@@ -331,6 +338,14 @@ pub fn extract_swift(
                         );
                         TIMING_TS_L10N_NS.fetch_add(t_l10n.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     }
+
+                    if has_assets {
+                        let t_asset = Instant::now();
+                        let _ = treesitter::enrich_asset_references_with_tree(
+                            source, file_path, &tree, &mut result,
+                        );
+                        TIMING_TS_ASSET_NS.fetch_add(t_asset.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    }
                 }
             }
             return Ok(result);
@@ -352,6 +367,9 @@ pub fn extract_swift(
             let _ = treesitter::enrich_localization_metadata_with_tree(
                 source, file_path, &tree, &mut result,
             );
+            let _ = treesitter::enrich_asset_references_with_tree(
+                source, file_path, &tree, &mut result,
+            );
             TIMING_TS_ENRICH_NS.fetch_add(t_enrich.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
         return Ok(result);
@@ -362,6 +380,10 @@ pub fn extract_swift(
     let extractor = SwiftExtractor;
     let mut result = extractor.extract(source, file_path)?;
     let _ = treesitter::enrich_localization_metadata(source, file_path, &mut result);
+    if source_contains_asset_markers(source) {
+        let tree = treesitter::parse_swift(source)?;
+        let _ = treesitter::enrich_asset_references_with_tree(source, file_path, &tree, &mut result);
+    }
     TIMING_TS_FALLBACK_NS.fetch_add(t_fb.elapsed().as_nanos() as u64, Ordering::Relaxed);
     Ok(result)
 }
