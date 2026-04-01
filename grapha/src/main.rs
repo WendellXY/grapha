@@ -388,13 +388,19 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
     };
 
     use rayon::prelude::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     let skipped = AtomicUsize::new(0);
+
+    // Per-phase timing accumulators (nanoseconds, summed across all threads)
+    let t_read_ns = AtomicU64::new(0);
+    let t_extract_ns = AtomicU64::new(0);
+    let t_snippet_ns = AtomicU64::new(0);
 
     let results: Vec<_> = all_files
         .par_iter()
         .filter_map(|file| {
+            let t0 = Instant::now();
             let source = match std::fs::read(file) {
                 Ok(s) => s,
                 Err(_) => {
@@ -405,9 +411,13 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
                     return None;
                 }
             };
+            t_read_ns.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            let t1 = Instant::now();
             let file_context = grapha_core::file_context(&project_context, &module_map, file);
             let extraction_result =
                 grapha_core::extract_with_registry(&registry, &source, &file_context);
+            t_extract_ns.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             if let Some(ref pb) = pb {
                 pb.inc(1);
@@ -415,6 +425,7 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
 
             match extraction_result {
                 Ok(mut result) => {
+                    let t2 = Instant::now();
                     if result.nodes.iter().any(|n| snippet::should_extract_snippet(n.kind)) {
                         // Avoid allocation: try zero-copy first, fall back to lossy
                         let source_str: std::borrow::Cow<'_, str> = match std::str::from_utf8(&source) {
@@ -428,6 +439,7 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
                             }
                         }
                     }
+                    t_snippet_ns.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     Some(result)
                 }
                 Err(e) => {
@@ -450,6 +462,22 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
     }
 
     if verbose {
+        let read_ms = t_read_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        let extract_ms = t_extract_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        let snippet_ms = t_snippet_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        let is_ms = grapha_swift::TIMING_INDEXSTORE_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
+        let ts_parse_ms = grapha_swift::TIMING_TS_PARSE_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
+        let ts_enrich_ms = grapha_swift::TIMING_TS_ENRICH_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
+        let ss_ms = grapha_swift::TIMING_SWIFTSYNTAX_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
+        let ts_fb_ms = grapha_swift::TIMING_TS_FALLBACK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
+        eprintln!(
+            "    thread-summed: read {:.0}ms, extract {:.0}ms, snippet {:.0}ms",
+            read_ms, extract_ms, snippet_ms
+        );
+        eprintln!(
+            "    swift breakdown: indexstore {:.0}ms, ts-parse {:.0}ms, ts-enrich {:.0}ms, swiftsyntax {:.0}ms, ts-fallback {:.0}ms",
+            is_ms, ts_parse_ms, ts_enrich_ms, ss_ms, ts_fb_ms
+        );
         let msg = if skipped > 0 {
             format!("extracted {} files ({} skipped)", results.len(), skipped)
         } else {

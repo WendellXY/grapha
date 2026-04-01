@@ -9,6 +9,16 @@ mod treesitter;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
+/// Thread-summed timing counters (nanoseconds) for extraction phases.
+/// Callers can read these after extraction to report breakdowns.
+pub static TIMING_INDEXSTORE_NS: AtomicU64 = AtomicU64::new(0);
+pub static TIMING_TS_PARSE_NS: AtomicU64 = AtomicU64::new(0);
+pub static TIMING_TS_ENRICH_NS: AtomicU64 = AtomicU64::new(0);
+pub static TIMING_SWIFTSYNTAX_NS: AtomicU64 = AtomicU64::new(0);
+pub static TIMING_TS_FALLBACK_NS: AtomicU64 = AtomicU64::new(0);
 
 pub use treesitter::SwiftExtractor;
 
@@ -256,10 +266,19 @@ pub fn extract_swift(
         // Use abs_file directly — canonicalize is expensive (syscall per file)
         // and only matters if there are symlinks, which is rare for source files.
         let canonical_file = abs_file;
-        if let Some(mut result) = indexstore::extract_from_indexstore(&canonical_file, store_path) {
+        let t_is = Instant::now();
+        let is_result = indexstore::extract_from_indexstore(&canonical_file, store_path);
+        TIMING_INDEXSTORE_NS.fetch_add(t_is.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+        if let Some(mut result) = is_result {
             // Index store doesn't provide doc comments — enrich via tree-sitter.
             // Parse once, share tree across all enrichment passes.
-            if let Ok(tree) = treesitter::parse_swift(source) {
+            let t_parse = Instant::now();
+            let tree_result = treesitter::parse_swift(source);
+            TIMING_TS_PARSE_NS.fetch_add(t_parse.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+            if let Ok(tree) = tree_result {
+                let t_enrich = Instant::now();
                 let _ = treesitter::enrich_doc_comments_with_tree(source, &tree, &mut result);
                 let _ = treesitter::enrich_swiftui_structure_with_tree(
                     source, file_path, &tree, &mut result,
@@ -267,13 +286,20 @@ pub fn extract_swift(
                 let _ = treesitter::enrich_localization_metadata_with_tree(
                     source, file_path, &tree, &mut result,
                 );
+                TIMING_TS_ENRICH_NS.fetch_add(t_enrich.elapsed().as_nanos() as u64, Ordering::Relaxed);
             }
             return Ok(result);
         }
     }
 
+    let t_ss = Instant::now();
     if let Some(mut result) = swiftsyntax::extract_with_swiftsyntax(source, file_path) {
-        if let Ok(tree) = treesitter::parse_swift(source) {
+        TIMING_SWIFTSYNTAX_NS.fetch_add(t_ss.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        let t_parse = Instant::now();
+        let tree_result = treesitter::parse_swift(source);
+        TIMING_TS_PARSE_NS.fetch_add(t_parse.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        if let Ok(tree) = tree_result {
+            let t_enrich = Instant::now();
             let _ = treesitter::enrich_doc_comments_with_tree(source, &tree, &mut result);
             let _ = treesitter::enrich_swiftui_structure_with_tree(
                 source, file_path, &tree, &mut result,
@@ -281,13 +307,17 @@ pub fn extract_swift(
             let _ = treesitter::enrich_localization_metadata_with_tree(
                 source, file_path, &tree, &mut result,
             );
+            TIMING_TS_ENRICH_NS.fetch_add(t_enrich.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
         return Ok(result);
     }
+    TIMING_SWIFTSYNTAX_NS.fetch_add(t_ss.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
+    let t_fb = Instant::now();
     let extractor = SwiftExtractor;
     let mut result = extractor.extract(source, file_path)?;
     let _ = treesitter::enrich_localization_metadata(source, file_path, &mut result);
+    TIMING_TS_FALLBACK_NS.fetch_add(t_fb.elapsed().as_nanos() as u64, Ordering::Relaxed);
     Ok(result)
 }
 
