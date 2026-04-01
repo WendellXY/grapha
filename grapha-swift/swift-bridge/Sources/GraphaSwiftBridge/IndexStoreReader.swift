@@ -132,7 +132,13 @@ final class IndexStoreReader: @unchecked Sendable {
         }
 
         let resolved = resolvePath(filePath)
-        let fileName = URL(fileURLWithPath: filePath).lastPathComponent
+        // Fast last-path-component extraction without Foundation URL
+        let fileName: String
+        if let slashIdx = resolved.lastIndex(of: "/") {
+            fileName = String(resolved[resolved.index(after: slashIdx)...])
+        } else {
+            fileName = resolved
+        }
 
         let unitInfo = fileIndex?[resolved] ?? findByFileName(fileName)
 
@@ -354,6 +360,10 @@ private struct BinaryEdgeKind {
 
 private func resolvePath(_ path: String) -> String {
     if path.hasPrefix("/") { return path }
+    // Avoid Foundation URL allocation for relative paths
+    if let cwd = ProcessInfo.processInfo.environment["PWD"] {
+        return cwd + "/" + path
+    }
     return URL(fileURLWithPath: path).standardized.path
 }
 
@@ -375,9 +385,14 @@ private func buildBinaryBuffer(
     func intern(_ s: String) -> (UInt32, UInt32) {
         if let existing = stringIndex[s] { return existing }
         let offset = UInt32(stringTable.count)
-        let bytes = Array(s.utf8)
-        stringTable.append(contentsOf: bytes)
-        let entry = (offset, UInt32(bytes.count))
+        var len: UInt32 = 0
+        // Write UTF-8 bytes directly without intermediate Array allocation
+        s.withCString { ptr in
+            let byteCount = strlen(ptr)
+            stringTable.append(UnsafeBufferPointer(start: ptr, count: byteCount))
+            len = UInt32(byteCount)
+        }
+        let entry = (offset, len)
         stringIndex[s] = entry
         return entry
     }
@@ -392,18 +407,18 @@ private func buildBinaryBuffer(
         nodeRefs.append((idRef, nameRef, fileRef, modRef))
     }
 
-    var edgeRefs: [(source: (UInt32, UInt32), target: (UInt32, UInt32))] = []
-    let edgeArray = Array(edges)
-    for e in edgeArray {
+    var edgeRefs: [(source: (UInt32, UInt32), target: (UInt32, UInt32), kind: UInt8, confidencePct: UInt8)] = []
+    edgeRefs.reserveCapacity(edges.count)
+    for e in edges {
         let srcRef = intern(e.source)
         let tgtRef = intern(e.target)
-        edgeRefs.append((srcRef, tgtRef))
+        edgeRefs.append((srcRef, tgtRef, e.kind, e.confidencePct))
     }
 
     // Phase 2: allocate and write buffer
     let nodeCount = UInt32(nodes.count)
-    let edgeCount = UInt32(edgeArray.count)
-    let strTableOffset = UInt32(HEADER_SIZE + nodes.count * PACKED_NODE_SIZE + edgeArray.count * PACKED_EDGE_SIZE)
+    let edgeCount = UInt32(edgeRefs.count)
+    let strTableOffset = UInt32(HEADER_SIZE + nodes.count * PACKED_NODE_SIZE + edgeRefs.count * PACKED_EDGE_SIZE)
     let totalSize = Int(strTableOffset) + stringTable.count
 
     let buf = malloc(totalSize)!  // must use malloc — freed via free() across FFI
@@ -418,7 +433,8 @@ private func buildBinaryBuffer(
         pos += 1
     }
     func pad(_ count: Int) {
-        for _ in 0..<count { writeU8(0) }
+        memset(buf.advanced(by: pos), 0, count)
+        pos += count
     }
 
     // Header
@@ -448,12 +464,11 @@ private func buildBinaryBuffer(
     }
 
     // Edges
-    for (i, e) in edgeArray.enumerated() {
-        let refs = edgeRefs[i]
-        writeU32(refs.source.0); writeU32(refs.source.1)
-        writeU32(refs.target.0); writeU32(refs.target.1)
-        writeU8(e.kind)
-        writeU8(e.confidencePct)
+    for ref in edgeRefs {
+        writeU32(ref.source.0); writeU32(ref.source.1)
+        writeU32(ref.target.0); writeU32(ref.target.1)
+        writeU8(ref.kind)
+        writeU8(ref.confidencePct)
         pad(2)
     }
 
