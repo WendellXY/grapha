@@ -86,6 +86,9 @@ enum Commands {
         /// Force a full store/search rebuild instead of using incremental sync
         #[arg(long)]
         full_rebuild: bool,
+        /// Show per-phase timing breakdown for performance profiling
+        #[arg(long)]
+        timing: bool,
     },
     /// Launch web UI for interactive graph exploration
     Serve {
@@ -292,7 +295,7 @@ fn builtin_registry() -> anyhow::Result<grapha_core::LanguageRegistry> {
 }
 
 /// Run the extraction pipeline on a path, returning a merged graph.
-fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph::Graph> {
+fn run_pipeline(path: &Path, verbose: bool, timing: bool) -> anyhow::Result<grapha_core::graph::Graph> {
     let t = Instant::now();
     let registry = builtin_registry()?;
     let project_context = grapha_core::project_context(path);
@@ -461,26 +464,27 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
         pb.finish_and_clear();
     }
 
-    if verbose {
+    if timing {
         let read_ms = t_read_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0;
         let extract_ms = t_extract_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0;
         let snippet_ms = t_snippet_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0;
         let is_ms = grapha_swift::TIMING_INDEXSTORE_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
         let ts_parse_ms = grapha_swift::TIMING_TS_PARSE_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
-        let ts_enrich_ms = grapha_swift::TIMING_TS_ENRICH_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
+        let doc_ms = grapha_swift::TIMING_TS_DOC_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
+        let swiftui_ms = grapha_swift::TIMING_TS_SWIFTUI_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
+        let l10n_ms = grapha_swift::TIMING_TS_L10N_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
         let ss_ms = grapha_swift::TIMING_SWIFTSYNTAX_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
         let ts_fb_ms = grapha_swift::TIMING_TS_FALLBACK_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
         eprintln!(
             "    thread-summed: read {:.0}ms, extract {:.0}ms, snippet {:.0}ms",
             read_ms, extract_ms, snippet_ms
         );
-        let doc_ms = grapha_swift::TIMING_TS_DOC_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
-        let swiftui_ms = grapha_swift::TIMING_TS_SWIFTUI_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
-        let l10n_ms = grapha_swift::TIMING_TS_L10N_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
         eprintln!(
-            "    swift breakdown: indexstore {:.0}ms, ts-parse {:.0}ms, ts-enrich {:.0}ms (doc {:.0}ms, swiftui {:.0}ms, l10n {:.0}ms), swiftsyntax {:.0}ms, ts-fallback {:.0}ms",
-            is_ms, ts_parse_ms, ts_enrich_ms, doc_ms, swiftui_ms, l10n_ms, ss_ms, ts_fb_ms
+            "    swift: indexstore {:.0}ms, ts-parse {:.0}ms, doc {:.0}ms, swiftui {:.0}ms, l10n {:.0}ms, swiftsyntax {:.0}ms, ts-fallback {:.0}ms",
+            is_ms, ts_parse_ms, doc_ms, swiftui_ms, l10n_ms, ss_ms, ts_fb_ms
         );
+    }
+    if verbose {
         let msg = if skipped > 0 {
             format!("extracted {} files ({} skipped)", results.len(), skipped)
         } else {
@@ -734,7 +738,7 @@ fn handle_analyze(
     compact: bool,
 ) -> anyhow::Result<()> {
     let verbose = output.is_some();
-    let mut graph = run_pipeline(&path, verbose)?;
+    let mut graph = run_pipeline(&path, verbose, false)?;
 
     if let Some(ref filter_str) = filter {
         let kinds = filter::parse_filter(filter_str)?;
@@ -772,10 +776,11 @@ fn handle_index(
     format: String,
     store_dir: Option<PathBuf>,
     full_rebuild: bool,
+    timing: bool,
 ) -> anyhow::Result<()> {
     let total_start = Instant::now();
     let store_path = store_dir.unwrap_or_else(|| path.join(".grapha"));
-    let graph = run_pipeline(&path, true)?;
+    let graph = run_pipeline(&path, true, timing)?;
 
     std::fs::create_dir_all(&store_path)
         .with_context(|| format!("failed to create store dir {}", store_path.display()))?;
@@ -1109,7 +1114,8 @@ fn main() -> anyhow::Result<()> {
             format,
             store_dir,
             full_rebuild,
-        } => handle_index(path, format, store_dir, full_rebuild)?,
+            timing,
+        } => handle_index(path, format, store_dir, full_rebuild, timing)?,
         Commands::Serve { path, port, mcp } => handle_serve(path, port, mcp)?,
         Commands::Symbol { command } => handle_symbol_command(command, render_options)?,
         Commands::Flow { command } => handle_flow_command(command, render_options)?,
