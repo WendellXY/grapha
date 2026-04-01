@@ -17,6 +17,9 @@ use std::time::Instant;
 pub static TIMING_INDEXSTORE_NS: AtomicU64 = AtomicU64::new(0);
 pub static TIMING_TS_PARSE_NS: AtomicU64 = AtomicU64::new(0);
 pub static TIMING_TS_ENRICH_NS: AtomicU64 = AtomicU64::new(0);
+pub static TIMING_TS_DOC_NS: AtomicU64 = AtomicU64::new(0);
+pub static TIMING_TS_SWIFTUI_NS: AtomicU64 = AtomicU64::new(0);
+pub static TIMING_TS_L10N_NS: AtomicU64 = AtomicU64::new(0);
 pub static TIMING_SWIFTSYNTAX_NS: AtomicU64 = AtomicU64::new(0);
 pub static TIMING_TS_FALLBACK_NS: AtomicU64 = AtomicU64::new(0);
 
@@ -278,15 +281,21 @@ pub fn extract_swift(
             TIMING_TS_PARSE_NS.fetch_add(t_parse.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             if let Ok(tree) = tree_result {
-                let t_enrich = Instant::now();
+                let t_doc = Instant::now();
                 let _ = treesitter::enrich_doc_comments_with_tree(source, &tree, &mut result);
+                TIMING_TS_DOC_NS.fetch_add(t_doc.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+                let t_swiftui = Instant::now();
                 let _ = treesitter::enrich_swiftui_structure_with_tree(
                     source, file_path, &tree, &mut result,
                 );
+                TIMING_TS_SWIFTUI_NS.fetch_add(t_swiftui.elapsed().as_nanos() as u64, Ordering::Relaxed);
+
+                let t_l10n = Instant::now();
                 let _ = treesitter::enrich_localization_metadata_with_tree(
                     source, file_path, &tree, &mut result,
                 );
-                TIMING_TS_ENRICH_NS.fetch_add(t_enrich.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                TIMING_TS_L10N_NS.fetch_add(t_l10n.elapsed().as_nanos() as u64, Ordering::Relaxed);
             }
             return Ok(result);
         }

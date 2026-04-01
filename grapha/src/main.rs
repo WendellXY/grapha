@@ -474,9 +474,12 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
             "    thread-summed: read {:.0}ms, extract {:.0}ms, snippet {:.0}ms",
             read_ms, extract_ms, snippet_ms
         );
+        let doc_ms = grapha_swift::TIMING_TS_DOC_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
+        let swiftui_ms = grapha_swift::TIMING_TS_SWIFTUI_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
+        let l10n_ms = grapha_swift::TIMING_TS_L10N_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1_000_000.0;
         eprintln!(
-            "    swift breakdown: indexstore {:.0}ms, ts-parse {:.0}ms, ts-enrich {:.0}ms, swiftsyntax {:.0}ms, ts-fallback {:.0}ms",
-            is_ms, ts_parse_ms, ts_enrich_ms, ss_ms, ts_fb_ms
+            "    swift breakdown: indexstore {:.0}ms, ts-parse {:.0}ms, ts-enrich {:.0}ms (doc {:.0}ms, swiftui {:.0}ms, l10n {:.0}ms), swiftsyntax {:.0}ms, ts-fallback {:.0}ms",
+            is_ms, ts_parse_ms, ts_enrich_ms, doc_ms, swiftui_ms, l10n_ms, ss_ms, ts_fb_ms
         );
         let msg = if skipped > 0 {
             format!("extracted {} files ({} skipped)", results.len(), skipped)
