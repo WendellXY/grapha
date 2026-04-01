@@ -305,18 +305,71 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
         Ok::<_, anyhow::Error>((files, ()))
     })?;
 
+    // Discover external repo files
+    let mut external_files: Vec<PathBuf> = Vec::new();
+    let mut external_repo_count = 0usize;
+    for ext in &cfg.external {
+        let ext_path = Path::new(&ext.path);
+        if !ext_path.exists() {
+            if verbose {
+                eprintln!(
+                    "  \x1b[33m!\x1b[0m external repo '{}' not found at {}, skipping",
+                    ext.name, ext.path
+                );
+            }
+            continue;
+        }
+        match grapha_core::pipeline::discover_files(ext_path, &registry) {
+            Ok(ext_discovered) => {
+                external_files.extend(ext_discovered);
+                external_repo_count += 1;
+            }
+            Err(e) => {
+                if verbose {
+                    eprintln!(
+                        "  \x1b[33m!\x1b[0m failed to discover files in '{}': {e}",
+                        ext.name
+                    );
+                }
+            }
+        }
+    }
+
+    let external_file_count = external_files.len();
+    let all_files: Vec<PathBuf> = files.into_iter().chain(external_files).collect();
+
     if verbose {
-        progress::done(&format!("discovered {} files", files.len()), t);
+        let msg = if external_file_count > 0 {
+            format!(
+                "discovered {} files + {} external ({} repos)",
+                all_files.len() - external_file_count,
+                external_file_count,
+                external_repo_count
+            )
+        } else {
+            format!("discovered {} files", all_files.len())
+        };
+        progress::done(&msg, t);
         if let Some(store) = grapha_swift::index_store_path() {
             progress::done(&format!("index store: {}", store.display()), t);
         }
     }
 
-    let module_map = grapha_core::discover_modules(&registry, &project_context)?;
+    let mut module_map = grapha_core::discover_modules(&registry, &project_context)?;
+    for ext in &cfg.external {
+        let ext_path = Path::new(&ext.path);
+        if !ext_path.exists() {
+            continue;
+        }
+        let ext_context = grapha_core::project_context(ext_path);
+        if let Ok(ext_modules) = grapha_core::discover_modules(&registry, &ext_context) {
+            module_map.merge(ext_modules);
+        }
+    }
 
     let t = Instant::now();
-    let pb = if verbose && files.len() > 1 {
-        Some(progress::bar(files.len() as u64, "extracting"))
+    let pb = if verbose && all_files.len() > 1 {
+        Some(progress::bar(all_files.len() as u64, "extracting"))
     } else {
         None
     };
@@ -326,7 +379,7 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
 
     let skipped = AtomicUsize::new(0);
 
-    let results: Vec<_> = files
+    let results: Vec<_> = all_files
         .par_iter()
         .filter_map(|file| {
             let source = match std::fs::read(file) {
@@ -385,7 +438,6 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
         progress::done(&msg, t);
     }
 
-    let cfg = config::load_config(path);
     let mut classifiers = registry.collect_classifiers();
     classifiers.insert(
         0,

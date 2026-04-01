@@ -24,6 +24,12 @@ pub struct OutputConfig {
     pub default_fields: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExternalRepo {
+    pub name: String,
+    pub path: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct GraphaConfig {
     #[serde(default)]
@@ -32,6 +38,8 @@ pub struct GraphaConfig {
     pub output: OutputConfig,
     #[serde(default)]
     pub classifiers: Vec<ClassifierRule>,
+    #[serde(default)]
+    pub external: Vec<ExternalRepo>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,5 +157,30 @@ operation = "HTTP"
         let toml_str = "[swift]\n";
         let config: GraphaConfig = toml::from_str(toml_str).unwrap();
         assert!(config.swift.index_store);
+    }
+
+    #[test]
+    fn parse_external_repos() {
+        let toml_str = r#"
+[[external]]
+name = "FrameUI"
+path = "/path/to/frameui"
+
+[[external]]
+name = "FrameNetwork"
+path = "/path/to/framenetwork"
+"#;
+        let config: GraphaConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.external.len(), 2);
+        assert_eq!(config.external[0].name, "FrameUI");
+        assert_eq!(config.external[0].path, "/path/to/frameui");
+        assert_eq!(config.external[1].name, "FrameNetwork");
+        assert_eq!(config.external[1].path, "/path/to/framenetwork");
+    }
+
+    #[test]
+    fn external_defaults_empty() {
+        let config: GraphaConfig = toml::from_str("").unwrap();
+        assert!(config.external.is_empty());
     }
 }
