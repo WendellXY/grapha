@@ -932,8 +932,9 @@ fn handle_repo_command(command: RepoCommands) -> anyhow::Result<()> {
 
 fn handle_serve(path: PathBuf, port: u16) -> anyhow::Result<()> {
     let graph = load_graph(&path)?;
+    let search_index = open_search_index(&path)?;
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(serve::run(graph, port))?;
+    rt.block_on(serve::run(graph, search_index, port))?;
     Ok(())
 }
 

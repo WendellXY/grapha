@@ -84,21 +84,15 @@ pub async fn get_search(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SearchParams>,
 ) -> Json<serde_json::Value> {
-    let query_lower = params.q.to_lowercase();
-    let results: Vec<serde_json::Value> = state
-        .graph
-        .nodes
-        .iter()
-        .filter(|n| n.name.to_lowercase().contains(&query_lower))
-        .take(params.limit)
-        .map(|n| {
-            serde_json::json!({
-                "id": n.id,
-                "name": n.name,
-                "kind": n.kind,
-                "file": n.file,
-            })
-        })
-        .collect();
+    let options = crate::search::SearchOptions::default();
+    let results = match crate::search::search_filtered(
+        &state.search_index,
+        &params.q,
+        params.limit,
+        &options,
+    ) {
+        Ok(results) => results,
+        Err(_) => vec![],
+    };
     Json(serde_json::json!({ "results": results, "total": results.len() }))
 }
