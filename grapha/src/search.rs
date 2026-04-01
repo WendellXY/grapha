@@ -68,6 +68,7 @@ struct SearchFields {
     kind: tantivy::schema::Field,
     file: tantivy::schema::Field,
     module: tantivy::schema::Field,
+    module_lower: tantivy::schema::Field,
     visibility: tantivy::schema::Field,
     role: tantivy::schema::Field,
 }
@@ -81,6 +82,8 @@ fn schema() -> (Schema, SearchFields) {
     let kind = schema_builder.add_text_field("kind", STRING | STORED);
     let file = schema_builder.add_text_field("file", TEXT | STORED);
     let module = schema_builder.add_text_field("module", STRING | STORED);
+    // Lowercased module for case-insensitive filtering
+    let module_lower = schema_builder.add_text_field("module_lower", STRING);
     let visibility = schema_builder.add_text_field("visibility", STRING | STORED);
     let role = schema_builder.add_text_field("role", STRING | STORED);
     (
@@ -92,6 +95,7 @@ fn schema() -> (Schema, SearchFields) {
             kind,
             file,
             module,
+            module_lower,
             visibility,
             role,
         },
@@ -124,6 +128,7 @@ fn node_document(fields: SearchFields, node: &Node) -> Result<TantivyDocument> {
         fields.kind => kind_str,
         fields.file => node.file.to_string_lossy().to_string(),
         fields.module => node.module.clone().unwrap_or_default(),
+        fields.module_lower => node.module.as_deref().unwrap_or("").to_lowercase(),
         fields.visibility => visibility_str,
         fields.role => role_to_string(&node.role),
     ))
@@ -218,6 +223,7 @@ fn resolve_fields(index: &Index) -> Result<SearchFields> {
         kind: schema.get_field("kind")?,
         file: schema.get_field("file")?,
         module: schema.get_field("module")?,
+        module_lower: schema.get_field("module_lower")?,
         visibility: schema.get_field("visibility")?,
         role: schema.get_field("role")?,
     })
@@ -285,7 +291,10 @@ pub fn search_filtered(
         ));
     }
     if let Some(ref module_filter) = options.module {
-        let term = Term::from_field_text(fields.module, module_filter);
+        // Case-insensitive module matching: store a lowercased module field
+        // and always query lowercase. Since module is STRING (exact match),
+        // we use the module_lower field for case-insensitive matching.
+        let term = Term::from_field_text(fields.module_lower, &module_filter.to_lowercase());
         clauses.push((
             Occur::Must,
             Box::new(TermQuery::new(term, IndexRecordOption::Basic)),
