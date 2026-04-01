@@ -103,6 +103,8 @@ pub struct Node {
     pub doc_comment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -255,6 +257,7 @@ mod tests {
                 signature: None,
                 doc_comment: None,
                 module: None,
+                snippet: None,
             }],
             edges: vec![Edge {
                 source: "src/main.rs::main".to_string(),
@@ -384,6 +387,7 @@ mod tests {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         };
         let json = serde_json::to_string(&node).unwrap();
         assert!(!json.contains("role"));
@@ -409,6 +413,7 @@ mod tests {
             signature: Some("fn foo(x: i32) -> bool".to_string()),
             doc_comment: Some("Does foo things".to_string()),
             module: Some("my_module".to_string()),
+            snippet: None,
         };
         let json = serde_json::to_string(&node).unwrap();
         let deserialized: Node = serde_json::from_str(&json).unwrap();
@@ -491,6 +496,7 @@ mod tests {
                 signature: Some("async fn handler(req: Request) -> Response".to_string()),
                 doc_comment: Some("Handles HTTP requests".to_string()),
                 module: Some("api".to_string()),
+                snippet: None,
             }],
             edges: vec![Edge {
                 source: "api::handler".to_string(),

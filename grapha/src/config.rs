@@ -2,10 +2,44 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct SwiftConfig {
+    #[serde(default = "default_true")]
+    pub index_store: bool,
+}
+
+impl Default for SwiftConfig {
+    fn default() -> Self {
+        Self { index_store: true }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct OutputConfig {
+    #[serde(default)]
+    pub default_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExternalRepo {
+    pub name: String,
+    pub path: String,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct GraphaConfig {
     #[serde(default)]
+    pub swift: SwiftConfig,
+    #[serde(default)]
+    pub output: OutputConfig,
+    #[serde(default)]
     pub classifiers: Vec<ClassifierRule>,
+    #[serde(default)]
+    pub external: Vec<ExternalRepo>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -37,6 +71,7 @@ mod tests {
     fn parse_empty_config() {
         let config: GraphaConfig = toml::from_str("").unwrap();
         assert!(config.classifiers.is_empty());
+        assert!(config.swift.index_store);
     }
 
     #[test]
@@ -91,5 +126,61 @@ operation = "HTTP"
         let config = load_config(dir.path());
         assert_eq!(config.classifiers.len(), 1);
         assert_eq!(config.classifiers[0].pattern, "reqwest");
+    }
+
+    #[test]
+    fn swift_index_store_disabled() {
+        let toml_str = r#"
+[swift]
+index_store = false
+"#;
+        let config: GraphaConfig = toml::from_str(toml_str).unwrap();
+        assert!(!config.swift.index_store);
+    }
+
+    #[test]
+    fn swift_defaults_when_only_classifiers() {
+        let toml_str = r#"
+[[classifiers]]
+pattern = "Alamofire"
+terminal = "network"
+direction = "read"
+operation = "HTTP"
+"#;
+        let config: GraphaConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.swift.index_store);
+        assert_eq!(config.classifiers.len(), 1);
+    }
+
+    #[test]
+    fn swift_index_store_defaults_true_when_section_empty() {
+        let toml_str = "[swift]\n";
+        let config: GraphaConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.swift.index_store);
+    }
+
+    #[test]
+    fn parse_external_repos() {
+        let toml_str = r#"
+[[external]]
+name = "FrameUI"
+path = "/path/to/frameui"
+
+[[external]]
+name = "FrameNetwork"
+path = "/path/to/framenetwork"
+"#;
+        let config: GraphaConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.external.len(), 2);
+        assert_eq!(config.external[0].name, "FrameUI");
+        assert_eq!(config.external[0].path, "/path/to/frameui");
+        assert_eq!(config.external[1].name, "FrameNetwork");
+        assert_eq!(config.external[1].path, "/path/to/framenetwork");
+    }
+
+    #[test]
+    fn external_defaults_empty() {
+        let config: GraphaConfig = toml::from_str("").unwrap();
+        assert!(config.external.is_empty());
     }
 }

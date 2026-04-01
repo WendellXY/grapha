@@ -5,6 +5,7 @@ pub(crate) mod flow;
 pub mod impact;
 pub(crate) mod l10n;
 pub mod localize;
+pub mod map;
 pub mod reverse;
 pub mod trace;
 pub mod usages;
@@ -244,6 +245,7 @@ mod tests {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         }
     }
 

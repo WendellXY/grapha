@@ -242,6 +242,7 @@ mod tests {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         }
     }
 
@@ -357,6 +358,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "body::view:VStack@1:0".into(),
@@ -373,6 +375,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 make_node(
                     "db_save",

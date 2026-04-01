@@ -166,6 +166,7 @@ mod tests {
                 signature: None,
                 doc_comment: None,
                 module: None,
+                snippet: None,
             }],
             edges: vec![Edge {
                 source: "local::caller".to_string(),

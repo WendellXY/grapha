@@ -7,15 +7,20 @@ use axum::response::Html;
 use axum::routing::get;
 
 use grapha_core::graph::Graph;
+use tantivy::Index;
 
 const INDEX_HTML: &str = include_str!("serve/web/index.html");
 
 pub struct AppState {
     pub graph: Graph,
+    pub search_index: Index,
 }
 
-pub async fn run(graph: Graph, port: u16) -> anyhow::Result<()> {
-    let state = Arc::new(AppState { graph });
+pub async fn run(graph: Graph, search_index: Index, port: u16) -> anyhow::Result<()> {
+    let state = Arc::new(AppState {
+        graph,
+        search_index,
+    });
     let app = Router::new()
         .route("/", get(|| async { Html(INDEX_HTML) }))
         .route("/api/graph", get(api::get_graph))

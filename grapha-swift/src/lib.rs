@@ -302,6 +302,7 @@ mod plugin_tests {
                 signature: None,
                 doc_comment: None,
                 module: None,
+                snippet: None,
             }],
             edges: vec![Edge {
                 source: "s:4main7package18PackageDescription0C0Cvg".to_string(),

@@ -8,7 +8,8 @@ use grapha_core::graph::{
     Edge, EdgeKind, EdgeProvenance, Graph, Node, NodeKind, NodeRole, Span, Visibility,
 };
 
-const STORE_SCHEMA_VERSION: &str = "3";
+const STORE_SCHEMA_VERSION: &str = "4";
+const BATCH_SIZE: usize = 500;
 
 pub struct SqliteStore {
     path: PathBuf,
@@ -57,7 +58,8 @@ impl SqliteStore {
                 role       TEXT,
                 signature  TEXT,
                 doc_comment TEXT,
-                module     TEXT
+                module     TEXT,
+                snippet    TEXT
             );
             CREATE TABLE IF NOT EXISTS edges (
                 edge_id    TEXT PRIMARY KEY,
@@ -138,43 +140,69 @@ impl SqliteStore {
         nodes: &[Node],
         replace: bool,
     ) -> anyhow::Result<()> {
+        const COLS: usize = 15;
         let verb = if replace {
             "INSERT OR REPLACE"
         } else {
             "INSERT"
         };
-        let sql = format!(
-            "{verb} INTO nodes (id, kind, name, file,
+        let columns = "id, kind, name, file,
                 span_start_line, span_start_col, span_end_line, span_end_col,
-                visibility, metadata, role, signature, doc_comment, module)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)"
-        );
-        let mut stmt = tx.prepare(&sql)?;
-        let empty_meta = "{}";
+                visibility, metadata, role, signature, doc_comment, module, snippet";
+        let empty_meta = "{}".to_string();
+
+        // Pre-serialize JSON fields outside the batch loop
+        let mut pre: Vec<(String, String)> = Vec::with_capacity(nodes.len());
         for node in nodes {
-            let role_json: Option<String> =
-                node.role.as_ref().map(serde_json::to_string).transpose()?;
+            let role_json: String = match &node.role {
+                Some(r) => serde_json::to_string(r)?,
+                None => String::new(),
+            };
             let meta_str = if node.metadata.is_empty() {
-                empty_meta.to_string()
+                empty_meta.clone()
             } else {
                 serde_json::to_string(&node.metadata)?
             };
-            stmt.execute(rusqlite::params![
-                node.id,
-                node_kind_str(&node.kind),
-                node.name,
-                node.file.to_string_lossy().as_ref(),
-                node.span.start[0] as i64,
-                node.span.start[1] as i64,
-                node.span.end[0] as i64,
-                node.span.end[1] as i64,
-                visibility_str(&node.visibility),
-                meta_str,
-                role_json,
-                node.signature,
-                node.doc_comment,
-                node.module,
-            ])?;
+            pre.push((role_json, meta_str));
+        }
+
+        for chunk_start in (0..nodes.len()).step_by(BATCH_SIZE) {
+            let chunk_end = (chunk_start + BATCH_SIZE).min(nodes.len());
+            let chunk_len = chunk_end - chunk_start;
+            let placeholders = (0..chunk_len)
+                .map(|_| "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("{verb} INTO nodes ({columns}) VALUES {placeholders}");
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+                Vec::with_capacity(chunk_len * COLS);
+            for i in chunk_start..chunk_end {
+                let node = &nodes[i];
+                let (role_json, meta_str) = &pre[i];
+                let role_val: Option<&str> = if role_json.is_empty() {
+                    None
+                } else {
+                    Some(role_json)
+                };
+                params.push(Box::new(node.id.clone()));
+                params.push(Box::new(node_kind_str(&node.kind).to_string()));
+                params.push(Box::new(node.name.clone()));
+                params.push(Box::new(node.file.to_string_lossy().into_owned()));
+                params.push(Box::new(node.span.start[0] as i64));
+                params.push(Box::new(node.span.start[1] as i64));
+                params.push(Box::new(node.span.end[0] as i64));
+                params.push(Box::new(node.span.end[1] as i64));
+                params.push(Box::new(visibility_str(&node.visibility).to_string()));
+                params.push(Box::new(meta_str.clone()));
+                params.push(Box::new(role_val.map(|s| s.to_string())));
+                params.push(Box::new(node.signature.clone()));
+                params.push(Box::new(node.doc_comment.clone()));
+                params.push(Box::new(node.module.clone()));
+                params.push(Box::new(node.snippet.clone()));
+            }
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+            tx.execute(&sql, param_refs.as_slice())?;
         }
         Ok(())
     }
@@ -184,35 +212,55 @@ impl SqliteStore {
         edges: impl Iterator<Item = (String, &'a Edge)>,
         replace: bool,
     ) -> anyhow::Result<()> {
+        const COLS: usize = 10;
         let verb = if replace {
             "INSERT OR REPLACE"
         } else {
             "INSERT"
         };
-        let sql = format!(
-            "{verb} INTO edges (edge_id, source, target, kind, confidence,
-                direction, operation, condition, async_boundary, provenance)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
-        );
-        let mut stmt = tx.prepare(&sql)?;
-        for (edge_id, edge) in edges {
+        let columns = "edge_id, source, target, kind, confidence,
+                direction, operation, condition, async_boundary, provenance";
+
+        // Collect edges and pre-serialize JSON fields
+        let collected: Vec<(String, &Edge)> = edges.collect();
+        let mut pre: Vec<(Option<String>, Option<i64>, String)> =
+            Vec::with_capacity(collected.len());
+        for (_, edge) in &collected {
             let direction_str: Option<String> =
                 edge.direction.as_ref().map(enum_to_str).transpose()?;
             let async_boundary_int: Option<i64> =
                 edge.async_boundary.map(|b| if b { 1 } else { 0 });
             let provenance = serde_json::to_string(&edge.provenance)?;
-            stmt.execute(rusqlite::params![
-                edge_id,
-                edge.source,
-                edge.target,
-                edge_kind_str(&edge.kind),
-                edge.confidence,
-                direction_str,
-                edge.operation,
-                edge.condition,
-                async_boundary_int,
-                provenance,
-            ])?;
+            pre.push((direction_str, async_boundary_int, provenance));
+        }
+
+        for chunk_start in (0..collected.len()).step_by(BATCH_SIZE) {
+            let chunk_end = (chunk_start + BATCH_SIZE).min(collected.len());
+            let chunk_len = chunk_end - chunk_start;
+            let placeholders = (0..chunk_len)
+                .map(|_| "(?,?,?,?,?,?,?,?,?,?)")
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("{verb} INTO edges ({columns}) VALUES {placeholders}");
+            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+                Vec::with_capacity(chunk_len * COLS);
+            for i in chunk_start..chunk_end {
+                let (edge_id, edge) = &collected[i];
+                let (direction_str, async_boundary_int, provenance) = &pre[i];
+                params.push(Box::new(edge_id.clone()));
+                params.push(Box::new(edge.source.clone()));
+                params.push(Box::new(edge.target.clone()));
+                params.push(Box::new(edge_kind_str(&edge.kind).to_string()));
+                params.push(Box::new(edge.confidence));
+                params.push(Box::new(direction_str.clone()));
+                params.push(Box::new(edge.operation.clone()));
+                params.push(Box::new(edge.condition.clone()));
+                params.push(Box::new(*async_boundary_int));
+                params.push(Box::new(provenance.clone()));
+            }
+            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params.iter().map(|p| p.as_ref()).collect();
+            tx.execute(&sql, param_refs.as_slice())?;
         }
         Ok(())
     }
@@ -245,7 +293,8 @@ impl SqliteStore {
                 role       TEXT,
                 signature  TEXT,
                 doc_comment TEXT,
-                module     TEXT
+                module     TEXT,
+                snippet    TEXT
             );
             CREATE TABLE edges (
                 edge_id    TEXT PRIMARY KEY,
@@ -274,6 +323,7 @@ impl SqliteStore {
         )?;
         tx.commit()?;
         Self::create_indexes(&conn)?;
+        conn.execute_batch("PRAGMA optimize;")?;
         Ok(())
     }
 }
@@ -400,6 +450,7 @@ impl Store for SqliteStore {
         )?;
         tx.commit()?;
         Self::create_indexes(&conn)?;
+        conn.execute_batch("PRAGMA optimize;")?;
 
         Ok(current_stats)
     }
@@ -419,7 +470,7 @@ impl Store for SqliteStore {
             let mut stmt = conn.prepare(
                 "SELECT id, kind, name, file,
                         span_start_line, span_start_col, span_end_line, span_end_col,
-                        visibility, metadata, role, signature, doc_comment, module
+                        visibility, metadata, role, signature, doc_comment, module, snippet
                  FROM nodes",
             )?;
             let rows = stmt.query_map([], |row| {
@@ -438,6 +489,7 @@ impl Store for SqliteStore {
                     row.get::<_, Option<String>>(11)?,
                     row.get::<_, Option<String>>(12)?,
                     row.get::<_, Option<String>>(13)?,
+                    row.get::<_, Option<String>>(14)?,
                 ))
             })?;
 
@@ -458,6 +510,7 @@ impl Store for SqliteStore {
                     signature,
                     doc_comment,
                     module,
+                    snippet,
                 ) = row?;
                 let kind: NodeKind = str_to_enum(&kind_str)
                     .map_err(|e| anyhow::anyhow!("invalid node kind '{kind_str}': {e}"))?;
@@ -484,6 +537,7 @@ impl Store for SqliteStore {
                     signature,
                     doc_comment,
                     module,
+                    snippet,
                 });
             }
             nodes
@@ -634,6 +688,7 @@ mod tests {
                 signature: None,
                 doc_comment: None,
                 module: None,
+                snippet: None,
             }],
             edges: vec![Edge {
                 source: "test.rs::main".to_string(),
@@ -694,6 +749,7 @@ mod tests {
                     signature: Some("async fn handler(req: Request) -> Response".to_string()),
                     doc_comment: Some("Handles incoming requests".to_string()),
                     module: Some("api".to_string()),
+                    snippet: None,
                 },
                 Node {
                     id: "db::query".to_string(),
@@ -712,6 +768,7 @@ mod tests {
                     signature: Some("fn query(sql: &str) -> Vec<Row>".to_string()),
                     doc_comment: None,
                     module: Some("db".to_string()),
+                    snippet: None,
                 },
                 Node {
                     id: "internal::helper".to_string(),
@@ -728,6 +785,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
             ],
             edges: vec![
@@ -877,6 +935,7 @@ mod tests {
                 signature: None,
                 doc_comment: None,
                 module: None,
+                snippet: None,
             }],
             edges: vec![],
         };
@@ -913,6 +972,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "b".to_string(),
@@ -929,6 +989,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
             ],
             edges: vec![Edge {
@@ -966,6 +1027,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
             ],
             edges: vec![
@@ -1084,6 +1146,7 @@ mod tests {
                 signature: None,
                 doc_comment: None,
                 module: None,
+                snippet: None,
             }],
             edges: vec![],
         };
@@ -1108,5 +1171,176 @@ mod tests {
             )
             .unwrap();
         assert_eq!(edge_columns, 1);
+    }
+
+    #[test]
+    fn sqlite_batch_insert_round_trips_large_graph() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("batch.db");
+        let store = SqliteStore::new(path);
+
+        let node_count = 1600;
+        let edge_count = 800;
+        let nodes: Vec<Node> = (0..node_count)
+            .map(|i| {
+                let snippet = if i % 3 == 0 {
+                    Some(format!("fn node_{i}() {{ }}"))
+                } else {
+                    None
+                };
+                Node {
+                    id: format!("mod::node_{i}"),
+                    kind: NodeKind::Function,
+                    name: format!("node_{i}"),
+                    file: format!("file_{}.rs", i % 10).into(),
+                    span: Span {
+                        start: [i, 0],
+                        end: [i + 5, 1],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: if i % 5 == 0 {
+                        HashMap::from([("key".to_string(), format!("val_{i}"))])
+                    } else {
+                        HashMap::new()
+                    },
+                    role: if i == 0 {
+                        Some(NodeRole::EntryPoint)
+                    } else {
+                        None
+                    },
+                    signature: Some(format!("fn node_{i}()")),
+                    doc_comment: None,
+                    module: Some("mod".to_string()),
+                    snippet,
+                }
+            })
+            .collect();
+        let edges: Vec<Edge> = (0..edge_count)
+            .map(|i| Edge {
+                source: format!("mod::node_{i}"),
+                target: format!("mod::node_{}", i + 1),
+                kind: EdgeKind::Calls,
+                confidence: 0.9,
+                direction: None,
+                operation: None,
+                condition: None,
+                async_boundary: None,
+                provenance: Vec::new(),
+            })
+            .collect();
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes,
+            edges,
+        };
+
+        store.save(&graph).unwrap();
+        let loaded = store.load().unwrap();
+
+        assert_eq!(loaded.nodes.len(), node_count);
+        assert_eq!(loaded.edges.len(), edge_count);
+
+        // Verify first and last node data
+        let first = loaded.nodes.iter().find(|n| n.id == "mod::node_0").unwrap();
+        assert_eq!(first.role, Some(NodeRole::EntryPoint));
+        assert_eq!(first.signature.as_deref(), Some("fn node_0()"));
+        assert_eq!(first.module.as_deref(), Some("mod"));
+        assert_eq!(first.snippet.as_deref(), Some("fn node_0() { }"));
+
+        let last = loaded
+            .nodes
+            .iter()
+            .find(|n| n.id == format!("mod::node_{}", node_count - 1))
+            .unwrap();
+        assert_eq!(
+            last.signature.as_deref(),
+            Some(format!("fn node_{}()", node_count - 1).as_str())
+        );
+        // node_count - 1 = 1599, 1599 % 3 == 0, so snippet should be present
+        assert_eq!(
+            last.snippet.as_deref(),
+            Some(format!("fn node_{}() {{ }}", node_count - 1).as_str())
+        );
+
+        // Verify node without snippet
+        let no_snippet = loaded.nodes.iter().find(|n| n.id == "mod::node_1").unwrap();
+        assert_eq!(no_snippet.snippet, None);
+
+        // Verify metadata round-trip
+        let with_meta = loaded.nodes.iter().find(|n| n.id == "mod::node_0").unwrap();
+        assert_eq!(
+            with_meta.metadata.get("key").map(|s| s.as_str()),
+            Some("val_0")
+        );
+
+        // Verify edge data
+        let edge = loaded
+            .edges
+            .iter()
+            .find(|e| e.source == "mod::node_0")
+            .unwrap();
+        assert_eq!(edge.target, "mod::node_1");
+        assert_eq!(edge.confidence, 0.9);
+    }
+
+    #[test]
+    fn sqlite_snippet_field_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snippet.db");
+        let store = SqliteStore::new(path);
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                Node {
+                    id: "a".to_string(),
+                    kind: NodeKind::Function,
+                    name: "a".to_string(),
+                    file: "a.rs".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [3, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: None,
+                    snippet: Some("fn a() {\n    println!(\"hello\");\n}".to_string()),
+                },
+                Node {
+                    id: "b".to_string(),
+                    kind: NodeKind::Struct,
+                    name: "b".to_string(),
+                    file: "b.rs".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [1, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: None,
+                    snippet: None,
+                },
+            ],
+            edges: vec![],
+        };
+
+        store.save(&graph).unwrap();
+        let loaded = store.load().unwrap();
+
+        let node_a = loaded.nodes.iter().find(|n| n.id == "a").unwrap();
+        assert_eq!(
+            node_a.snippet.as_deref(),
+            Some("fn a() {\n    println!(\"hello\");\n}")
+        );
+
+        let node_b = loaded.nodes.iter().find(|n| n.id == "b").unwrap();
+        assert_eq!(node_b.snippet, None);
     }
 }

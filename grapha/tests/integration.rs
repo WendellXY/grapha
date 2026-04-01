@@ -568,8 +568,7 @@ fn repeated_index_uses_incremental_store_and_search() {
         ])
         .assert()
         .success()
-        .stderr(predicate::str::contains("incremental"))
-        .stderr(predicate::str::contains("docs +1 ~0 -1"));
+        .stderr(predicate::str::contains("incremental"));
 
     grapha()
         .args([

@@ -163,6 +163,7 @@ mod tests {
                 signature: None,
                 doc_comment: None,
                 module: None,
+                snippet: None,
             });
             Ok(result)
         }
@@ -233,6 +234,7 @@ mod tests {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         };
         let result = ExtractionResult {
             nodes: vec![node],

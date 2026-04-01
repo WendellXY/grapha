@@ -3,13 +3,16 @@ mod classify;
 mod compress;
 mod config;
 mod delta;
+mod fields;
 mod filter;
 mod localization;
+mod mcp;
 mod progress;
 mod query;
 mod render;
 mod search;
 mod serve;
+mod snippet;
 mod store;
 
 use std::path::{Path, PathBuf};
@@ -92,6 +95,9 @@ enum Commands {
         /// Port to listen on
         #[arg(long, default_value = "8080")]
         port: u16,
+        /// Run as MCP server over stdio (instead of HTTP)
+        #[arg(long)]
+        mcp: bool,
     },
     /// Query symbol relationships and search indexed symbols
     Symbol {
@@ -128,6 +134,27 @@ enum SymbolCommands {
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
+        /// Filter by symbol kind (function, struct, enum, trait, etc.)
+        #[arg(long)]
+        kind: Option<String>,
+        /// Filter by module name
+        #[arg(long)]
+        module: Option<String>,
+        /// Filter by file path glob
+        #[arg(long)]
+        file: Option<String>,
+        /// Filter by role (entry_point, terminal, internal)
+        #[arg(long)]
+        role: Option<String>,
+        /// Enable fuzzy matching (tolerates typos)
+        #[arg(long)]
+        fuzzy: bool,
+        /// Include source snippet and relationships in results
+        #[arg(long)]
+        context: bool,
+        /// Fields to display (comma-separated: file,id,module,span,snippet,visibility,signature,role; or "all"/"none")
+        #[arg(long)]
+        fields: Option<String>,
     },
     /// Query symbol context (callers, callees, implementors)
     Context {
@@ -139,6 +166,9 @@ enum SymbolCommands {
         /// Output format
         #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
         format: QueryOutputFormat,
+        /// Fields to display (comma-separated: file,id,module,span,snippet,visibility,signature,role; or "all"/"none")
+        #[arg(long)]
+        fields: Option<String>,
     },
     /// Analyze blast radius of changing a symbol
     Impact {
@@ -153,6 +183,9 @@ enum SymbolCommands {
         /// Output format
         #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
         format: QueryOutputFormat,
+        /// Fields to display (comma-separated: file,id,module,span,snippet,visibility,signature,role; or "all"/"none")
+        #[arg(long)]
+        fields: Option<String>,
     },
 }
 
@@ -240,6 +273,15 @@ enum RepoCommands {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
     },
+    /// Show file/symbol map for orientation in large projects
+    Map {
+        /// Filter by module name
+        #[arg(long)]
+        module: Option<String>,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 fn builtin_registry() -> anyhow::Result<grapha_core::LanguageRegistry> {
@@ -254,26 +296,93 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
     let t = Instant::now();
     let registry = builtin_registry()?;
     let project_context = grapha_core::project_context(path);
-    let files = grapha_core::pipeline::discover_files(path, &registry)
-        .context("failed to discover files")?;
+
+    let cfg = config::load_config(path);
+
+    // Signal the Swift plugin to skip index store loading when disabled
+    if !cfg.swift.index_store {
+        // SAFETY: called before spawning threads; no concurrent readers yet.
+        unsafe { std::env::set_var("GRAPHA_SKIP_INDEX_STORE", "1") };
+    }
+
+    // Run file discovery and plugin init concurrently
+    let (files, _) = std::thread::scope(|scope| {
+        let files_handle = scope.spawn(|| {
+            grapha_core::pipeline::discover_files(path, &registry)
+                .context("failed to discover files")
+        });
+        let plugin_handle =
+            scope.spawn(|| grapha_core::prepare_plugins(&registry, &project_context));
+        let files = files_handle.join().expect("discover thread panicked")?;
+        plugin_handle.join().expect("plugin thread panicked")?;
+        Ok::<_, anyhow::Error>((files, ()))
+    })?;
+
+    // Discover external repo files
+    let mut external_files: Vec<PathBuf> = Vec::new();
+    let mut external_repo_count = 0usize;
+    for ext in &cfg.external {
+        let ext_path = Path::new(&ext.path);
+        if !ext_path.exists() {
+            if verbose {
+                eprintln!(
+                    "  \x1b[33m!\x1b[0m external repo '{}' not found at {}, skipping",
+                    ext.name, ext.path
+                );
+            }
+            continue;
+        }
+        match grapha_core::pipeline::discover_files(ext_path, &registry) {
+            Ok(ext_discovered) => {
+                external_files.extend(ext_discovered);
+                external_repo_count += 1;
+            }
+            Err(e) => {
+                if verbose {
+                    eprintln!(
+                        "  \x1b[33m!\x1b[0m failed to discover files in '{}': {e}",
+                        ext.name
+                    );
+                }
+            }
+        }
+    }
+
+    let external_file_count = external_files.len();
+    let all_files: Vec<PathBuf> = files.into_iter().chain(external_files).collect();
 
     if verbose {
-        progress::done(&format!("discovered {} files", files.len()), t);
+        let msg = if external_file_count > 0 {
+            format!(
+                "discovered {} files + {} external ({} repos)",
+                all_files.len() - external_file_count,
+                external_file_count,
+                external_repo_count
+            )
+        } else {
+            format!("discovered {} files", all_files.len())
+        };
+        progress::done(&msg, t);
+        if let Some(store) = grapha_swift::index_store_path() {
+            progress::done(&format!("index store: {}", store.display()), t);
+        }
+    }
+
+    let mut module_map = grapha_core::discover_modules(&registry, &project_context)?;
+    for ext in &cfg.external {
+        let ext_path = Path::new(&ext.path);
+        if !ext_path.exists() {
+            continue;
+        }
+        let ext_context = grapha_core::project_context(ext_path);
+        if let Ok(ext_modules) = grapha_core::discover_modules(&registry, &ext_context) {
+            module_map.merge(ext_modules);
+        }
     }
 
     let t = Instant::now();
-    grapha_core::prepare_plugins(&registry, &project_context)?;
-    if let Some(store) = grapha_swift::index_store_path()
-        && verbose
-    {
-        progress::done(&format!("index store: {}", store.display()), t);
-    }
-
-    let module_map = grapha_core::discover_modules(&registry, &project_context)?;
-
-    let t = Instant::now();
-    let pb = if verbose && files.len() > 1 {
-        Some(progress::bar(files.len() as u64, "extracting"))
+    let pb = if verbose && all_files.len() > 1 {
+        Some(progress::bar(all_files.len() as u64, "extracting"))
     } else {
         None
     };
@@ -283,7 +392,7 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
 
     let skipped = AtomicUsize::new(0);
 
-    let results: Vec<_> = files
+    let results: Vec<_> = all_files
         .par_iter()
         .filter_map(|file| {
             let source = match std::fs::read(file) {
@@ -305,7 +414,15 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
             }
 
             match extraction_result {
-                Ok(result) => Some(result),
+                Ok(mut result) => {
+                    let source_str = String::from_utf8_lossy(&source);
+                    for node in &mut result.nodes {
+                        if snippet::should_extract_snippet(node.kind) {
+                            node.snippet = snippet::extract_snippet(&source_str, &node.span, 600);
+                        }
+                    }
+                    Some(result)
+                }
                 Err(e) => {
                     skipped.fetch_add(1, Ordering::Relaxed);
                     if verbose && let Some(ref pb) = pb {
@@ -334,7 +451,6 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
         progress::done(&msg, t);
     }
 
-    let cfg = config::load_config(path);
     let mut classifiers = registry.collect_classifiers();
     classifiers.insert(
         0,
@@ -469,6 +585,20 @@ fn resolve_query_result<T>(
         }
         Err(query::QueryResolveError::Ambiguous { query, candidates }) => {
             Err(anyhow!(format_ambiguity_error(&query, &candidates)))
+        }
+    }
+}
+
+fn resolve_field_set(fields_flag: &Option<String>, path: &Path) -> fields::FieldSet {
+    match fields_flag {
+        Some(f) => fields::FieldSet::parse(f),
+        None => {
+            let cfg = config::load_config(path);
+            if cfg.output.default_fields.is_empty() {
+                fields::FieldSet::default()
+            } else {
+                fields::FieldSet::from_config(&cfg.output.default_fields)
+            }
         }
     }
 }
@@ -618,6 +748,15 @@ fn handle_index(
         load_existing_graph(&format, &store_path)?
     };
 
+    let delta = if full_rebuild || previous_graph.is_none() {
+        None
+    } else {
+        Some(delta::GraphDelta::between(
+            previous_graph.as_ref().unwrap(),
+            &graph,
+        ))
+    };
+
     let search_index_path = store_path.join("search_index");
     let index_root = path.clone();
     let save_result = std::thread::scope(|scope| {
@@ -645,6 +784,7 @@ fn handle_index(
                 &graph,
                 &search_index_path,
                 full_rebuild,
+                delta.as_ref(),
             )?;
             Ok::<_, anyhow::Error>((t.elapsed(), stats))
         });
@@ -709,36 +849,82 @@ fn handle_symbol_command(
     render_options: render::RenderOptions,
 ) -> anyhow::Result<()> {
     match command {
-        SymbolCommands::Search { query, limit, path } => {
+        SymbolCommands::Search {
+            query,
+            limit,
+            path,
+            kind,
+            module,
+            file,
+            role,
+            fuzzy,
+            context,
+            fields,
+        } => {
+            let field_set = resolve_field_set(&fields, &path);
+            let _render_options = render_options.with_fields(field_set);
             let index = open_search_index(&path)?;
-            let results = search::search(&index, &query, limit)?;
-            print_json(&results)
+            let options = search::SearchOptions {
+                kind,
+                module,
+                file_glob: file,
+                role,
+                fuzzy,
+            };
+            let t = Instant::now();
+            let results = search::search_filtered(&index, &query, limit, &options)?;
+            let elapsed = t.elapsed();
+
+            if context {
+                let graph = load_graph(&path)?;
+                let enriched = search::enrich_with_context(&results, &graph);
+                print_json(&enriched)?;
+            } else {
+                print_json(&results)?;
+            }
+
+            eprintln!(
+                "\n  {} results in {:.1}ms",
+                results.len(),
+                elapsed.as_secs_f64() * 1000.0,
+            );
+            Ok(())
         }
         SymbolCommands::Context {
             symbol,
             path,
             format,
-        } => handle_resolved_graph_query(
-            &path,
-            format,
-            render_options,
-            "symbol",
-            |graph| query::context::query_context(graph, &symbol),
-            render::render_context_with_options,
-        ),
+            fields,
+        } => {
+            let field_set = resolve_field_set(&fields, &path);
+            let render_options = render_options.with_fields(field_set);
+            handle_resolved_graph_query(
+                &path,
+                format,
+                render_options,
+                "symbol",
+                |graph| query::context::query_context(graph, &symbol),
+                render::render_context_with_options,
+            )
+        }
         SymbolCommands::Impact {
             symbol,
             depth,
             path,
             format,
-        } => handle_resolved_graph_query(
-            &path,
-            format,
-            render_options,
-            "symbol",
-            |graph| query::impact::query_impact(graph, &symbol, depth),
-            render::render_impact_with_options,
-        ),
+            fields,
+        } => {
+            let field_set = resolve_field_set(&fields, &path);
+            let render_options = render_options.with_fields(field_set);
+            handle_resolved_graph_query(
+                &path,
+                format,
+                render_options,
+                "symbol",
+                |graph| query::impact::query_impact(graph, &symbol, depth),
+                render::render_impact_with_options,
+            )
+        }
     }
 }
 
@@ -843,14 +1029,30 @@ fn handle_repo_command(command: RepoCommands) -> anyhow::Result<()> {
             let report = changes::detect_changes(&path, &graph, &scope)?;
             print_json(&report)
         }
+        RepoCommands::Map { module, path } => {
+            let graph = load_graph(&path)?;
+            let map = query::map::file_map(&graph, module.as_deref());
+            print_json(&map)
+        }
     }
 }
 
-fn handle_serve(path: PathBuf, port: u16) -> anyhow::Result<()> {
+fn handle_serve(path: PathBuf, port: u16, mcp_mode: bool) -> anyhow::Result<()> {
     let graph = load_graph(&path)?;
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(serve::run(graph, port))?;
-    Ok(())
+    let search_index = open_search_index(&path)?;
+
+    if mcp_mode {
+        let state = mcp::handler::McpState {
+            graph,
+            search_index,
+            store_path: path.join(".grapha"),
+        };
+        mcp::run_mcp_server(state)
+    } else {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(serve::run(graph, search_index, port))?;
+        Ok(())
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -870,7 +1072,7 @@ fn main() -> anyhow::Result<()> {
             store_dir,
             full_rebuild,
         } => handle_index(path, format, store_dir, full_rebuild)?,
-        Commands::Serve { path, port } => handle_serve(path, port)?,
+        Commands::Serve { path, port, mcp } => handle_serve(path, port, mcp)?,
         Commands::Symbol { command } => handle_symbol_command(command, render_options)?,
         Commands::Flow { command } => handle_flow_command(command, render_options)?,
         Commands::L10n { command } => handle_l10n_command(command, render_options)?,

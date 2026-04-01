@@ -277,6 +277,7 @@ mod tests {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         }
     }
 

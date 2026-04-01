@@ -179,6 +179,7 @@ fn read_node(chunk: &[u8], string_table: &[u8]) -> Option<Node> {
         signature: None,
         doc_comment: None,
         module,
+        snippet: None,
     })
 }
 

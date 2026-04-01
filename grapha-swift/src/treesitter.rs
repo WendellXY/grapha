@@ -350,6 +350,7 @@ fn extract_struct_or_class(
         signature: None,
         doc_comment: None,
         module: None,
+        snippet: None,
     });
 
     // Walk the class_body for nested declarations
@@ -449,6 +450,7 @@ fn extract_property_as_entry_point(
         signature: None,
         doc_comment: None,
         module: None,
+        snippet: None,
     });
 
     // Scan property body for calls (same as extract_property)
@@ -513,6 +515,7 @@ fn extract_function_with_entry_hint(
         signature,
         doc_comment,
         module: None,
+        snippet: None,
     });
 
     // Walk function body for call expressions.
@@ -576,6 +579,7 @@ fn extract_enum(
         signature: None,
         doc_comment: None,
         module: None,
+        snippet: None,
     });
 
     // Extract enum entries from enum_class_body
@@ -627,6 +631,7 @@ fn extract_enum_entries(
                 signature: None,
                 doc_comment: None,
                 module: None,
+                snippet: None,
             });
         }
     }
@@ -664,6 +669,7 @@ fn extract_extension(
         signature: None,
         doc_comment: None,
         module: None,
+        snippet: None,
     });
 
     // Walk the class_body for nested declarations
@@ -719,6 +725,7 @@ fn extract_protocol(
         signature: None,
         doc_comment: None,
         module: None,
+        snippet: None,
     });
 
     // Walk the protocol_body for method declarations
@@ -772,6 +779,7 @@ fn extract_function(
         signature,
         doc_comment,
         module: None,
+        snippet: None,
     });
 
     // Walk function body for call expressions.
@@ -840,6 +848,7 @@ fn extract_property(
         signature: None,
         doc_comment: None,
         module: None,
+        snippet: None,
     });
 
     // Scan property body for calls via tree-sitter AST
@@ -984,6 +993,7 @@ fn extract_typealias(
         signature: None,
         doc_comment: None,
         module: None,
+        snippet: None,
     });
 }
 
@@ -1554,6 +1564,7 @@ fn emit_swiftui_node(
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         },
     );
     emit_unique_edge(
@@ -4034,6 +4045,7 @@ struct ContentView: View {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         });
         result.nodes.push(Node {
             id: "s:ContentView".into(),
@@ -4050,6 +4062,7 @@ struct ContentView: View {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         });
         result.nodes.push(Node {
             id: "s:ContentView.body".into(),
@@ -4066,6 +4079,7 @@ struct ContentView: View {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         });
 
         enrich_swiftui_structure(source, Path::new("test.swift"), &mut result).unwrap();
@@ -4140,6 +4154,7 @@ extension RoomPage {
             signature: None,
             doc_comment: None,
             module: Some("Room".into()),
+            snippet: None,
         });
         result.nodes.push(Node {
             id: "s:4Room0A4PageV17centerContentViewQrvp".into(),
@@ -4156,6 +4171,7 @@ extension RoomPage {
             signature: None,
             doc_comment: None,
             module: Some("Room".into()),
+            snippet: None,
         });
         result.edges.push(Edge {
             source: "s:4Room0A4PageV17centerContentViewQrvp".into(),
@@ -4275,6 +4291,7 @@ class GameManager {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         });
         result.nodes.push(Node {
             id: "s:GameManager.bootstrapGame".into(),
@@ -4291,6 +4308,7 @@ class GameManager {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         });
         result.nodes.push(Node {
             id: "s:GameManager.score".into(),
@@ -4307,6 +4325,7 @@ class GameManager {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         });
 
         enrich_doc_comments(source, &mut result).unwrap();
