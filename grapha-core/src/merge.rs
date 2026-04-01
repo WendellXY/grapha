@@ -163,9 +163,55 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
             continue;
         }
 
-        // For Reads edges: scope resolution to siblings of the same containing type.
+        // For Reads edges: scope resolution to siblings of the same type.
         // Without this, "viewModel" resolves to ALL viewModel properties in the module.
-        if edge.kind == EdgeKind::Reads {
+        //
+        // Strategy: use USR prefix matching. If source is s:4Room0A4PageV4bodyQrvp,
+        // its type prefix is s:4Room0A4PageV. Prefer candidates whose ID shares
+        // this prefix (they're members of the same type). Falls back to Contains
+        // edge lookup, then same-file, then normal resolution.
+        if edge.kind == EdgeKind::Reads && candidates.len() > 1 {
+            // Try USR prefix: strip the member suffix to get the type prefix
+            let usr_prefix = if edge.source.starts_with("s:") {
+                usr_type_prefix(&edge.source)
+            } else {
+                None
+            };
+
+            if let Some(prefix) = usr_prefix {
+                let siblings: Vec<&NameEntry> = candidates
+                    .iter()
+                    .filter(|c| c.id.starts_with(&prefix))
+                    .collect();
+                if siblings.len() == 1 {
+                    edge.target = siblings[0].id.clone();
+                    edge.confidence *= 0.9;
+                    graph.edges.push(edge);
+                    continue;
+                }
+                if !siblings.is_empty() {
+                    // Multiple siblings with same prefix — pick same file
+                    let same_file: Vec<&&NameEntry> = siblings
+                        .iter()
+                        .filter(|c| {
+                            id_to_info.get(c.id.as_str())
+                                .is_some_and(|(_, f)| *f == source_file)
+                        })
+                        .collect();
+                    if same_file.len() == 1 {
+                        edge.target = same_file[0].id.clone();
+                        edge.confidence *= 0.9;
+                        graph.edges.push(edge);
+                        continue;
+                    }
+                }
+                // No siblings found with same USR prefix — this property
+                // is not a member of the source's type. Drop the read edge
+                // rather than resolving to unrelated types.
+                continue;
+            }
+
+            // Fallback: Contains-edge-based sibling matching
             if let Some(source_owners) = child_to_parents.get(&edge.source) {
                 let sibling_candidates: Vec<&NameEntry> = candidates
                     .iter()
@@ -187,23 +233,6 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
                     graph.edges.push(edge);
                     continue;
                 }
-                if !sibling_candidates.is_empty() {
-                    // Multiple siblings — pick the one in the same file
-                    let same_file: Vec<&&NameEntry> = sibling_candidates
-                        .iter()
-                        .filter(|c| {
-                            id_to_info.get(c.id.as_str())
-                                .is_some_and(|(_, f)| *f == source_file)
-                        })
-                        .collect();
-                    if same_file.len() == 1 {
-                        edge.target = same_file[0].id.clone();
-                        edge.confidence *= 0.9;
-                        graph.edges.push(edge);
-                        continue;
-                    }
-                    // Fall through to normal resolution if sibling scoping didn't narrow enough
-                }
             }
         }
 
@@ -223,6 +252,27 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
     }
 
     graph
+}
+
+/// Extract the type prefix from a USR string.
+/// e.g., "s:4Room0A4PageV4bodyQrvp" → "s:4Room0A4PageV"
+/// USR structure: s:<module><type>V<member> where V marks the type boundary.
+fn usr_type_prefix(usr: &str) -> Option<String> {
+    // Find the last 'V' that's followed by lowercase (member name start)
+    // Swift USRs use V to end type names: s:4Room0A4PageV4bodyQrvp
+    //                                                    ^ type ends here
+    let bytes = usr.as_bytes();
+    let mut last_v_pos = None;
+    for i in (2..bytes.len()).rev() {
+        if bytes[i] == b'V'
+            && i + 1 < bytes.len()
+            && (bytes[i + 1].is_ascii_digit() || bytes[i + 1].is_ascii_lowercase())
+        {
+            last_v_pos = Some(i + 1);
+            break;
+        }
+    }
+    last_v_pos.map(|pos| usr[..pos].to_string())
 }
 
 fn resolve_candidates(
