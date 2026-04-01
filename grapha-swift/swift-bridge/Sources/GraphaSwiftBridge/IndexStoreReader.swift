@@ -145,7 +145,7 @@ final class IndexStoreReader: @unchecked Sendable {
             moduleName: unitInfo.moduleName
         )
 
-        return buildBinaryBuffer(nodes: Array(collector.nodes.values), edges: collector.edges)
+        return buildBinaryBuffer(nodes: collector.nodes.values, edges: collector.edges)
         }
     }
 
@@ -365,7 +365,7 @@ private let PACKED_EDGE_SIZE = 20
 private let NO_MODULE: UInt32 = 0xFFFFFFFF
 
 private func buildBinaryBuffer(
-    nodes: [ExtractedNode],
+    nodes: Dictionary<String, ExtractedNode>.Values,
     edges: Set<ExtractedEdge>
 ) -> (UnsafeMutableRawPointer, UInt32) {
     // Phase 1: build string table with deduplication
