@@ -230,6 +230,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "api::fetch_data".to_string(),
@@ -246,6 +247,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "util::helper".to_string(),
@@ -262,6 +264,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
             ],
             edges: vec![

@@ -281,6 +281,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "a.rs::helper".into(),
@@ -297,6 +298,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
             ],
             edges: vec![Edge {
@@ -343,6 +345,7 @@ mod tests {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         };
 
         let graph = Graph {
@@ -426,6 +429,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body".into(),
@@ -442,6 +446,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -458,6 +463,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body::view:Text@4:12".into(),
@@ -474,6 +480,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body::view:Row@5:12".into(),
@@ -490,6 +497,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
             ],
             edges: vec![
@@ -583,6 +591,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body".into(),
@@ -599,6 +608,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -615,6 +625,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body::view:panel@4:12".into(),
@@ -631,6 +642,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::ContentView::panel".into(),
@@ -647,6 +659,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::ContentView::panel::view:Text@19:8".into(),
@@ -663,6 +676,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::ContentView::helper@5:12".into(),
@@ -679,6 +693,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::ContentView::helper".into(),
@@ -695,6 +710,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::ContentView::helper::view:Image@23:8".into(),
@@ -711,6 +727,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body::view:Row@6:12".into(),
@@ -727,6 +744,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "view.swift::Row".into(),
@@ -743,6 +761,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
             ],
             edges: vec![

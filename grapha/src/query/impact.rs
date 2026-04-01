@@ -192,6 +192,7 @@ mod tests {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         };
         Graph {
             version: "0.1.0".to_string(),
@@ -272,6 +273,7 @@ mod tests {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         };
 
         let graph = Graph {
@@ -356,6 +358,7 @@ mod tests {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         };
         let graph = Graph {
             version: "0.1.0".to_string(),
@@ -413,6 +416,7 @@ mod tests {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         };
         let graph = Graph {
             version: "0.1.0".to_string(),
@@ -468,6 +472,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "body::view:Row@10:12".into(),
@@ -484,6 +489,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
             ],
             edges: vec![Edge {

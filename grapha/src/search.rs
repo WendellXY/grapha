@@ -242,6 +242,7 @@ mod tests {
             signature: None,
             doc_comment: None,
             module: None,
+            snippet: None,
         };
         Graph {
             version: "0.1.0".to_string(),
@@ -306,6 +307,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
             ],
             edges: vec![],

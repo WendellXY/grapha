@@ -223,6 +223,7 @@ mod tests {
                     signature: None,
                     doc_comment: None,
                     module: None,
+                    snippet: None,
                 },
                 Node {
                     id: "s:RoomPage.centerContentView".to_string(),
@@ -239,6 +240,7 @@ mod tests {
                     signature: Some("var centerContentView: some View".to_string()),
                     doc_comment: Some("helper".to_string()),
                     module: Some("Room".to_string()),
+                    snippet: None,
                 },
             ],
             edges: vec![],
@@ -323,6 +325,7 @@ mod tests {
                 signature: None,
                 doc_comment: None,
                 module: None,
+                snippet: None,
             }],
             edges: vec![],
         };

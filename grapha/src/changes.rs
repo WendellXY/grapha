@@ -236,6 +236,7 @@ mod tests {
                 signature: None,
                 doc_comment: None,
                 module: None,
+                snippet: None,
             }],
             edges: vec![Edge {
                 source: "src/lib.rs::handler".to_string(),

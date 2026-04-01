@@ -458,6 +458,7 @@ fn extract_function(
         signature,
         doc_comment,
         module: None,
+        snippet: None,
     })
 }
 
@@ -668,6 +669,7 @@ fn extract_named_item(
         signature: None,
         doc_comment: None,
         module: None,
+        snippet: None,
     })
 }
 
@@ -701,6 +703,7 @@ fn extract_impl_item(
         signature: None,
         doc_comment: None,
         module: None,
+        snippet: None,
     })
 }
 
@@ -752,6 +755,7 @@ fn extract_struct_fields(
                 signature: None,
                 doc_comment: None,
                 module: None,
+                snippet: None,
             });
         }
     }
@@ -871,6 +875,7 @@ fn extract_enum_variants(
                 signature: None,
                 doc_comment: None,
                 module: None,
+                snippet: None,
             });
         }
     }
