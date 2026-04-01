@@ -3,7 +3,7 @@ use std::path::Path;
 
 use grapha_core::graph::EdgeKind;
 use grapha_core::{ExtractionResult, LanguageExtractor};
-use grapha_swift::{extract_swift, extract_swift_via_fallback_for_tests, SwiftExtractor};
+use grapha_swift::{SwiftExtractor, extract_swift, extract_swift_via_fallback_for_tests};
 
 fn fixture() -> &'static [u8] {
     include_bytes!("fixtures/semantic_parity.swift")

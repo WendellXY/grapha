@@ -1489,13 +1489,16 @@ fn extract_inheritance_edges(
     let inferred_external_class_parent = if owner_kind == "class_declaration"
         && resolved_class_parent.is_none()
         && inheritance_specifiers.len() > 1
-        && declaration_kinds.get(&inheritance_specifiers[0].1) != Some(&TypeDeclarationKind::Protocol)
+        && declaration_kinds.get(&inheritance_specifiers[0].1)
+            != Some(&TypeDeclarationKind::Protocol)
         && !is_known_external_protocol_name(&inheritance_specifiers[0].1)
         && is_likely_external_class_name(&inheritance_specifiers[0].1)
-        && inheritance_specifiers.iter().skip(1).any(|(_, inherited_name)| {
-            declaration_kinds.get(inherited_name) == Some(&TypeDeclarationKind::Protocol)
-        })
-    {
+        && inheritance_specifiers
+            .iter()
+            .skip(1)
+            .any(|(_, inherited_name)| {
+                declaration_kinds.get(inherited_name) == Some(&TypeDeclarationKind::Protocol)
+            }) {
         Some(0)
     } else {
         None
