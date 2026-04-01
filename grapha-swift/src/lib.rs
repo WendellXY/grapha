@@ -233,6 +233,18 @@ fn stamp_swift_module(result: ExtractionResult, module_name: Option<&str>) -> Ex
     }
 }
 
+/// Fast byte-level check for SwiftUI markers to skip expensive enrichment.
+fn source_contains_swiftui_markers(source: &[u8]) -> bool {
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack.windows(needle.len()).any(|w| w == needle)
+    }
+    contains(source, b"SwiftUI")
+        || contains(source, b": View")
+        || contains(source, b": App ")
+        || contains(source, b": App{")
+        || contains(source, b"@ViewBuilder")
+}
+
 /// Extract Swift source code with waterfall strategy:
 /// 1. Xcode index store (confidence 1.0)
 /// 2. SwiftSyntax bridge (confidence 0.9)
@@ -285,11 +297,16 @@ pub fn extract_swift(
                 let _ = treesitter::enrich_doc_comments_with_tree(source, &tree, &mut result);
                 TIMING_TS_DOC_NS.fetch_add(t_doc.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
-                let t_swiftui = Instant::now();
-                let _ = treesitter::enrich_swiftui_structure_with_tree(
-                    source, file_path, &tree, &mut result,
-                );
-                TIMING_TS_SWIFTUI_NS.fetch_add(t_swiftui.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                // Skip expensive SwiftUI/l10n enrichment for files that clearly aren't SwiftUI
+                let has_swiftui = source_contains_swiftui_markers(source);
+
+                if has_swiftui {
+                    let t_swiftui = Instant::now();
+                    let _ = treesitter::enrich_swiftui_structure_with_tree(
+                        source, file_path, &tree, &mut result,
+                    );
+                    TIMING_TS_SWIFTUI_NS.fetch_add(t_swiftui.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                }
 
                 let t_l10n = Instant::now();
                 let _ = treesitter::enrich_localization_metadata_with_tree(
