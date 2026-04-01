@@ -13,3 +13,4 @@ qlipoth.toml
 
 grapha-swift/swift-bridge/.build
 grapha-swift/swift-bridge/Package.resolved
+grapha-swift/swift-bridge/.swiftpm
