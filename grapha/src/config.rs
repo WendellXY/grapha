@@ -19,9 +19,17 @@ fn default_true() -> bool {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+pub struct OutputConfig {
+    #[serde(default)]
+    pub default_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct GraphaConfig {
     #[serde(default)]
     pub swift: SwiftConfig,
+    #[serde(default)]
+    pub output: OutputConfig,
     #[serde(default)]
     pub classifiers: Vec<ClassifierRule>,
 }

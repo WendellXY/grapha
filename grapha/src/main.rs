@@ -3,6 +3,7 @@ mod classify;
 mod compress;
 mod config;
 mod delta;
+mod fields;
 mod filter;
 mod localization;
 mod progress;
@@ -147,6 +148,9 @@ enum SymbolCommands {
         /// Include source snippet and relationships in results
         #[arg(long)]
         context: bool,
+        /// Fields to display (comma-separated: file,id,module,span,snippet,visibility,signature,role; or "all"/"none")
+        #[arg(long)]
+        fields: Option<String>,
     },
     /// Query symbol context (callers, callees, implementors)
     Context {
@@ -158,6 +162,9 @@ enum SymbolCommands {
         /// Output format
         #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
         format: QueryOutputFormat,
+        /// Fields to display (comma-separated: file,id,module,span,snippet,visibility,signature,role; or "all"/"none")
+        #[arg(long)]
+        fields: Option<String>,
     },
     /// Analyze blast radius of changing a symbol
     Impact {
@@ -172,6 +179,9 @@ enum SymbolCommands {
         /// Output format
         #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
         format: QueryOutputFormat,
+        /// Fields to display (comma-separated: file,id,module,span,snippet,visibility,signature,role; or "all"/"none")
+        #[arg(long)]
+        fields: Option<String>,
     },
 }
 
@@ -514,6 +524,20 @@ fn resolve_query_result<T>(
     }
 }
 
+fn resolve_field_set(fields_flag: &Option<String>, path: &Path) -> fields::FieldSet {
+    match fields_flag {
+        Some(f) => fields::FieldSet::parse(f),
+        None => {
+            let cfg = config::load_config(path);
+            if cfg.output.default_fields.is_empty() {
+                fields::FieldSet::default()
+            } else {
+                fields::FieldSet::from_config(&cfg.output.default_fields)
+            }
+        }
+    }
+}
+
 fn tree_render_options(color: ColorMode) -> render::RenderOptions {
     use std::io::IsTerminal;
 
@@ -770,7 +794,10 @@ fn handle_symbol_command(
             role,
             fuzzy,
             context,
+            fields,
         } => {
+            let field_set = resolve_field_set(&fields, &path);
+            let _render_options = render_options.with_fields(field_set);
             let index = open_search_index(&path)?;
             let options = search::SearchOptions {
                 kind,
@@ -802,27 +829,37 @@ fn handle_symbol_command(
             symbol,
             path,
             format,
-        } => handle_resolved_graph_query(
-            &path,
-            format,
-            render_options,
-            "symbol",
-            |graph| query::context::query_context(graph, &symbol),
-            render::render_context_with_options,
-        ),
+            fields,
+        } => {
+            let field_set = resolve_field_set(&fields, &path);
+            let render_options = render_options.with_fields(field_set);
+            handle_resolved_graph_query(
+                &path,
+                format,
+                render_options,
+                "symbol",
+                |graph| query::context::query_context(graph, &symbol),
+                render::render_context_with_options,
+            )
+        }
         SymbolCommands::Impact {
             symbol,
             depth,
             path,
             format,
-        } => handle_resolved_graph_query(
-            &path,
-            format,
-            render_options,
-            "symbol",
-            |graph| query::impact::query_impact(graph, &symbol, depth),
-            render::render_impact_with_options,
-        ),
+            fields,
+        } => {
+            let field_set = resolve_field_set(&fields, &path);
+            let render_options = render_options.with_fields(field_set);
+            handle_resolved_graph_query(
+                &path,
+                format,
+                render_options,
+                "symbol",
+                |graph| query::impact::query_impact(graph, &symbol, depth),
+                render::render_impact_with_options,
+            )
+        }
     }
 }
 

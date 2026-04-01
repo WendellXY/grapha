@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use grapha_core::graph::NodeKind;
 
+use crate::fields::FieldSet;
 use crate::query::{
     ContextResult, SymbolInfo, SymbolRef, SymbolTreeRef, dataflow::DataflowEdge,
     dataflow::DataflowEdgeKind, dataflow::DataflowNode, dataflow::DataflowNodeKind,
@@ -10,22 +11,56 @@ use crate::query::{
     trace::TraceResult, usages::UsagesResult,
 };
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RenderOptions {
     color_enabled: bool,
+    pub fields: FieldSet,
+}
+
+impl Default for RenderOptions {
+    fn default() -> Self {
+        Self {
+            color_enabled: false,
+            fields: FieldSet::default(),
+        }
+    }
 }
 
 impl RenderOptions {
     pub const fn plain() -> Self {
         Self {
             color_enabled: false,
+            fields: FieldSet {
+                file: true,
+                id: false,
+                module: false,
+                span: false,
+                snippet: false,
+                visibility: false,
+                signature: false,
+                role: false,
+            },
         }
     }
 
     pub const fn color() -> Self {
         Self {
             color_enabled: true,
+            fields: FieldSet {
+                file: true,
+                id: false,
+                module: false,
+                span: false,
+                snippet: false,
+                visibility: false,
+                signature: false,
+                role: false,
+            },
         }
+    }
+
+    pub fn with_fields(self, fields: FieldSet) -> Self {
+        Self { fields, ..self }
     }
 }
 
