@@ -220,7 +220,19 @@ impl SqliteStore {
     }
 
     fn save_full(&self, graph: &Graph) -> anyhow::Result<()> {
-        let conn = self.open_for_write()?;
+        let conn = Connection::open(&self.path)?;
+        // For full rebuild: journal OFF (no crash safety needed — just redo),
+        // locking_mode EXCLUSIVE (no readers during rebuild),
+        // large page size for fewer I/O ops.
+        conn.execute_batch(
+            "PRAGMA journal_mode=OFF;
+             PRAGMA synchronous=OFF;
+             PRAGMA temp_store=MEMORY;
+             PRAGMA cache_size=-64000;
+             PRAGMA mmap_size=268435456;
+             PRAGMA locking_mode=EXCLUSIVE;
+             PRAGMA page_size=8192;",
+        )?;
 
         conn.execute_batch(
             "DROP TABLE IF EXISTS edges;

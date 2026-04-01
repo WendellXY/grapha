@@ -416,7 +416,11 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
             match extraction_result {
                 Ok(mut result) => {
                     if result.nodes.iter().any(|n| snippet::should_extract_snippet(n.kind)) {
-                        let source_str = String::from_utf8_lossy(&source);
+                        // Avoid allocation: try zero-copy first, fall back to lossy
+                        let source_str: std::borrow::Cow<'_, str> = match std::str::from_utf8(&source) {
+                            Ok(s) => std::borrow::Cow::Borrowed(s),
+                            Err(_) => String::from_utf8_lossy(&source),
+                        };
                         let line_idx = snippet::LineIndex::new(&source_str);
                         for node in &mut result.nodes {
                             if snippet::should_extract_snippet(node.kind) {
