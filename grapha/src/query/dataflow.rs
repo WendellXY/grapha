@@ -2,7 +2,9 @@ use std::collections::{HashMap, VecDeque};
 
 use serde::Serialize;
 
-use grapha_core::graph::{Edge, EdgeKind, EdgeProvenance, FlowDirection, Graph, Node, NodeRole};
+use grapha_core::graph::{
+    Edge, EdgeKind, EdgeProvenance, FlowDirection, Graph, Node, NodeKind, NodeRole,
+};
 
 use super::flow::{is_dataflow_edge, terminal_kind_to_string};
 use super::{QueryResolveError, SymbolRef, normalize_symbol_name};
@@ -394,6 +396,49 @@ pub fn query_dataflow(
     max_depth: usize,
 ) -> Result<DataflowResult, QueryResolveError> {
     let entry_node = crate::query::resolve_node(&graph.nodes, entry)?;
+
+    // If the resolved node is a type (struct/enum/protocol), it won't have
+    // outgoing dataflow edges. Suggest its member functions instead.
+    if matches!(
+        entry_node.kind,
+        NodeKind::Struct | NodeKind::Enum | NodeKind::Protocol | NodeKind::Extension
+    ) {
+        let members: Vec<&str> = graph
+            .edges
+            .iter()
+            .filter(|e| e.source == entry_node.id && e.kind == EdgeKind::Contains)
+            .filter_map(|e| {
+                graph.nodes.iter().find(|n| n.id == e.target).and_then(|n| {
+                    if matches!(n.kind, NodeKind::Function | NodeKind::Property) {
+                        Some(n.name.as_str())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
+        let hint = if members.is_empty() {
+            format!(
+                "{} is a {} — `flow graph` traces dataflow from functions, not types",
+                entry_node.name,
+                serde_json::to_string(&entry_node.kind)
+                    .unwrap_or_default()
+                    .trim_matches('"'),
+            )
+        } else {
+            let suggestions: Vec<&str> = members.iter().copied().take(5).collect();
+            format!(
+                "{} is a {} — `flow graph` traces dataflow from functions. Try one of its members: {}",
+                entry_node.name,
+                serde_json::to_string(&entry_node.kind)
+                    .unwrap_or_default()
+                    .trim_matches('"'),
+                suggestions.join(", "),
+            )
+        };
+        return Err(QueryResolveError::NotFunction { hint });
+    }
     let node_index: HashMap<&str, &Node> = graph
         .nodes
         .iter()

@@ -628,6 +628,7 @@ fn resolve_query_result<T>(
         Err(query::QueryResolveError::Ambiguous { query, candidates }) => {
             Err(anyhow!(format_ambiguity_error(&query, &candidates)))
         }
+        Err(query::QueryResolveError::NotFunction { hint }) => Err(anyhow!(hint)),
     }
 }
 

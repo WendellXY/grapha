@@ -41,6 +41,11 @@ fn query_response<T: Serialize>(result: Result<T, query::QueryResolveError>) -> 
             }),
         )
             .into_response(),
+        Err(query::QueryResolveError::NotFunction { hint }) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": hint })),
+        )
+            .into_response(),
     }
 }
 

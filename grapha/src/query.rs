@@ -33,6 +33,8 @@ pub enum QueryResolveError {
         query: String,
         candidates: Vec<QueryCandidate>,
     },
+    #[error("{hint}")]
+    NotFunction { hint: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

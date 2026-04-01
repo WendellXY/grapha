@@ -175,6 +175,7 @@ fn format_query_error(err: &query::QueryResolveError) -> String {
             msg.push_str(&format!("hint: {}", query::ambiguity_hint()));
             msg
         }
+        query::QueryResolveError::NotFunction { hint } => hint.clone(),
     }
 }
 
