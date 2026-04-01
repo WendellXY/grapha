@@ -22,14 +22,41 @@ pub fn done(msg: &str, start: Instant) {
 
 /// Print a completed step with a precomputed elapsed duration.
 pub fn done_elapsed(msg: &str, elapsed: Duration) {
-    if elapsed.as_secs() >= 1 {
-        eprintln!("  \x1b[32m✓\x1b[0m {} ({:.1}s)", msg, elapsed.as_secs_f64());
-    } else {
-        eprintln!("  \x1b[32m✓\x1b[0m {} ({}ms)", msg, elapsed.as_millis());
-    }
+    eprintln!("  \x1b[32m✓\x1b[0m {} ({})", msg, format_elapsed(elapsed));
 }
 
 /// Print a summary line.
 pub fn summary(msg: &str) {
     eprintln!("\x1b[1m{}\x1b[0m", msg);
+}
+
+fn format_elapsed(elapsed: Duration) -> String {
+    if elapsed.as_secs() >= 1 {
+        format!("{:.1}s", elapsed.as_secs_f64())
+    } else if elapsed.as_millis() >= 1 {
+        format!("{:.1}ms", elapsed.as_secs_f64() * 1_000.0)
+    } else {
+        format!("{}µs", elapsed.as_micros())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_elapsed;
+    use std::time::Duration;
+
+    #[test]
+    fn formats_microseconds() {
+        assert_eq!(format_elapsed(Duration::from_micros(823)), "823µs");
+    }
+
+    #[test]
+    fn formats_fractional_milliseconds() {
+        assert_eq!(format_elapsed(Duration::from_micros(1_250)), "1.2ms");
+    }
+
+    #[test]
+    fn formats_seconds() {
+        assert_eq!(format_elapsed(Duration::from_millis(1_250)), "1.2s");
+    }
 }
