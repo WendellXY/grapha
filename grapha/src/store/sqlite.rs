@@ -249,13 +249,15 @@ impl SqliteStore {
              DROP TABLE IF EXISTS meta;",
         )?;
 
+        // Create tables WITHOUT primary key for fast sequential bulk insert.
+        // Unique indexes added after data load (much faster than maintaining during insert).
         conn.execute_batch(
             "CREATE TABLE meta (
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
             CREATE TABLE nodes (
-                id         TEXT PRIMARY KEY,
+                id         TEXT NOT NULL,
                 kind       TEXT NOT NULL,
                 name       TEXT NOT NULL,
                 file       TEXT NOT NULL,
@@ -272,7 +274,7 @@ impl SqliteStore {
                 snippet    TEXT
             );
             CREATE TABLE edges (
-                edge_id    TEXT PRIMARY KEY,
+                edge_id    TEXT NOT NULL,
                 source     TEXT NOT NULL,
                 target     TEXT NOT NULL,
                 kind       TEXT NOT NULL,
@@ -297,6 +299,11 @@ impl SqliteStore {
             false,
         )?;
         tx.commit()?;
+        // Add primary key unique indexes after bulk load
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX idx_nodes_id ON nodes(id);
+             CREATE UNIQUE INDEX idx_edges_id ON edges(edge_id);",
+        )?;
         Self::create_indexes(&conn)?;
         conn.execute_batch("PRAGMA optimize;")?;
         Ok(())
