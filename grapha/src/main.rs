@@ -632,6 +632,15 @@ fn handle_index(
         load_existing_graph(&format, &store_path)?
     };
 
+    let delta = if full_rebuild || previous_graph.is_none() {
+        None
+    } else {
+        Some(delta::GraphDelta::between(
+            previous_graph.as_ref().unwrap(),
+            &graph,
+        ))
+    };
+
     let search_index_path = store_path.join("search_index");
     let index_root = path.clone();
     let save_result = std::thread::scope(|scope| {
@@ -659,6 +668,7 @@ fn handle_index(
                 &graph,
                 &search_index_path,
                 full_rebuild,
+                delta.as_ref(),
             )?;
             Ok::<_, anyhow::Error>((t.elapsed(), stats))
         });

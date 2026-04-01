@@ -111,6 +111,7 @@ pub fn sync_index(
     graph: &Graph,
     index_path: &Path,
     force_full_rebuild: bool,
+    precomputed_delta: Option<&GraphDelta>,
 ) -> Result<SearchSyncStats> {
     let full_stats = SearchSyncStats::from_graphs(previous, graph, SyncMode::FullRebuild);
     if force_full_rebuild || previous.is_none() || !index_path.exists() {
@@ -119,7 +120,14 @@ pub fn sync_index(
     }
 
     let previous_graph = previous.expect("checked is_some above");
-    let delta = GraphDelta::between(previous_graph, graph);
+    let owned_delta;
+    let delta = match precomputed_delta {
+        Some(d) => d,
+        None => {
+            owned_delta = GraphDelta::between(previous_graph, graph);
+            &owned_delta
+        }
+    };
     let incremental_stats = SearchSyncStats {
         mode: SyncMode::Incremental,
         documents: delta.node_stats(),
@@ -313,7 +321,7 @@ mod tests {
             edges: vec![],
         };
 
-        let stats = sync_index(Some(&previous), &next, dir.path(), false).unwrap();
+        let stats = sync_index(Some(&previous), &next, dir.path(), false, None).unwrap();
         assert_eq!(stats.mode, SyncMode::Incremental);
         assert_eq!(
             stats.documents,
