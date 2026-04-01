@@ -47,7 +47,7 @@ cargo fmt -- --check           # Check formatting without modifying
 4. **Classify** — auto-detect entry points (SwiftUI View, @Observable, fn main), terminal nodes (network, persistence, cache, event) via USR module matching + string pattern classifiers + user-defined `grapha.toml` rules
 5. **Compress** — prune inferrable edges and group by file for LLM consumption (`--compact`)
 6. **Persist** — store to SQLite or JSON via the `Store` trait
-7. **Query** — context (360° symbol view), impact (BFS blast radius), search (BM25), trace (forward dataflow), reverse (entry point impact), entries (list entry points)
+7. **Query** — symbol context/search/impact, flow tracing/effect graphs, localization lookups, and repo change analysis
 8. **Serve** — embedded web UI with REST API
 
 ### CLI Subcommands
@@ -55,13 +55,15 @@ cargo fmt -- --check           # Check formatting without modifying
 ```
 grapha analyze <path> [--output FILE] [--filter KINDS] [--compact]
 grapha index <path> [--format sqlite|json] [--store-dir DIR]
-grapha context <symbol> [-p PATH]
-grapha impact <symbol> [--depth N] [-p PATH]
-grapha search <query> [--limit N] [-p PATH]
-grapha changes [SCOPE] [-p PATH]
-grapha trace <entry> [--depth N] [-p PATH]   — Forward dataflow trace
-grapha reverse <symbol> [-p PATH]            — Reverse impact to entry points
-grapha entries [-p PATH]                      — List auto-detected entry points
+grapha symbol search <query> [--limit N] [-p PATH]
+grapha symbol context <symbol> [-p PATH]
+grapha symbol impact <symbol> [--depth N] [-p PATH]
+grapha flow trace <symbol> [--direction forward|reverse] [--depth N] [-p PATH]
+grapha flow graph <symbol> [--depth N] [-p PATH]
+grapha flow entries [-p PATH]
+grapha l10n symbol <symbol> [-p PATH]
+grapha l10n usages <key> [--table TABLE] [-p PATH]
+grapha repo changes [SCOPE] [-p PATH]
 grapha serve [-p PATH] [--port 8080]         — Launch web UI
 ```
 

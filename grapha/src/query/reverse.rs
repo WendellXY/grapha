@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use grapha_core::graph::{EdgeKind, Graph, Node, NodeKind, NodeRole};
 
+use super::flow::is_dataflow_edge;
 use super::{QueryResolveError, SymbolRef, normalize_symbol_name, strip_accessor_prefix};
 
 #[derive(Debug, Serialize)]
@@ -27,17 +28,6 @@ pub struct AffectedEntry {
 struct AccessorCluster<'a> {
     display_name: String,
     entry_nodes: Vec<&'a Node>,
-}
-
-fn is_dataflow_edge(kind: EdgeKind) -> bool {
-    matches!(
-        kind,
-        EdgeKind::Calls
-            | EdgeKind::Reads
-            | EdgeKind::Writes
-            | EdgeKind::Publishes
-            | EdgeKind::Subscribes
-    )
 }
 
 fn is_accessor_function(node: &Node) -> bool {
@@ -233,7 +223,11 @@ fn build_reverse_cluster_adjacency<'a>(
         .collect()
 }
 
-pub fn query_reverse(graph: &Graph, symbol: &str) -> Result<ReverseResult, QueryResolveError> {
+pub fn query_reverse(
+    graph: &Graph,
+    symbol: &str,
+    max_depth: Option<usize>,
+) -> Result<ReverseResult, QueryResolveError> {
     let target_node = crate::query::resolve_node(&graph.nodes, symbol)?;
 
     let node_index: HashMap<&str, &Node> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
@@ -263,6 +257,7 @@ pub fn query_reverse(graph: &Graph, symbol: &str) -> Result<ReverseResult, Query
 
     let mut affected_entries = Vec::new();
     let mut seen_entries: HashSet<&str> = HashSet::new();
+    let max_depth = max_depth.unwrap_or(usize::MAX);
 
     while let Some((cluster_id, distance, path)) = queue.pop_front() {
         let cluster = clusters.get(cluster_id).expect("cluster must exist");
@@ -276,6 +271,10 @@ pub fn query_reverse(graph: &Graph, symbol: &str) -> Result<ReverseResult, Query
                     path: reversed_path,
                 });
             }
+        }
+
+        if distance >= max_depth {
+            continue;
         }
 
         if let Some(source_clusters) = reverse_adjacency.get(cluster_id) {
@@ -368,7 +367,7 @@ mod tests {
             edges: vec![make_edge("entry1", "service"), make_edge("service", "db")],
         };
 
-        let result = query_reverse(&graph, "db").unwrap();
+        let result = query_reverse(&graph, "db", None).unwrap();
         assert_eq!(result.symbol, "db");
         assert_eq!(result.affected_entries.len(), 1);
         assert_eq!(result.affected_entries[0].entry.name, "entry1");
@@ -401,7 +400,7 @@ mod tests {
             edges: vec![make_edge("entry1", "shared"), make_edge("entry2", "shared")],
         };
 
-        let result = query_reverse(&graph, "shared").unwrap();
+        let result = query_reverse(&graph, "shared", None).unwrap();
         assert_eq!(result.total_entries, 2);
         let names: Vec<&str> = result
             .affected_entries
@@ -420,7 +419,7 @@ mod tests {
             edges: vec![],
         };
         assert!(matches!(
-            query_reverse(&graph, "nonexistent"),
+            query_reverse(&graph, "nonexistent", None),
             Err(QueryResolveError::NotFound { .. })
         ));
     }
@@ -442,12 +441,37 @@ mod tests {
             edges: vec![make_edge("entry", "mid"), make_edge("mid", "target")],
         };
 
-        let result = query_reverse(&graph, "target").unwrap();
+        let result = query_reverse(&graph, "target", None).unwrap();
         assert_eq!(result.affected_entries.len(), 1);
         assert_eq!(
             result.affected_entries[0].path,
             vec!["entry", "mid", "target"]
         );
+    }
+
+    #[test]
+    fn respects_max_depth_when_walking_upstream() {
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                make_node(
+                    "entry",
+                    "entry",
+                    NodeKind::Function,
+                    Some(NodeRole::EntryPoint),
+                ),
+                make_node("mid", "mid", NodeKind::Function, None),
+                make_node("target", "target", NodeKind::Function, None),
+            ],
+            edges: vec![make_edge("entry", "mid"), make_edge("mid", "target")],
+        };
+
+        let result = query_reverse(&graph, "target", Some(1)).unwrap();
+        assert!(result.affected_entries.is_empty());
+
+        let result = query_reverse(&graph, "target", Some(2)).unwrap();
+        assert_eq!(result.affected_entries.len(), 1);
+        assert_eq!(result.affected_entries[0].distance, 2);
     }
 
     #[test]
@@ -511,7 +535,7 @@ mod tests {
             ],
         };
 
-        let result = query_reverse(&graph, "handleSendResult").unwrap();
+        let result = query_reverse(&graph, "handleSendResult", None).unwrap();
         assert_eq!(result.affected_entries.len(), 1);
         assert_eq!(result.affected_entries[0].entry.id, "body");
         assert_eq!(result.affected_entries[0].distance, 3);
@@ -561,7 +585,7 @@ mod tests {
             ],
         };
 
-        let result = query_reverse(&graph, "Row").unwrap();
+        let result = query_reverse(&graph, "Row", None).unwrap();
         assert_eq!(result.total_entries, 0);
         assert!(result.affected_entries.is_empty());
     }

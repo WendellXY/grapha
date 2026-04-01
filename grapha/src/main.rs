@@ -17,6 +17,7 @@ use std::time::Instant;
 
 use anyhow::{Context, anyhow};
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 
 use store::Store;
 
@@ -45,6 +46,12 @@ enum ColorMode {
 enum QueryOutputFormat {
     Json,
     Tree,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum TraceDirection {
+    Forward,
+    Reverse,
 }
 
 #[derive(Subcommand)]
@@ -77,6 +84,51 @@ enum Commands {
         #[arg(long)]
         full_rebuild: bool,
     },
+    /// Launch web UI for interactive graph exploration
+    Serve {
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+        /// Port to listen on
+        #[arg(long, default_value = "8080")]
+        port: u16,
+    },
+    /// Query symbol relationships and search indexed symbols
+    Symbol {
+        #[command(subcommand)]
+        command: SymbolCommands,
+    },
+    /// Inspect dataflow between symbols, entries, and effects
+    Flow {
+        #[command(subcommand)]
+        command: FlowCommands,
+    },
+    /// Inspect localization references and usage sites
+    #[command(name = "l10n")]
+    L10n {
+        #[command(subcommand)]
+        command: L10nCommands,
+    },
+    /// Run repository-scoped analysis over the indexed graph
+    Repo {
+        #[command(subcommand)]
+        command: RepoCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SymbolCommands {
+    /// Search symbols by name or file
+    Search {
+        /// Search query
+        query: String,
+        /// Max results
+        #[arg(long, default_value = "20")]
+        limit: usize,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
     /// Query symbol context (callers, callees, implementors)
     Context {
         /// Symbol name or ID
@@ -102,58 +154,34 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
         format: QueryOutputFormat,
     },
-    /// Detect code changes and analyze their impact
-    Changes {
-        /// Scope: "unstaged", "staged", "all", or a git ref (e.g., "main")
-        #[arg(default_value = "all")]
-        scope: String,
-        /// Project directory
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
-    },
-    /// Search symbols by name or file
-    Search {
-        /// Search query
-        query: String,
-        /// Max results
-        #[arg(long, default_value = "20")]
-        limit: usize,
-        /// Project directory
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
-    },
-    /// Forward-trace dataflow from an entry point to terminal operations
+}
+
+#[derive(Subcommand)]
+enum FlowCommands {
+    /// Trace dataflow forward to terminals or backward to entry points
     Trace {
-        /// Entry point symbol name or ID
-        entry: String,
-        /// Maximum traversal depth
-        #[arg(long, default_value = "10")]
-        depth: usize,
-        /// Project directory
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
-        /// Output format
-        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
-        format: QueryOutputFormat,
-    },
-    /// Derive a semantic effect graph from an entry point
-    Dataflow {
-        /// Entry point symbol name or ID
-        entry: String,
-        /// Maximum traversal depth
-        #[arg(long, default_value = "10")]
-        depth: usize,
-        /// Project directory
-        #[arg(short, long, default_value = ".")]
-        path: PathBuf,
-        /// Output format
-        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
-        format: QueryOutputFormat,
-    },
-    /// Reverse query: which entry points are affected by this symbol?
-    Reverse {
         /// Symbol name or ID
         symbol: String,
+        /// Trace direction
+        #[arg(long, value_enum, default_value_t = TraceDirection::Forward)]
+        direction: TraceDirection,
+        /// Maximum traversal depth
+        #[arg(long)]
+        depth: Option<usize>,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
+        format: QueryOutputFormat,
+    },
+    /// Derive a semantic effect graph from a symbol
+    Graph {
+        /// Symbol name or ID
+        symbol: String,
+        /// Maximum traversal depth
+        #[arg(long, default_value = "10")]
+        depth: usize,
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
@@ -170,8 +198,12 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
         format: QueryOutputFormat,
     },
+}
+
+#[derive(Subcommand)]
+enum L10nCommands {
     /// Resolve localization records reachable from a SwiftUI symbol subtree
-    Localize {
+    Symbol {
         /// Symbol name or ID
         symbol: String,
         /// Project directory
@@ -195,14 +227,18 @@ enum Commands {
         #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
         format: QueryOutputFormat,
     },
-    /// Launch web UI for interactive graph exploration
-    Serve {
+}
+
+#[derive(Subcommand)]
+enum RepoCommands {
+    /// Detect code changes and analyze their impact
+    Changes {
+        /// Scope: "unstaged", "staged", "all", or a git ref (e.g., "main")
+        #[arg(default_value = "all")]
+        scope: String,
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
-        /// Port to listen on
-        #[arg(long, default_value = "8080")]
-        port: u16,
     },
 }
 
@@ -453,287 +489,317 @@ fn tree_render_options(color: ColorMode) -> render::RenderOptions {
     }
 }
 
-fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-    let render_options = tree_render_options(cli.color);
+fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
 
-    match cli.command {
-        Commands::Analyze {
-            path,
-            output,
-            filter,
-            compact,
-        } => {
-            // verbose when writing to file (stdout is for JSON)
-            let verbose = output.is_some();
-            let mut graph = run_pipeline(&path, verbose)?;
-
-            if let Some(ref filter_str) = filter {
-                let kinds = filter::parse_filter(filter_str)?;
-                graph = filter::filter_graph(graph, &kinds);
-            }
-
-            let json = if compact {
-                let pruned = compress::prune::prune(graph, false);
-                let grouped = compress::group::group(&pruned);
-                match &output {
-                    Some(_) => serde_json::to_string(&grouped)?,
-                    None => serde_json::to_string_pretty(&grouped)?,
-                }
-            } else {
-                match &output {
-                    Some(_) => serde_json::to_string(&graph)?,
-                    None => serde_json::to_string_pretty(&graph)?,
-                }
-            };
-
-            match output {
-                Some(p) => {
-                    std::fs::write(&p, &json)
-                        .with_context(|| format!("failed to write {}", p.display()))?;
-                    eprintln!("  \x1b[32m✓\x1b[0m wrote {}", p.display());
-                }
-                None => println!("{json}"),
-            }
+fn print_query_result<T, R>(
+    result: &T,
+    format: QueryOutputFormat,
+    render_options: render::RenderOptions,
+    tree_renderer: R,
+) -> anyhow::Result<()>
+where
+    T: Serialize,
+    R: FnOnce(&T, render::RenderOptions) -> String,
+{
+    match format {
+        QueryOutputFormat::Json => print_json(result),
+        QueryOutputFormat::Tree => {
+            println!("{}", tree_renderer(result, render_options));
+            Ok(())
         }
-        Commands::Index {
-            path,
-            format,
-            store_dir,
-            full_rebuild,
-        } => {
-            let total_start = Instant::now();
-            let store_path = store_dir.unwrap_or_else(|| path.join(".grapha"));
-            let graph = run_pipeline(&path, true)?;
+    }
+}
 
-            std::fs::create_dir_all(&store_path)
-                .with_context(|| format!("failed to create store dir {}", store_path.display()))?;
+fn handle_resolved_graph_query<T, Q, R>(
+    path: &Path,
+    format: QueryOutputFormat,
+    render_options: render::RenderOptions,
+    missing_label: &str,
+    query_fn: Q,
+    tree_renderer: R,
+) -> anyhow::Result<()>
+where
+    T: Serialize,
+    Q: FnOnce(&grapha_core::graph::Graph) -> Result<T, query::QueryResolveError>,
+    R: FnOnce(&T, render::RenderOptions) -> String,
+{
+    let graph = load_graph(path)?;
+    let result = resolve_query_result(query_fn(&graph), missing_label)?;
+    print_query_result(&result, format, render_options, tree_renderer)
+}
 
-            let previous_graph = if full_rebuild {
-                None
-            } else {
-                load_existing_graph(&format, &store_path)?
-            };
+fn handle_graph_query<T, Q, R>(
+    path: &Path,
+    format: QueryOutputFormat,
+    render_options: render::RenderOptions,
+    query_fn: Q,
+    tree_renderer: R,
+) -> anyhow::Result<()>
+where
+    T: Serialize,
+    Q: FnOnce(&grapha_core::graph::Graph) -> T,
+    R: FnOnce(&T, render::RenderOptions) -> String,
+{
+    let graph = load_graph(path)?;
+    let result = query_fn(&graph);
+    print_query_result(&result, format, render_options, tree_renderer)
+}
 
-            // Run store sync, search sync, and localization snapshot build in parallel.
-            let search_index_path = store_path.join("search_index");
-            let index_root = path.clone();
-            let save_result = std::thread::scope(|scope| {
-                let save_handle = scope.spawn(|| {
-                    let t = Instant::now();
-                    let s = build_store(&format, &store_path)?;
-                    let stats = if full_rebuild {
-                        let stats = store::StoreWriteStats::from_graphs(
-                            previous_graph.as_ref(),
-                            &graph,
-                            delta::SyncMode::FullRebuild,
-                        );
-                        s.save(&graph)?;
-                        stats
-                    } else {
-                        s.save_incremental(previous_graph.as_ref(), &graph)?
-                    };
-                    Ok::<_, anyhow::Error>((t.elapsed(), stats))
-                });
+fn open_search_index(path: &Path) -> anyhow::Result<tantivy::Index> {
+    let search_index_path = path.join(".grapha/search_index");
+    if search_index_path.exists() {
+        Ok(tantivy::Index::open_in_dir(&search_index_path)?)
+    } else {
+        let graph = load_graph(path)?;
+        eprintln!("  building search index...");
+        Ok(search::build_index(&graph, &search_index_path)?)
+    }
+}
 
-                let search_handle = scope.spawn(|| {
-                    let t = Instant::now();
-                    let stats = search::sync_index(
-                        previous_graph.as_ref(),
-                        &graph,
-                        &search_index_path,
-                        full_rebuild,
-                    )?;
-                    Ok::<_, anyhow::Error>((t.elapsed(), stats))
-                });
+fn handle_analyze(
+    path: PathBuf,
+    output: Option<PathBuf>,
+    filter: Option<String>,
+    compact: bool,
+) -> anyhow::Result<()> {
+    let verbose = output.is_some();
+    let mut graph = run_pipeline(&path, verbose)?;
 
-                let localization_handle = scope.spawn(|| {
-                    let t = Instant::now();
-                    let stats =
-                        localization::build_and_save_catalog_snapshot(&index_root, &store_path)?;
-                    Ok::<_, anyhow::Error>((t.elapsed(), stats))
-                });
+    if let Some(ref filter_str) = filter {
+        let kinds = filter::parse_filter(filter_str)?;
+        graph = filter::filter_graph(graph, &kinds);
+    }
 
-                let save = save_handle.join().expect("save thread panicked")?;
-                let search = search_handle.join().expect("search thread panicked")?;
-                let localization = localization_handle
-                    .join()
-                    .expect("localization thread panicked")?;
-                Ok::<_, anyhow::Error>((save, search, localization))
-            });
-            let (
-                (save_elapsed, save_stats),
-                (search_elapsed, search_stats),
-                (localize_elapsed, localize_stats),
-            ) = save_result?;
-            progress::done_elapsed(
-                &format!(
-                    "saved to {} ({}; {})",
-                    store_path.display(),
-                    format,
-                    save_stats.summary()
-                ),
-                save_elapsed,
-            );
-            progress::done_elapsed(
-                &format!("built search index ({})", search_stats.summary()),
-                search_elapsed,
-            );
-            progress::done_elapsed(
-                &format!(
-                    "saved localization snapshot ({} records)",
-                    localize_stats.record_count
-                ),
-                localize_elapsed,
-            );
-            for warning in &localize_stats.warnings {
-                eprintln!(
-                    "  \x1b[33m!\x1b[0m skipped invalid localization catalog {}: {}",
-                    warning.catalog_file, warning.reason
+    let json = if compact {
+        let pruned = compress::prune::prune(graph, false);
+        let grouped = compress::group::group(&pruned);
+        match &output {
+            Some(_) => serde_json::to_string(&grouped)?,
+            None => serde_json::to_string_pretty(&grouped)?,
+        }
+    } else {
+        match &output {
+            Some(_) => serde_json::to_string(&graph)?,
+            None => serde_json::to_string_pretty(&graph)?,
+        }
+    };
+
+    match output {
+        Some(p) => {
+            std::fs::write(&p, &json)
+                .with_context(|| format!("failed to write {}", p.display()))?;
+            eprintln!("  \x1b[32m✓\x1b[0m wrote {}", p.display());
+        }
+        None => println!("{json}"),
+    }
+
+    Ok(())
+}
+
+fn handle_index(
+    path: PathBuf,
+    format: String,
+    store_dir: Option<PathBuf>,
+    full_rebuild: bool,
+) -> anyhow::Result<()> {
+    let total_start = Instant::now();
+    let store_path = store_dir.unwrap_or_else(|| path.join(".grapha"));
+    let graph = run_pipeline(&path, true)?;
+
+    std::fs::create_dir_all(&store_path)
+        .with_context(|| format!("failed to create store dir {}", store_path.display()))?;
+
+    let previous_graph = if full_rebuild {
+        None
+    } else {
+        load_existing_graph(&format, &store_path)?
+    };
+
+    let search_index_path = store_path.join("search_index");
+    let index_root = path.clone();
+    let save_result = std::thread::scope(|scope| {
+        let save_handle = scope.spawn(|| {
+            let t = Instant::now();
+            let s = build_store(&format, &store_path)?;
+            let stats = if full_rebuild {
+                let stats = store::StoreWriteStats::from_graphs(
+                    previous_graph.as_ref(),
+                    &graph,
+                    delta::SyncMode::FullRebuild,
                 );
-            }
-
-            progress::summary(&format!(
-                "\n  {} nodes, {} edges indexed in {:.1}s",
-                graph.nodes.len(),
-                graph.edges.len(),
-                total_start.elapsed().as_secs_f64(),
-            ));
-        }
-        Commands::Context {
-            symbol,
-            path,
-            format,
-        } => {
-            let graph = load_graph(&path)?;
-            let result =
-                resolve_query_result(query::context::query_context(&graph, &symbol), "symbol")?;
-            match format {
-                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => {
-                    println!(
-                        "{}",
-                        render::render_context_with_options(&result, render_options)
-                    )
-                }
-            }
-        }
-        Commands::Impact {
-            symbol,
-            depth,
-            path,
-            format,
-        } => {
-            let graph = load_graph(&path)?;
-            let result = resolve_query_result(
-                query::impact::query_impact(&graph, &symbol, depth),
-                "symbol",
-            )?;
-            match format {
-                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => {
-                    println!(
-                        "{}",
-                        render::render_impact_with_options(&result, render_options)
-                    )
-                }
-            }
-        }
-        Commands::Changes { scope, path } => {
-            let graph = load_graph(&path)?;
-            let report = changes::detect_changes(&path, &graph, &scope)?;
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        }
-        Commands::Search {
-            query: q,
-            limit,
-            path,
-        } => {
-            let search_index_path = path.join(".grapha/search_index");
-            let index = if search_index_path.exists() {
-                tantivy::Index::open_in_dir(&search_index_path)?
+                s.save(&graph)?;
+                stats
             } else {
-                let graph = load_graph(&path)?;
-                eprintln!("  building search index...");
-                search::build_index(&graph, &search_index_path)?
+                s.save_incremental(previous_graph.as_ref(), &graph)?
             };
-            let results = search::search(&index, &q, limit)?;
-            println!("{}", serde_json::to_string_pretty(&results)?);
-        }
-        Commands::Trace {
-            entry,
-            depth,
-            path,
-            format,
-        } => {
-            let graph = load_graph(&path)?;
-            let result = resolve_query_result(
-                query::trace::query_trace(&graph, &entry, depth),
-                "entry point",
+            Ok::<_, anyhow::Error>((t.elapsed(), stats))
+        });
+
+        let search_handle = scope.spawn(|| {
+            let t = Instant::now();
+            let stats = search::sync_index(
+                previous_graph.as_ref(),
+                &graph,
+                &search_index_path,
+                full_rebuild,
             )?;
-            match format {
-                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => {
-                    println!(
-                        "{}",
-                        render::render_trace_with_options(&result, render_options)
-                    )
-                }
-            }
-        }
-        Commands::Dataflow {
-            entry,
-            depth,
-            path,
+            Ok::<_, anyhow::Error>((t.elapsed(), stats))
+        });
+
+        let localization_handle = scope.spawn(|| {
+            let t = Instant::now();
+            let stats = localization::build_and_save_catalog_snapshot(&index_root, &store_path)?;
+            Ok::<_, anyhow::Error>((t.elapsed(), stats))
+        });
+
+        let save = save_handle.join().expect("save thread panicked")?;
+        let search = search_handle.join().expect("search thread panicked")?;
+        let localization = localization_handle
+            .join()
+            .expect("localization thread panicked")?;
+        Ok::<_, anyhow::Error>((save, search, localization))
+    });
+    let (
+        (save_elapsed, save_stats),
+        (search_elapsed, search_stats),
+        (localize_elapsed, localize_stats),
+    ) = save_result?;
+    progress::done_elapsed(
+        &format!(
+            "saved to {} ({}; {})",
+            store_path.display(),
             format,
-        } => {
-            let graph = load_graph(&path)?;
-            let result = resolve_query_result(
-                query::dataflow::query_dataflow(&graph, &entry, depth),
-                "entry point",
-            )?;
-            match format {
-                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => {
-                    println!(
-                        "{}",
-                        render::render_dataflow_with_options(&result, render_options)
-                    )
-                }
-            }
+            save_stats.summary()
+        ),
+        save_elapsed,
+    );
+    progress::done_elapsed(
+        &format!("built search index ({})", search_stats.summary()),
+        search_elapsed,
+    );
+    progress::done_elapsed(
+        &format!(
+            "saved localization snapshot ({} records)",
+            localize_stats.record_count
+        ),
+        localize_elapsed,
+    );
+    for warning in &localize_stats.warnings {
+        eprintln!(
+            "  \x1b[33m!\x1b[0m skipped invalid localization catalog {}: {}",
+            warning.catalog_file, warning.reason
+        );
+    }
+
+    progress::summary(&format!(
+        "\n  {} nodes, {} edges indexed in {:.1}s",
+        graph.nodes.len(),
+        graph.edges.len(),
+        total_start.elapsed().as_secs_f64(),
+    ));
+
+    Ok(())
+}
+
+fn handle_symbol_command(
+    command: SymbolCommands,
+    render_options: render::RenderOptions,
+) -> anyhow::Result<()> {
+    match command {
+        SymbolCommands::Search { query, limit, path } => {
+            let index = open_search_index(&path)?;
+            let results = search::search(&index, &query, limit)?;
+            print_json(&results)
         }
-        Commands::Reverse {
+        SymbolCommands::Context {
             symbol,
             path,
             format,
-        } => {
-            let graph = load_graph(&path)?;
-            let result =
-                resolve_query_result(query::reverse::query_reverse(&graph, &symbol), "symbol")?;
-            match format {
-                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => {
-                    println!(
-                        "{}",
-                        render::render_reverse_with_options(&result, render_options)
-                    )
-                }
-            }
-        }
-        Commands::Entries { path, format } => {
-            let graph = load_graph(&path)?;
-            let result = query::entries::query_entries(&graph);
-            match format {
-                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => {
-                    println!(
-                        "{}",
-                        render::render_entries_with_options(&result, render_options)
-                    )
-                }
-            }
-        }
-        Commands::Localize {
+        } => handle_resolved_graph_query(
+            &path,
+            format,
+            render_options,
+            "symbol",
+            |graph| query::context::query_context(graph, &symbol),
+            render::render_context_with_options,
+        ),
+        SymbolCommands::Impact {
+            symbol,
+            depth,
+            path,
+            format,
+        } => handle_resolved_graph_query(
+            &path,
+            format,
+            render_options,
+            "symbol",
+            |graph| query::impact::query_impact(graph, &symbol, depth),
+            render::render_impact_with_options,
+        ),
+    }
+}
+
+fn handle_flow_command(
+    command: FlowCommands,
+    render_options: render::RenderOptions,
+) -> anyhow::Result<()> {
+    match command {
+        FlowCommands::Trace {
+            symbol,
+            direction,
+            depth,
+            path,
+            format,
+        } => match direction {
+            TraceDirection::Forward => handle_resolved_graph_query(
+                &path,
+                format,
+                render_options,
+                "symbol",
+                |graph| query::trace::query_trace(graph, &symbol, depth.unwrap_or(10)),
+                render::render_trace_with_options,
+            ),
+            TraceDirection::Reverse => handle_resolved_graph_query(
+                &path,
+                format,
+                render_options,
+                "symbol",
+                |graph| query::reverse::query_reverse(graph, &symbol, depth),
+                render::render_reverse_with_options,
+            ),
+        },
+        FlowCommands::Graph {
+            symbol,
+            depth,
+            path,
+            format,
+        } => handle_resolved_graph_query(
+            &path,
+            format,
+            render_options,
+            "symbol",
+            |graph| query::dataflow::query_dataflow(graph, &symbol, depth),
+            render::render_dataflow_with_options,
+        ),
+        FlowCommands::Entries { path, format } => handle_graph_query(
+            &path,
+            format,
+            render_options,
+            query::entries::query_entries,
+            render::render_entries_with_options,
+        ),
+    }
+}
+
+fn handle_l10n_command(
+    command: L10nCommands,
+    render_options: render::RenderOptions,
+) -> anyhow::Result<()> {
+    match command {
+        L10nCommands::Symbol {
             symbol,
             path,
             format,
@@ -744,17 +810,14 @@ fn main() -> anyhow::Result<()> {
                 query::localize::query_localize(&graph, &catalogs, &symbol),
                 "symbol",
             )?;
-            match format {
-                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => {
-                    println!(
-                        "{}",
-                        render::render_localize_with_options(&result, render_options)
-                    )
-                }
-            }
+            print_query_result(
+                &result,
+                format,
+                render_options,
+                render::render_localize_with_options,
+            )
         }
-        Commands::Usages {
+        L10nCommands::Usages {
             key,
             table,
             path,
@@ -763,21 +826,55 @@ fn main() -> anyhow::Result<()> {
             let graph = load_graph(&path)?;
             let catalogs = localization::load_catalog_index(&path)?;
             let result = query::usages::query_usages(&graph, &catalogs, &key, table.as_deref());
-            match format {
-                QueryOutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                QueryOutputFormat::Tree => {
-                    println!(
-                        "{}",
-                        render::render_usages_with_options(&result, render_options)
-                    )
-                }
-            }
+            print_query_result(
+                &result,
+                format,
+                render_options,
+                render::render_usages_with_options,
+            )
         }
-        Commands::Serve { path, port } => {
+    }
+}
+
+fn handle_repo_command(command: RepoCommands) -> anyhow::Result<()> {
+    match command {
+        RepoCommands::Changes { scope, path } => {
             let graph = load_graph(&path)?;
-            let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(serve::run(graph, port))?;
+            let report = changes::detect_changes(&path, &graph, &scope)?;
+            print_json(&report)
         }
+    }
+}
+
+fn handle_serve(path: PathBuf, port: u16) -> anyhow::Result<()> {
+    let graph = load_graph(&path)?;
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(serve::run(graph, port))?;
+    Ok(())
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    let render_options = tree_render_options(cli.color);
+
+    match cli.command {
+        Commands::Analyze {
+            path,
+            output,
+            filter,
+            compact,
+        } => handle_analyze(path, output, filter, compact)?,
+        Commands::Index {
+            path,
+            format,
+            store_dir,
+            full_rebuild,
+        } => handle_index(path, format, store_dir, full_rebuild)?,
+        Commands::Serve { path, port } => handle_serve(path, port)?,
+        Commands::Symbol { command } => handle_symbol_command(command, render_options)?,
+        Commands::Flow { command } => handle_flow_command(command, render_options)?,
+        Commands::L10n { command } => handle_l10n_command(command, render_options)?,
+        Commands::Repo { command } => handle_repo_command(command)?,
     }
 
     Ok(())

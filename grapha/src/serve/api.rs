@@ -65,7 +65,7 @@ pub async fn get_reverse(
     Path(symbol): Path<String>,
 ) -> impl IntoResponse {
     let decoded = urlencoding::decode(&symbol).unwrap_or_default();
-    query_response(query::reverse::query_reverse(&state.graph, &decoded))
+    query_response(query::reverse::query_reverse(&state.graph, &decoded, None))
 }
 
 #[derive(Deserialize)]

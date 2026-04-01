@@ -342,7 +342,7 @@ fn localize_and_usages_commands_resolve_swiftui_xcstrings() {
     std::fs::remove_file(dir.path().join("Localizable.xcstrings")).unwrap();
 
     let localize_output = grapha()
-        .args(["localize", "body", "-p", dir.path().to_str().unwrap()])
+        .args(["l10n", "symbol", "body", "-p", dir.path().to_str().unwrap()])
         .assert()
         .success()
         .get_output()
@@ -370,6 +370,7 @@ fn localize_and_usages_commands_resolve_swiftui_xcstrings() {
 
     let usages_output = grapha()
         .args([
+            "l10n",
             "usages",
             "account_forget_password",
             "--table",
@@ -462,7 +463,13 @@ fn localize_and_usages_prefer_nearest_duplicate_catalog() {
         .success();
 
     let localize_output = grapha()
-        .args(["localize", "AuthView", "-p", dir.path().to_str().unwrap()])
+        .args([
+            "l10n",
+            "symbol",
+            "AuthView",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
         .assert()
         .success()
         .get_output()
@@ -482,6 +489,7 @@ fn localize_and_usages_prefer_nearest_duplicate_catalog() {
 
     let usages_output = grapha()
         .args([
+            "l10n",
             "usages",
             "shared_title",
             "--table",
@@ -564,7 +572,13 @@ fn repeated_index_uses_incremental_store_and_search() {
         .stderr(predicate::str::contains("docs +1 ~0 -1"));
 
     grapha()
-        .args(["search", "gamma", "-p", dir.path().to_str().unwrap()])
+        .args([
+            "symbol",
+            "search",
+            "gamma",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"name\": \"gamma\""))
@@ -604,7 +618,8 @@ operation = "UPSERT"
 
     grapha()
         .args([
-            "dataflow",
+            "flow",
+            "graph",
             "handler",
             "-p",
             dir.path().to_str().unwrap(),
@@ -619,7 +634,8 @@ operation = "UPSERT"
 
     grapha()
         .args([
-            "dataflow",
+            "flow",
+            "graph",
             "handler",
             "-p",
             dir.path().to_str().unwrap(),
@@ -666,7 +682,8 @@ operation = "UPSERT"
 
     let plain = grapha()
         .args([
-            "dataflow",
+            "flow",
+            "graph",
             "handler",
             "-p",
             dir.path().to_str().unwrap(),
@@ -683,7 +700,8 @@ operation = "UPSERT"
 
     let colored = grapha()
         .args([
-            "dataflow",
+            "flow",
+            "graph",
             "handler",
             "-p",
             dir.path().to_str().unwrap(),
@@ -717,6 +735,7 @@ fn json_output_ignores_color_mode() {
 
     let output = grapha()
         .args([
+            "symbol",
             "context",
             "default_config",
             "-p",
@@ -753,6 +772,7 @@ fn context_command_returns_symbol_info() {
     // Then query context
     grapha()
         .args([
+            "symbol",
             "context",
             "default_config",
             "-p",
@@ -813,7 +833,7 @@ fn changes_command_runs_on_clean_repo() {
 
     // Run changes — should succeed with no changes
     grapha()
-        .args(["changes", "-p", dir.path().to_str().unwrap()])
+        .args(["repo", "changes", "-p", dir.path().to_str().unwrap()])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"changed_count\": 0"));
@@ -835,7 +855,13 @@ fn search_command_finds_symbols() {
         .success();
 
     grapha()
-        .args(["search", "Config", "-p", dir.path().to_str().unwrap()])
+        .args([
+            "symbol",
+            "search",
+            "Config",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("Config"));

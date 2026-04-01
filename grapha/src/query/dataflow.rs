@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use grapha_core::graph::{Edge, EdgeKind, EdgeProvenance, FlowDirection, Graph, Node, NodeRole};
 
+use super::flow::{is_dataflow_edge, terminal_kind_to_string};
 use super::{QueryResolveError, SymbolRef, normalize_symbol_name};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -172,7 +173,7 @@ fn terminal_kind_for_effect(source: &Node, target: Option<&Node>) -> Option<Stri
             Some(NodeRole::Terminal { kind }) => Some(kind),
             _ => None,
         })
-        .map(crate::query::trace::terminal_kind_to_string)
+        .map(terminal_kind_to_string)
 }
 
 fn normalize_effect_component(value: &str) -> String {
@@ -401,7 +402,7 @@ pub fn query_dataflow(
 
     let mut adjacency: HashMap<&str, Vec<&Edge>> = HashMap::new();
     for edge in &graph.edges {
-        if crate::query::trace::is_dataflow_edge(edge.kind) {
+        if is_dataflow_edge(edge.kind) {
             adjacency
                 .entry(edge.source.as_str())
                 .or_default()

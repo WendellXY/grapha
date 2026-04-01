@@ -51,7 +51,9 @@ impl Palette {
     }
 
     fn symbol_name(self, text: impl AsRef<str>) -> String {
-        self.paint("1;97", text)
+        // Keep primary text on the terminal's default foreground so light and
+        // dark themes both stay readable.
+        self.paint("1", text)
     }
 
     fn section_header(self, text: impl AsRef<str>) -> String {
@@ -63,7 +65,7 @@ impl Palette {
     }
 
     fn file(self, text: impl AsRef<str>) -> String {
-        self.paint("2;34", text)
+        text.as_ref().to_string()
     }
 
     fn key(self, text: impl AsRef<str>) -> String {
@@ -1050,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn colorized_context_highlights_symbol_sections_and_files() {
+    fn colorized_context_uses_theme_friendly_styles() {
         let result = ContextResult {
             symbol: symbol_info("helper", NodeKind::Function, "main.rs"),
             callers: vec![symbol_ref("main", NodeKind::Function, "main.rs")],
@@ -1066,9 +1068,9 @@ mod tests {
         let plain = render_context_with_options(&result, RenderOptions::plain());
         let rendered = render_context_with_options(&result, RenderOptions::color());
 
-        assert!(rendered.contains("\x1b[1;97mhelper\x1b[0m"));
+        assert!(rendered.contains("\x1b[1mhelper\x1b[0m"));
         assert!(rendered.contains("\x1b[33m[function]\x1b[0m"));
-        assert!(rendered.contains("\x1b[2;34m(main.rs)\x1b[0m"));
+        assert!(rendered.contains("(main.rs)"));
         assert!(rendered.contains("\x1b[1;36mcallers\x1b[0m"));
         assert!(rendered.contains("\x1b[32m1\x1b[0m"));
         assert_eq!(strip_ansi(&rendered), plain);

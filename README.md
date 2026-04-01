@@ -39,10 +39,10 @@ Tested on a production iOS app (1,991 Swift files, ~300K lines):
 
 - **Compiler-grade accuracy** — reads Xcode's pre-built index store for 100% type-resolved call graphs (Swift). Falls back to SwiftSyntax, then tree-sitter, for instant parsing without a build.
 - **Incremental indexing** — SQLite storage and Tantivy search sync incrementally by default. Use `grapha index --full-rebuild` to force a cold rebuild.
-- **Dataflow tracing** — trace forward from entry points to terminal operations (network, persistence, cache). Trace backward from any symbol to affected entry points.
-- **Semantic dataflow graph** — derive a deduplicated effect graph from an entry point with `grapha dataflow`, including reads, writes, publishes, subscribes, and terminal side effects.
+- **Dataflow tracing** — trace forward from entry points to terminal operations (network, persistence, cache), or backward from any symbol to affected entry points.
+- **Semantic dataflow graph** — derive a deduplicated effect graph from a symbol with `grapha flow graph`, including reads, writes, publishes, subscribes, and terminal side effects.
 - **Impact analysis** — BFS blast radius: "if I change this function, what breaks?"
-- **Provenance-aware change detection** — edges carry source spans, so `grapha changes` can attribute method-body edits even when declaration spans stay fixed.
+- **Provenance-aware change detection** — edges carry source spans, so `grapha repo changes` can attribute method-body edits even when declaration spans stay fixed.
 - **Entry point detection** — auto-detects SwiftUI Views, `@Observable` classes, `fn main()`, `#[test]` functions.
 - **Terminal classification** — recognizes network calls, persistence (GRDB, CoreData), cache (Kingfisher), analytics, and more. Extensible via `grapha.toml`.
 - **Cross-module resolution** — import-guided disambiguation with confidence scoring. Module-aware merging for multi-package projects.
@@ -62,31 +62,38 @@ cargo install --path grapha
 grapha index .
 
 # Search for symbols
-grapha search sendMessage
+grapha symbol search sendMessage
 
 # 360° context for a symbol
-grapha context sendMessage
+grapha symbol context sendMessage
 
 # Human-readable tree output for graph queries
-grapha reverse handleSendResult --format tree
+grapha flow trace handleSendResult --direction reverse --format tree
 
 # Force ANSI-highlighted tree output for CI logs
-grapha --color always reverse handleSendResult --format tree
+grapha --color always flow trace handleSendResult --direction reverse --format tree
 
 # Impact analysis: what breaks if this changes?
-grapha impact bootstrapGame --depth 5
+grapha symbol impact bootstrapGame --depth 5
 
 # Forward trace: entry point → terminal operations
-grapha trace bootstrapGame
+grapha flow trace bootstrapGame
 
 # Derived semantic effect graph
-grapha dataflow bootstrapGame --format tree
+grapha flow graph bootstrapGame --format tree
 
 # Reverse: which entry points reach this symbol?
-grapha reverse handleSendResult
+grapha flow trace handleSendResult --direction reverse
 
 # List auto-detected entry points
-grapha entries
+grapha flow entries
+
+# Localization lookups
+grapha l10n symbol body
+grapha l10n usages account_forget_password --table Localizable
+
+# Change detection
+grapha repo changes
 
 # Interactive web UI
 grapha serve --port 8765
@@ -115,73 +122,80 @@ grapha analyze src/ --filter fn,struct # Filter by symbol kind
 grapha analyze src/ -o graph.json      # Write to file
 ```
 
-### `grapha context` — 360° symbol view
+### `grapha symbol context` — 360° symbol view
 
 ```bash
-grapha context Config                  # Callers, callees, implements
-grapha context bootstrapGame           # Fuzzy name matching
-grapha context bootstrapGame --format tree
-grapha --color always context bootstrapGame --format tree
+grapha symbol context Config                  # Callers, callees, implements
+grapha symbol context bootstrapGame           # Fuzzy name matching
+grapha symbol context bootstrapGame --format tree
+grapha --color always symbol context bootstrapGame --format tree
 ```
 
-### `grapha impact` — Blast radius
+### `grapha symbol impact` — Blast radius
 
 ```bash
-grapha impact bootstrapGame            # Who depends on this?
-grapha impact bootstrapGame --depth 5  # Deeper traversal
-grapha impact bootstrapGame --format tree
-grapha --color always impact bootstrapGame --format tree
+grapha symbol impact bootstrapGame            # Who depends on this?
+grapha symbol impact bootstrapGame --depth 5  # Deeper traversal
+grapha symbol impact bootstrapGame --format tree
+grapha --color always symbol impact bootstrapGame --format tree
 ```
 
-### `grapha trace` — Forward dataflow
+### `grapha flow trace` — Forward/reverse dataflow
 
 ```bash
-grapha trace bootstrapGame             # Entry → service → terminal ops
-grapha trace sendMessage --depth 10
-grapha trace bootstrapGame --format tree
-grapha --color always trace bootstrapGame --format tree
+grapha flow trace bootstrapGame                           # Entry → service → terminal ops
+grapha flow trace sendMessage --depth 10
+grapha flow trace handleSendResult --direction reverse    # Which entry points reach this?
+grapha flow trace bootstrapGame --format tree
+grapha --color always flow trace bootstrapGame --format tree
 ```
 
-### `grapha dataflow` — Derived semantic effect graph
+### `grapha flow graph` — Derived semantic effect graph
 
 ```bash
-grapha dataflow bootstrapGame
-grapha dataflow sendMessage --depth 10
-grapha dataflow bootstrapGame --format tree
-grapha --color always dataflow bootstrapGame --format tree
+grapha flow graph bootstrapGame
+grapha flow graph sendMessage --depth 10
+grapha flow graph bootstrapGame --format tree
+grapha --color always flow graph bootstrapGame --format tree
 ```
 
-### `grapha reverse` — Entry point impact
+### `grapha flow entries` — List entry points
 
 ```bash
-grapha reverse handleSendResult        # Which Views/entry points reach this?
-grapha reverse handleSendResult --format tree
-grapha --color always reverse handleSendResult --format tree
+grapha flow entries                         # All detected entry points
+grapha flow entries --format tree
+grapha --color always flow entries --format tree
 ```
 
-### `grapha entries` — List entry points
+`--color auto|always|never` controls ANSI styling for tree output. `auto` enables theme-friendly terminal styling only when stdout is a terminal, `always` forces that styling for CI/log capture, and `never` keeps tree output plain. JSON output is always uncolored.
+
+### `grapha symbol search` — Full-text search
 
 ```bash
-grapha entries                         # All detected entry points
-grapha entries --format tree
-grapha --color always entries --format tree
+grapha symbol search "ViewModel"
+grapha symbol search "send" --limit 10
 ```
 
-`--color auto|always|never` controls ANSI styling for tree output. `auto` colors only when stdout is a terminal, `always` forces color for CI/log capture, and `never` keeps tree output plain. JSON output is always uncolored.
-
-### `grapha search` — Full-text search
+### `grapha l10n symbol` — Resolve localization records
 
 ```bash
-grapha search "ViewModel"
-grapha search "send" --limit 10
+grapha l10n symbol body
+grapha l10n symbol AuthView --format tree
 ```
 
-### `grapha changes` — Git change detection
+### `grapha l10n usages` — Find localization usage sites
 
 ```bash
-grapha changes                         # All uncommitted changes
-grapha changes staged                  # Only staged
-grapha changes main                    # Compare against branch
+grapha l10n usages account_forget_password
+grapha l10n usages shared_title --table Localizable --format tree
+```
+
+### `grapha repo changes` — Git change detection
+
+```bash
+grapha repo changes                    # All uncommitted changes
+grapha repo changes staged             # Only staged
+grapha repo changes main               # Compare against branch
 ```
 
 ### `grapha serve` — Web UI

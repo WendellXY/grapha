@@ -61,7 +61,7 @@ fn index_and_entries_works() {
         .success();
 
     grapha()
-        .args(["entries", "-p", dir.path().to_str().unwrap()])
+        .args(["flow", "entries", "-p", dir.path().to_str().unwrap()])
         .assert()
         .success()
         .stdout(predicate::str::contains("entries"));
@@ -72,7 +72,7 @@ fn trace_command_works() {
     let dir = index_temp_project("fn main() { helper(); }\nfn helper() {}\n");
 
     grapha()
-        .args(["trace", "main", "-p", dir.path().to_str().unwrap()])
+        .args(["flow", "trace", "main", "-p", dir.path().to_str().unwrap()])
         .assert()
         .success()
         .stdout(predicate::str::contains("entry"));
@@ -83,10 +83,55 @@ fn reverse_command_works() {
     let dir = index_temp_project("fn main() { helper(); }\nfn helper() {}\n");
 
     grapha()
-        .args(["reverse", "helper", "-p", dir.path().to_str().unwrap()])
+        .args([
+            "flow",
+            "trace",
+            "helper",
+            "--direction",
+            "reverse",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("symbol"));
+}
+
+#[test]
+fn reverse_trace_respects_depth_limit() {
+    let dir = index_temp_project("fn main() { mid(); }\nfn mid() { helper(); }\nfn helper() {}\n");
+
+    grapha()
+        .args([
+            "flow",
+            "trace",
+            "helper",
+            "--direction",
+            "reverse",
+            "--depth",
+            "1",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"total_entries\": 0"));
+
+    grapha()
+        .args([
+            "flow",
+            "trace",
+            "helper",
+            "--direction",
+            "reverse",
+            "--depth",
+            "2",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"total_entries\": 1"));
 }
 
 #[test]
@@ -94,7 +139,13 @@ fn impact_command_defaults_to_json() {
     let dir = index_temp_project("fn main() { helper(); }\nfn helper() {}\n");
 
     grapha()
-        .args(["impact", "helper", "-p", dir.path().to_str().unwrap()])
+        .args([
+            "symbol",
+            "impact",
+            "helper",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"source\""))
@@ -107,6 +158,7 @@ fn context_tree_format_works() {
 
     grapha()
         .args([
+            "symbol",
             "context",
             "helper",
             "-p",
@@ -128,6 +180,7 @@ fn entries_tree_format_works() {
 
     grapha()
         .args([
+            "flow",
             "entries",
             "-p",
             dir.path().to_str().unwrap(),
@@ -147,6 +200,7 @@ fn trace_tree_format_works() {
 
     grapha()
         .args([
+            "flow",
             "trace",
             "main",
             "-p",
@@ -169,8 +223,11 @@ fn reverse_tree_format_works() {
 
     grapha()
         .args([
-            "reverse",
+            "flow",
+            "trace",
             "helper",
+            "--direction",
+            "reverse",
             "-p",
             dir.path().to_str().unwrap(),
             "--format",
@@ -193,6 +250,7 @@ fn impact_tree_format_works() {
 
     grapha()
         .args([
+            "symbol",
             "impact",
             "helper",
             "-p",
@@ -244,6 +302,7 @@ fn context_tree_for_swiftui_body_shows_structure() {
 
     grapha()
         .args([
+            "symbol",
             "context",
             "body",
             "-p",
@@ -264,4 +323,67 @@ fn context_tree_for_swiftui_body_shows_structure() {
         .stdout(predicate::str::contains(
             "ContentView [struct] (ContentView.swift)",
         ));
+}
+
+#[test]
+fn help_output_lists_new_command_tree() {
+    grapha()
+        .args(["--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("symbol"))
+        .stdout(predicate::str::contains("flow"))
+        .stdout(predicate::str::contains("l10n"))
+        .stdout(predicate::str::contains("repo"))
+        .stdout(predicate::str::contains("reverse").not());
+
+    grapha()
+        .args(["symbol", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("search"))
+        .stdout(predicate::str::contains("context"))
+        .stdout(predicate::str::contains("impact"));
+
+    grapha()
+        .args(["flow", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("trace"))
+        .stdout(predicate::str::contains("graph"))
+        .stdout(predicate::str::contains("entries"));
+
+    grapha()
+        .args(["l10n", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("symbol"))
+        .stdout(predicate::str::contains("usages"));
+
+    grapha()
+        .args(["repo", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("changes"));
+}
+
+#[test]
+fn removed_top_level_commands_fail() {
+    grapha()
+        .args(["reverse"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
+
+    grapha()
+        .args(["localize"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
+
+    grapha()
+        .args(["dataflow"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 }
