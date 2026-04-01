@@ -718,6 +718,7 @@ dependencies = [
  "toml",
  "tower-http",
  "urlencoding",
+ "xcassets",
 ]
 
 [[package]]
@@ -2632,6 +2633,17 @@ name = "writeable"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
+
+[[package]]
+name = "xcassets"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5fca39a8b780be74c93a0fcc9df1953e4a506b6279c33619848b7dbfe3c9791"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "yoke"

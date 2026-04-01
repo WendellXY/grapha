@@ -1,3 +1,4 @@
+mod assets;
 mod changes;
 mod classify;
 mod compress;
@@ -117,6 +118,11 @@ enum Commands {
     L10n {
         #[command(subcommand)]
         command: L10nCommands,
+    },
+    /// Inspect image asset catalogs and usage sites
+    Asset {
+        #[command(subcommand)]
+        command: AssetCommands,
     },
     /// Run repository-scoped analysis over the indexed graph
     Repo {
@@ -256,6 +262,30 @@ enum L10nCommands {
         /// Optional table/catalog name
         #[arg(long)]
         table: Option<String>,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
+        format: QueryOutputFormat,
+    },
+}
+
+#[derive(Subcommand)]
+enum AssetCommands {
+    /// List image assets from indexed catalogs
+    List {
+        /// Only show assets with no references in source code
+        #[arg(long)]
+        unused: bool,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Find source code usage sites for an image asset
+    Usages {
+        /// Asset name (e.g., "icon_gift" or "Room/voiceWave")
+        name: String,
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
@@ -838,17 +868,27 @@ fn handle_index(
             Ok::<_, anyhow::Error>((t.elapsed(), stats))
         });
 
+        let assets_handle = scope.spawn(|| {
+            let t = Instant::now();
+            let stats = assets::build_and_save_snapshot(&index_root, &store_path)?;
+            Ok::<_, anyhow::Error>((t.elapsed(), stats))
+        });
+
         let save = save_handle.join().expect("save thread panicked")?;
         let search = search_handle.join().expect("search thread panicked")?;
         let localization = localization_handle
             .join()
             .expect("localization thread panicked")?;
-        Ok::<_, anyhow::Error>((save, search, localization))
+        let assets = assets_handle
+            .join()
+            .expect("assets thread panicked")?;
+        Ok::<_, anyhow::Error>((save, search, localization, assets))
     });
     let (
         (save_elapsed, save_stats),
         (search_elapsed, search_stats),
         (localize_elapsed, localize_stats),
+        (assets_elapsed, assets_stats),
     ) = save_result?;
     progress::done_elapsed(
         &format!(
@@ -874,6 +914,19 @@ fn handle_index(
         eprintln!(
             "  \x1b[33m!\x1b[0m skipped invalid localization catalog {}: {}",
             warning.catalog_file, warning.reason
+        );
+    }
+    progress::done_elapsed(
+        &format!(
+            "saved asset snapshot ({} images)",
+            assets_stats.record_count
+        ),
+        assets_elapsed,
+    );
+    for warning in &assets_stats.warnings {
+        eprintln!(
+            "  \x1b[33m!\x1b[0m skipped invalid asset catalog {}: {}",
+            warning.catalog_path, warning.reason
         );
     }
 
@@ -1065,6 +1118,40 @@ fn handle_l10n_command(
     }
 }
 
+fn handle_asset_command(command: AssetCommands) -> anyhow::Result<()> {
+    match command {
+        AssetCommands::List { unused, path } => {
+            if unused {
+                let graph = load_graph(&path)?;
+                let index = assets::load_asset_index(&path)?;
+                let unused = assets::find_unused(&index, &graph);
+                print_json(&unused)
+            } else {
+                let index = assets::load_asset_index(&path)?;
+                let records = index.all_records().to_vec();
+                print_json(&records)
+            }
+        }
+        AssetCommands::Usages { name, path, format } => {
+            let graph = load_graph(&path)?;
+            let usages = assets::find_usages(&graph, &name);
+            match format {
+                QueryOutputFormat::Json => print_json(&usages),
+                QueryOutputFormat::Tree => {
+                    if usages.is_empty() {
+                        eprintln!("  no usages found for asset '{name}'");
+                    } else {
+                        for usage in &usages {
+                            println!("  {} ({}) — {}", usage.node_name, usage.file, usage.asset_name);
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
 fn handle_repo_command(command: RepoCommands) -> anyhow::Result<()> {
     match command {
         RepoCommands::Changes { scope, path } => {
@@ -1120,6 +1207,7 @@ fn main() -> anyhow::Result<()> {
         Commands::Symbol { command } => handle_symbol_command(command, render_options)?,
         Commands::Flow { command } => handle_flow_command(command, render_options)?,
         Commands::L10n { command } => handle_l10n_command(command, render_options)?,
+        Commands::Asset { command } => handle_asset_command(command)?,
         Commands::Repo { command } => handle_repo_command(command)?,
     }
 
