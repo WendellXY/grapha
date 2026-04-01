@@ -8,6 +8,9 @@ grapha-core = { path = "../grapha-core" }
 grapha-rust = { path = "../grapha-rust" }
 grapha-swift = { path = "../grapha-swift" }
 anyhow = "1"
+blake3 = "1"
+notify = "7"
+notify-debouncer-mini = "0.5"
 rayon = "1"
 clap = { version = "4", features = ["derive"] }
 ignore = "0.4"

@@ -8,6 +8,67 @@ use serde_json::json;
 use handler::McpState;
 use types::{JsonRpcRequest, JsonRpcResponse};
 
+/// Run MCP server with a watch channel that hot-swaps the graph on file changes.
+pub fn run_mcp_server_with_watch(
+    mut state: McpState,
+    watch_rx: std::sync::mpsc::Receiver<(grapha_core::graph::Graph, tantivy::Index)>,
+) -> anyhow::Result<()> {
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+
+    // Set stdin to non-blocking-ish: use lines() but poll watch_rx between requests
+    for line in stdin.lock().lines() {
+        // Check for graph updates from watcher (non-blocking)
+        while let Ok((graph, index)) = watch_rx.try_recv() {
+            let node_count = graph.nodes.len();
+            let edge_count = graph.edges.len();
+            state.graph = graph;
+            state.search_index = index;
+
+            let valid_ids: std::collections::HashSet<&str> =
+                state.graph.nodes.iter().map(|n| n.id.as_str()).collect();
+            state.recall.prune(&valid_ids);
+
+            eprintln!("watch: graph updated ({node_count} nodes, {edge_count} edges)");
+        }
+
+        let line = match line {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("mcp: failed to read stdin: {e}");
+                break;
+            }
+        };
+
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let request: JsonRpcRequest = match serde_json::from_str(&line) {
+            Ok(r) => r,
+            Err(e) => {
+                let resp = JsonRpcResponse::error(
+                    serde_json::Value::Null,
+                    -32700,
+                    format!("parse error: {e}"),
+                );
+                write_response(&mut stdout, &resp)?;
+                continue;
+            }
+        };
+
+        let id = match request.id {
+            Some(id) => id,
+            None => continue,
+        };
+
+        let response = dispatch(&mut state, id, &request.method, &request.params);
+        write_response(&mut stdout, &response)?;
+    }
+
+    Ok(())
+}
+
 pub fn run_mcp_server(mut state: McpState) -> anyhow::Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -77,11 +138,7 @@ fn dispatch(
                 .cloned()
                 .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
-            // Try mutable handlers first (e.g. reload), then immutable
-            let result = match handler::handle_mutable_tool_call(state, tool_name, &arguments) {
-                Some(r) => r,
-                None => handler::handle_tool_call(state, tool_name, &arguments),
-            };
+            let result = handler::handle_tool_call(state, tool_name, &arguments);
             JsonRpcResponse::success(id, result)
         }
         _ => JsonRpcResponse::error(id, -32601, format!("method not found: {method}")),
@@ -117,6 +174,7 @@ mod tests {
             graph,
             search_index: index,
             store_path: PathBuf::from("/tmp/test"),
+            recall: crate::recall::Recall::new(),
         }
     }
 

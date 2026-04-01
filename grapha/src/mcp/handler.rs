@@ -6,6 +6,7 @@ use tantivy::Index;
 
 use crate::mcp::types::ToolDefinition;
 use crate::query;
+use crate::recall::{self, Recall};
 use crate::search;
 use crate::store::Store;
 
@@ -13,6 +14,7 @@ pub struct McpState {
     pub graph: Graph,
     pub search_index: Index,
     pub store_path: PathBuf,
+    pub recall: Recall,
 }
 
 pub fn tool_definitions() -> Vec<ToolDefinition> {
@@ -246,7 +248,7 @@ fn serialize_result<T: serde::Serialize>(result: &T) -> Value {
     }
 }
 
-pub fn handle_tool_call(state: &McpState, tool_name: &str, arguments: &Value) -> Value {
+pub fn handle_tool_call(state: &mut McpState, tool_name: &str, arguments: &Value) -> Value {
     match tool_name {
         "search_symbols" => handle_search_symbols(state, arguments),
         "get_symbol_context" => handle_get_symbol_context(state, arguments),
@@ -258,19 +260,16 @@ pub fn handle_tool_call(state: &McpState, tool_name: &str, arguments: &Value) ->
         "analyze_complexity" => handle_analyze_complexity(state, arguments),
         "detect_smells" => handle_detect_smells(state, arguments),
         "get_module_summary" => handle_get_module_summary(state),
+        "reload" => handle_reload(state),
         _ => tool_error(format!("unknown tool: {tool_name}")),
     }
 }
 
-/// Mutable tool calls that modify McpState (reload).
-pub fn handle_mutable_tool_call(
-    state: &mut McpState,
-    tool_name: &str,
-    _arguments: &Value,
-) -> Option<Value> {
-    match tool_name {
-        "reload" => Some(handle_reload(state)),
-        _ => None,
+/// Pre-resolve a symbol query using recall to break ties, returning the node ID.
+fn resolve_symbol<'a>(state: &'a mut McpState, query: &str) -> Result<String, Value> {
+    match recall::resolve_with_recall(&state.graph.nodes, query, &mut state.recall) {
+        Ok(node) => Ok(node.id.clone()),
+        Err(e) => Err(tool_error(format_query_error(&e))),
     }
 }
 
@@ -314,26 +313,34 @@ fn handle_search_symbols(state: &McpState, arguments: &Value) -> Value {
     }
 }
 
-fn handle_get_symbol_context(state: &McpState, arguments: &Value) -> Value {
-    let symbol = match arguments.get("symbol").and_then(|v| v.as_str()) {
+fn handle_get_symbol_context(state: &mut McpState, arguments: &Value) -> Value {
+    let query = match arguments.get("symbol").and_then(|v| v.as_str()) {
         Some(s) => s,
         None => return tool_error("missing required parameter: symbol".to_string()),
     };
+    let symbol_id = match resolve_symbol(state, query) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
 
-    match query::context::query_context(&state.graph, symbol) {
+    match query::context::query_context(&state.graph, &symbol_id) {
         Ok(result) => serialize_result(&result),
         Err(e) => tool_error(format_query_error(&e)),
     }
 }
 
-fn handle_get_impact(state: &McpState, arguments: &Value) -> Value {
-    let symbol = match arguments.get("symbol").and_then(|v| v.as_str()) {
+fn handle_get_impact(state: &mut McpState, arguments: &Value) -> Value {
+    let query = match arguments.get("symbol").and_then(|v| v.as_str()) {
         Some(s) => s,
         None => return tool_error("missing required parameter: symbol".to_string()),
     };
+    let symbol_id = match resolve_symbol(state, query) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
     let depth = arguments.get("depth").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
 
-    match query::impact::query_impact(&state.graph, symbol, depth) {
+    match query::impact::query_impact(&state.graph, &symbol_id, depth) {
         Ok(result) => serialize_result(&result),
         Err(e) => tool_error(format_query_error(&e)),
     }
@@ -345,10 +352,14 @@ fn handle_get_file_map(state: &McpState, arguments: &Value) -> Value {
     serialize_result(&result)
 }
 
-fn handle_trace(state: &McpState, arguments: &Value) -> Value {
-    let symbol = match arguments.get("symbol").and_then(|v| v.as_str()) {
+fn handle_trace(state: &mut McpState, arguments: &Value) -> Value {
+    let query = match arguments.get("symbol").and_then(|v| v.as_str()) {
         Some(s) => s,
         None => return tool_error("missing required parameter: symbol".to_string()),
+    };
+    let symbol_id = match resolve_symbol(state, query) {
+        Ok(id) => id,
+        Err(e) => return e,
     };
     let direction = arguments
         .get("direction")
@@ -359,14 +370,14 @@ fn handle_trace(state: &McpState, arguments: &Value) -> Value {
     match direction {
         "forward" => {
             let max_depth = depth.unwrap_or(10) as usize;
-            match query::trace::query_trace(&state.graph, symbol, max_depth) {
+            match query::trace::query_trace(&state.graph, &symbol_id, max_depth) {
                 Ok(result) => serialize_result(&result),
                 Err(e) => tool_error(format_query_error(&e)),
             }
         }
         "reverse" => {
             let max_depth = depth.map(|d| d as usize);
-            match query::reverse::query_reverse(&state.graph, symbol, max_depth) {
+            match query::reverse::query_reverse(&state.graph, &symbol_id, max_depth) {
                 Ok(result) => serialize_result(&result),
                 Err(e) => tool_error(format_query_error(&e)),
             }
@@ -392,7 +403,7 @@ fn handle_get_file_symbols(state: &McpState, arguments: &Value) -> Value {
     serialize_result(&result)
 }
 
-fn handle_batch_context(state: &McpState, arguments: &Value) -> Value {
+fn handle_batch_context(state: &mut McpState, arguments: &Value) -> Value {
     let symbols = match arguments.get("symbols").and_then(|v| v.as_array()) {
         Some(arr) => arr,
         None => return tool_error("missing required parameter: symbols (array)".to_string()),
@@ -410,7 +421,12 @@ fn handle_batch_context(state: &McpState, arguments: &Value) -> Value {
 
     let mut results: Vec<Value> = Vec::with_capacity(symbol_strs.len());
     for symbol in &symbol_strs {
-        match query::context::query_context(&state.graph, symbol) {
+        let resolved = resolve_symbol(state, symbol);
+        let query_id = match &resolved {
+            Ok(id) => id.as_str(),
+            Err(_) => symbol,
+        };
+        match query::context::query_context(&state.graph, query_id) {
             Ok(ctx) => {
                 results.push(json!({
                     "query": symbol,
@@ -429,13 +445,17 @@ fn handle_batch_context(state: &McpState, arguments: &Value) -> Value {
     serialize_result(&results)
 }
 
-fn handle_analyze_complexity(state: &McpState, arguments: &Value) -> Value {
-    let symbol = match arguments.get("symbol").and_then(|v| v.as_str()) {
+fn handle_analyze_complexity(state: &mut McpState, arguments: &Value) -> Value {
+    let query = match arguments.get("symbol").and_then(|v| v.as_str()) {
         Some(s) => s,
         None => return tool_error("missing required parameter: symbol".to_string()),
     };
+    let symbol_id = match resolve_symbol(state, query) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
 
-    match query::complexity::query_complexity(&state.graph, symbol) {
+    match query::complexity::query_complexity(&state.graph, &symbol_id) {
         Ok(result) => serialize_result(&result),
         Err(e) => tool_error(format_query_error(&e)),
     }
@@ -507,6 +527,11 @@ fn handle_reload(state: &mut McpState) -> Value {
     state.graph = graph;
     state.search_index = search_index;
 
+    // Prune recall entries that reference nodes no longer in the graph
+    let valid_ids: std::collections::HashSet<&str> =
+        state.graph.nodes.iter().map(|n| n.id.as_str()).collect();
+    state.recall.prune(&valid_ids);
+
     text_content(format!(
         "Reloaded successfully: {node_count} nodes, {edge_count} edges"
     ))
@@ -537,8 +562,8 @@ mod tests {
 
     #[test]
     fn unknown_tool_returns_error() {
-        let state = make_test_state();
-        let result = handle_tool_call(&state, "nonexistent", &json!({}));
+        let mut state = make_test_state();
+        let result = handle_tool_call(&mut state, "nonexistent", &json!({}));
         assert!(
             result
                 .get("isError")
@@ -549,8 +574,8 @@ mod tests {
 
     #[test]
     fn search_symbols_missing_query_returns_error() {
-        let state = make_test_state();
-        let result = handle_tool_call(&state, "search_symbols", &json!({}));
+        let mut state = make_test_state();
+        let result = handle_tool_call(&mut state, "search_symbols", &json!({}));
         assert!(
             result
                 .get("isError")
@@ -561,8 +586,8 @@ mod tests {
 
     #[test]
     fn get_file_symbols_missing_file_returns_error() {
-        let state = make_test_state();
-        let result = handle_tool_call(&state, "get_file_symbols", &json!({}));
+        let mut state = make_test_state();
+        let result = handle_tool_call(&mut state, "get_file_symbols", &json!({}));
         assert!(
             result
                 .get("isError")
@@ -573,8 +598,8 @@ mod tests {
 
     #[test]
     fn batch_context_empty_array_returns_error() {
-        let state = make_test_state();
-        let result = handle_tool_call(&state, "batch_context", &json!({"symbols": []}));
+        let mut state = make_test_state();
+        let result = handle_tool_call(&mut state, "batch_context", &json!({"symbols": []}));
         assert!(
             result
                 .get("isError")
@@ -585,8 +610,8 @@ mod tests {
 
     #[test]
     fn detect_smells_on_empty_graph() {
-        let state = make_test_state();
-        let result = handle_tool_call(&state, "detect_smells", &json!({}));
+        let mut state = make_test_state();
+        let result = handle_tool_call(&mut state, "detect_smells", &json!({}));
         assert!(
             !result
                 .get("isError")
@@ -597,8 +622,8 @@ mod tests {
 
     #[test]
     fn get_module_summary_on_empty_graph() {
-        let state = make_test_state();
-        let result = handle_tool_call(&state, "get_module_summary", &json!({}));
+        let mut state = make_test_state();
+        let result = handle_tool_call(&mut state, "get_module_summary", &json!({}));
         assert!(
             !result
                 .get("isError")
@@ -619,6 +644,7 @@ mod tests {
             graph,
             search_index: index,
             store_path: PathBuf::from("/tmp/test"),
+            recall: Recall::new(),
         }
     }
 }

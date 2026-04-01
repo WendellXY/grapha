@@ -6,15 +6,18 @@ mod config;
 mod delta;
 mod fields;
 mod filter;
+mod hash_cache;
 mod localization;
 mod mcp;
 mod progress;
 mod query;
+mod recall;
 mod render;
 mod search;
 mod serve;
 mod snippet;
 mod store;
+mod watch;
 
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -102,6 +105,9 @@ enum Commands {
         /// Run as MCP server over stdio (instead of HTTP)
         #[arg(long)]
         mcp: bool,
+        /// Watch for file changes and auto-update the graph
+        #[arg(long)]
+        watch: bool,
     },
     /// Query symbol relationships and search indexed symbols
     Symbol {
@@ -1267,7 +1273,7 @@ fn handle_repo_command(command: RepoCommands) -> anyhow::Result<()> {
     }
 }
 
-fn handle_serve(path: PathBuf, port: u16, mcp_mode: bool) -> anyhow::Result<()> {
+fn handle_serve(path: PathBuf, port: u16, mcp_mode: bool, watch_mode: bool) -> anyhow::Result<()> {
     let graph = load_graph(&path)?;
     let search_index = open_search_index(&path)?;
 
@@ -1276,7 +1282,72 @@ fn handle_serve(path: PathBuf, port: u16, mcp_mode: bool) -> anyhow::Result<()> 
             graph,
             search_index,
             store_path: path.join(".grapha"),
+            recall: recall::Recall::new(),
         };
+
+        // Start watcher if requested — runs on a background thread
+        let _watcher_guard = if watch_mode {
+            let (rx, _guard) =
+                watch::start_watcher(&path, &["swift", "rs", "ts", "tsx", "js", "jsx", "vue"])?;
+            let store_path = path.join(".grapha");
+            let project_path = path.clone();
+
+            // Spawn a thread that processes watch events and updates the MCP state
+            // We use a channel to send updated state back to the main MCP loop
+            let (state_tx, state_rx) =
+                std::sync::mpsc::channel::<(grapha_core::graph::Graph, tantivy::Index)>();
+
+            std::thread::Builder::new()
+                .name("grapha-watch-reindex".into())
+                .spawn(move || {
+                    for event in rx {
+                        match event {
+                            watch::WatchEvent::FilesChanged(files) => {
+                                eprintln!("watch: {} file(s) changed, re-indexing...", files.len());
+                                // Run full pipeline and persist
+                                match run_pipeline(&project_path, false, false) {
+                                    Ok(graph) => {
+                                        // Persist to SQLite
+                                        let store_file = store_path.join("grapha.db");
+                                        let store = store::sqlite::SqliteStore::new(store_file);
+                                        if let Err(e) = store.save(&graph) {
+                                            eprintln!("watch: failed to save graph: {e}");
+                                            continue;
+                                        }
+
+                                        // Rebuild search index
+                                        let search_path = store_path.join("search_index");
+                                        match search::build_index(&graph, &search_path) {
+                                            Ok(index) => {
+                                                if state_tx.send((graph, index)).is_err() {
+                                                    break;
+                                                }
+                                                eprintln!("watch: re-index complete");
+                                            }
+                                            Err(e) => {
+                                                eprintln!(
+                                                    "watch: failed to build search index: {e}"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        eprintln!("watch: re-index failed: {e}");
+                                    }
+                                }
+                            }
+                        }
+                    }
+                })?;
+
+            // The MCP server loop will check for state updates between requests
+            // We integrate this by passing the receiver into run_mcp_server
+            mcp::run_mcp_server_with_watch(state, state_rx)?;
+            return Ok(());
+        } else {
+            None::<watch::WatcherGuard>
+        };
+
         mcp::run_mcp_server(state)
     } else {
         let rt = tokio::runtime::Runtime::new()?;
@@ -1303,7 +1374,12 @@ fn main() -> anyhow::Result<()> {
             full_rebuild,
             timing,
         } => handle_index(path, format, store_dir, full_rebuild, timing)?,
-        Commands::Serve { path, port, mcp } => handle_serve(path, port, mcp)?,
+        Commands::Serve {
+            path,
+            port,
+            mcp,
+            watch,
+        } => handle_serve(path, port, mcp, watch)?,
         Commands::Symbol { command } => handle_symbol_command(command, render_options)?,
         Commands::Flow { command } => handle_flow_command(command, render_options)?,
         Commands::L10n { command } => handle_l10n_command(command, render_options)?,
