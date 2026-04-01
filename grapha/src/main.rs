@@ -6,6 +6,7 @@ mod delta;
 mod fields;
 mod filter;
 mod localization;
+mod mcp;
 mod progress;
 mod query;
 mod render;
@@ -94,6 +95,9 @@ enum Commands {
         /// Port to listen on
         #[arg(long, default_value = "8080")]
         port: u16,
+        /// Run as MCP server over stdio (instead of HTTP)
+        #[arg(long)]
+        mcp: bool,
     },
     /// Query symbol relationships and search indexed symbols
     Symbol {
@@ -1033,12 +1037,22 @@ fn handle_repo_command(command: RepoCommands) -> anyhow::Result<()> {
     }
 }
 
-fn handle_serve(path: PathBuf, port: u16) -> anyhow::Result<()> {
+fn handle_serve(path: PathBuf, port: u16, mcp_mode: bool) -> anyhow::Result<()> {
     let graph = load_graph(&path)?;
     let search_index = open_search_index(&path)?;
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(serve::run(graph, search_index, port))?;
-    Ok(())
+
+    if mcp_mode {
+        let state = mcp::handler::McpState {
+            graph,
+            search_index,
+            store_path: path.join(".grapha"),
+        };
+        mcp::run_mcp_server(state)
+    } else {
+        let rt = tokio::runtime::Runtime::new()?;
+        rt.block_on(serve::run(graph, search_index, port))?;
+        Ok(())
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -1058,7 +1072,7 @@ fn main() -> anyhow::Result<()> {
             store_dir,
             full_rebuild,
         } => handle_index(path, format, store_dir, full_rebuild)?,
-        Commands::Serve { path, port } => handle_serve(path, port)?,
+        Commands::Serve { path, port, mcp } => handle_serve(path, port, mcp)?,
         Commands::Symbol { command } => handle_symbol_command(command, render_options)?,
         Commands::Flow { command } => handle_flow_command(command, render_options)?,
         Commands::L10n { command } => handle_l10n_command(command, render_options)?,

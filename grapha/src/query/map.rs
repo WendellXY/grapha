@@ -18,11 +18,7 @@ pub fn file_map(
         BTreeMap::new();
 
     for node in &graph.nodes {
-        let module = node
-            .module
-            .as_deref()
-            .unwrap_or("(unknown)")
-            .to_string();
+        let module = node.module.as_deref().unwrap_or("(unknown)").to_string();
 
         if let Some(filter) = module_filter {
             if module != filter {
