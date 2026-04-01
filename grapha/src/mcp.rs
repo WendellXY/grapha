@@ -8,7 +8,7 @@ use serde_json::json;
 use handler::McpState;
 use types::{JsonRpcRequest, JsonRpcResponse};
 
-pub fn run_mcp_server(state: McpState) -> anyhow::Result<()> {
+pub fn run_mcp_server(mut state: McpState) -> anyhow::Result<()> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
 
@@ -44,7 +44,7 @@ pub fn run_mcp_server(state: McpState) -> anyhow::Result<()> {
             None => continue,
         };
 
-        let response = dispatch(&state, id, &request.method, &request.params);
+        let response = dispatch(&mut state, id, &request.method, &request.params);
         write_response(&mut stdout, &response)?;
     }
 
@@ -52,7 +52,7 @@ pub fn run_mcp_server(state: McpState) -> anyhow::Result<()> {
 }
 
 fn dispatch(
-    state: &McpState,
+    state: &mut McpState,
     id: serde_json::Value,
     method: &str,
     params: &serde_json::Value,
@@ -76,7 +76,12 @@ fn dispatch(
                 .get("arguments")
                 .cloned()
                 .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-            let result = handler::handle_tool_call(state, tool_name, &arguments);
+
+            // Try mutable handlers first (e.g. reload), then immutable
+            let result = match handler::handle_mutable_tool_call(state, tool_name, &arguments) {
+                Some(r) => r,
+                None => handler::handle_tool_call(state, tool_name, &arguments),
+            };
             JsonRpcResponse::success(id, result)
         }
         _ => JsonRpcResponse::error(id, -32601, format!("method not found: {method}")),
@@ -117,8 +122,8 @@ mod tests {
 
     #[test]
     fn dispatch_initialize() {
-        let state = make_test_state();
-        let resp = dispatch(&state, json!(1), "initialize", &json!({}));
+        let mut state = make_test_state();
+        let resp = dispatch(&mut state, json!(1), "initialize", &json!({}));
         let result = resp.result.unwrap();
         assert_eq!(result["protocolVersion"], "2024-11-05");
         assert_eq!(result["serverInfo"]["name"], "grapha");
@@ -126,31 +131,30 @@ mod tests {
 
     #[test]
     fn dispatch_tools_list() {
-        let state = make_test_state();
-        let resp = dispatch(&state, json!(2), "tools/list", &json!({}));
+        let mut state = make_test_state();
+        let resp = dispatch(&mut state, json!(2), "tools/list", &json!({}));
         let result = resp.result.unwrap();
         let tools = result["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 11);
     }
 
     #[test]
     fn dispatch_unknown_method() {
-        let state = make_test_state();
-        let resp = dispatch(&state, json!(3), "bogus/method", &json!({}));
+        let mut state = make_test_state();
+        let resp = dispatch(&mut state, json!(3), "bogus/method", &json!({}));
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().code, -32601);
     }
 
     #[test]
     fn dispatch_tools_call() {
-        let state = make_test_state();
+        let mut state = make_test_state();
         let params = json!({
             "name": "get_file_map",
             "arguments": {}
         });
-        let resp = dispatch(&state, json!(4), "tools/call", &params);
+        let resp = dispatch(&mut state, json!(4), "tools/call", &params);
         let result = resp.result.unwrap();
-        // Should return content array
         assert!(result["content"].is_array());
     }
 }

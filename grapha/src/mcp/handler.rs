@@ -7,11 +7,11 @@ use tantivy::Index;
 use crate::mcp::types::ToolDefinition;
 use crate::query;
 use crate::search;
+use crate::store::Store;
 
 pub struct McpState {
     pub graph: Graph,
     pub search_index: Index,
-    #[allow(dead_code)] // Will be used by index_project tool
     pub store_path: PathBuf,
 }
 
@@ -127,17 +127,77 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                 "required": ["symbol"]
             }),
         },
+        // --- New tools ---
         ToolDefinition {
-            name: "index_project".to_string(),
-            description: "Re-index the project to update the graph and search index. (Not yet implemented via MCP.)".to_string(),
+            name: "get_file_symbols".to_string(),
+            description: "List all symbols in a file, ordered by source position. Returns declarations (structs, functions, properties, etc.) excluding synthetic view/branch nodes.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "path": {
+                    "file": {
                         "type": "string",
-                        "description": "Project directory to index"
+                        "description": "File name or path suffix (e.g. \"RoomPage.swift\" or \"src/main.rs\")"
+                    }
+                },
+                "required": ["file"]
+            }),
+        },
+        ToolDefinition {
+            name: "batch_context".to_string(),
+            description: "Get 360-degree context for multiple symbols in a single call. Returns a map of symbol ID to context result. More efficient than multiple get_symbol_context calls.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "symbols": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Array of symbol names or IDs"
+                    }
+                },
+                "required": ["symbols"]
+            }),
+        },
+        ToolDefinition {
+            name: "analyze_complexity".to_string(),
+            description: "Analyze the structural complexity of a type (struct, class, enum, protocol). Returns property count, method count, dependency count, invalidation sources, init parameter count, extension count, containment depth, blast radius, and an overall severity rating.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Type name or ID to analyze"
+                    }
+                },
+                "required": ["symbol"]
+            }),
+        },
+        ToolDefinition {
+            name: "detect_smells".to_string(),
+            description: "Scan the entire graph for code smells: god types (>15 properties), excessive dependencies (>10), wide invalidation surfaces (>5 sources), massive inits (>8 params), deep nesting (>5 levels), high fan-out/fan-in (>15 calls), and many extensions (>5). Returns smells sorted by severity.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "module": {
+                        "type": "string",
+                        "description": "Filter smells to a specific module (optional, scans all if omitted)"
                     }
                 }
+            }),
+        },
+        ToolDefinition {
+            name: "get_module_summary".to_string(),
+            description: "Get high-level metrics for each module: symbol count, file count, symbols by kind, edge count, cross-module coupling ratio, entry points, and terminals. Sorted by symbol count descending.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
+            }),
+        },
+        ToolDefinition {
+            name: "reload".to_string(),
+            description: "Reload the graph and search index from disk. Use after running `grapha index` from the CLI to pick up changes without restarting the MCP server.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
             }),
         },
     ]
@@ -179,6 +239,13 @@ fn format_query_error(err: &query::QueryResolveError) -> String {
     }
 }
 
+fn serialize_result<T: serde::Serialize>(result: &T) -> Value {
+    match serde_json::to_string_pretty(result) {
+        Ok(json) => text_content(json),
+        Err(e) => tool_error(format!("failed to serialize result: {e}")),
+    }
+}
+
 pub fn handle_tool_call(state: &McpState, tool_name: &str, arguments: &Value) -> Value {
     match tool_name {
         "search_symbols" => handle_search_symbols(state, arguments),
@@ -186,10 +253,28 @@ pub fn handle_tool_call(state: &McpState, tool_name: &str, arguments: &Value) ->
         "get_impact" => handle_get_impact(state, arguments),
         "get_file_map" => handle_get_file_map(state, arguments),
         "trace" => handle_trace(state, arguments),
-        "index_project" => handle_index_project(),
+        "get_file_symbols" => handle_get_file_symbols(state, arguments),
+        "batch_context" => handle_batch_context(state, arguments),
+        "analyze_complexity" => handle_analyze_complexity(state, arguments),
+        "detect_smells" => handle_detect_smells(state, arguments),
+        "get_module_summary" => handle_get_module_summary(state),
         _ => tool_error(format!("unknown tool: {tool_name}")),
     }
 }
+
+/// Mutable tool calls that modify McpState (reload).
+pub fn handle_mutable_tool_call(
+    state: &mut McpState,
+    tool_name: &str,
+    _arguments: &Value,
+) -> Option<Value> {
+    match tool_name {
+        "reload" => Some(handle_reload(state)),
+        _ => None,
+    }
+}
+
+// --- Existing handlers ---
 
 fn handle_search_symbols(state: &McpState, arguments: &Value) -> Value {
     let query_str = match arguments.get("query").and_then(|v| v.as_str()) {
@@ -224,10 +309,7 @@ fn handle_search_symbols(state: &McpState, arguments: &Value) -> Value {
     };
 
     match search::search_filtered(&state.search_index, query_str, limit, &options) {
-        Ok(results) => match serde_json::to_string_pretty(&results) {
-            Ok(json) => text_content(json),
-            Err(e) => tool_error(format!("failed to serialize results: {e}")),
-        },
+        Ok(results) => serialize_result(&results),
         Err(e) => tool_error(format!("search failed: {e}")),
     }
 }
@@ -239,10 +321,7 @@ fn handle_get_symbol_context(state: &McpState, arguments: &Value) -> Value {
     };
 
     match query::context::query_context(&state.graph, symbol) {
-        Ok(result) => match serde_json::to_string_pretty(&result) {
-            Ok(json) => text_content(json),
-            Err(e) => tool_error(format!("failed to serialize result: {e}")),
-        },
+        Ok(result) => serialize_result(&result),
         Err(e) => tool_error(format_query_error(&e)),
     }
 }
@@ -255,22 +334,15 @@ fn handle_get_impact(state: &McpState, arguments: &Value) -> Value {
     let depth = arguments.get("depth").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
 
     match query::impact::query_impact(&state.graph, symbol, depth) {
-        Ok(result) => match serde_json::to_string_pretty(&result) {
-            Ok(json) => text_content(json),
-            Err(e) => tool_error(format!("failed to serialize result: {e}")),
-        },
+        Ok(result) => serialize_result(&result),
         Err(e) => tool_error(format_query_error(&e)),
     }
 }
 
 fn handle_get_file_map(state: &McpState, arguments: &Value) -> Value {
     let module = arguments.get("module").and_then(|v| v.as_str());
-
     let result = query::map::file_map(&state.graph, module);
-    match serde_json::to_string_pretty(&result) {
-        Ok(json) => text_content(json),
-        Err(e) => tool_error(format!("failed to serialize result: {e}")),
-    }
+    serialize_result(&result)
 }
 
 fn handle_trace(state: &McpState, arguments: &Value) -> Value {
@@ -288,20 +360,14 @@ fn handle_trace(state: &McpState, arguments: &Value) -> Value {
         "forward" => {
             let max_depth = depth.unwrap_or(10) as usize;
             match query::trace::query_trace(&state.graph, symbol, max_depth) {
-                Ok(result) => match serde_json::to_string_pretty(&result) {
-                    Ok(json) => text_content(json),
-                    Err(e) => tool_error(format!("failed to serialize result: {e}")),
-                },
+                Ok(result) => serialize_result(&result),
                 Err(e) => tool_error(format_query_error(&e)),
             }
         }
         "reverse" => {
             let max_depth = depth.map(|d| d as usize);
             match query::reverse::query_reverse(&state.graph, symbol, max_depth) {
-                Ok(result) => match serde_json::to_string_pretty(&result) {
-                    Ok(json) => text_content(json),
-                    Err(e) => tool_error(format!("failed to serialize result: {e}")),
-                },
+                Ok(result) => serialize_result(&result),
                 Err(e) => tool_error(format_query_error(&e)),
             }
         }
@@ -311,11 +377,139 @@ fn handle_trace(state: &McpState, arguments: &Value) -> Value {
     }
 }
 
-fn handle_index_project() -> Value {
-    tool_error(
-        "index_project is not yet available via MCP. Please run `grapha index <path>` from the CLI."
-            .to_string(),
-    )
+// --- New handlers ---
+
+fn handle_get_file_symbols(state: &McpState, arguments: &Value) -> Value {
+    let file = match arguments.get("file").and_then(|v| v.as_str()) {
+        Some(f) => f,
+        None => return tool_error("missing required parameter: file".to_string()),
+    };
+
+    let result = query::file_symbols::query_file_symbols(&state.graph, file);
+    if result.total == 0 {
+        return tool_error(format!("no symbols found in file matching: {file}"));
+    }
+    serialize_result(&result)
+}
+
+fn handle_batch_context(state: &McpState, arguments: &Value) -> Value {
+    let symbols = match arguments.get("symbols").and_then(|v| v.as_array()) {
+        Some(arr) => arr,
+        None => return tool_error("missing required parameter: symbols (array)".to_string()),
+    };
+
+    let symbol_strs: Vec<&str> = symbols.iter().filter_map(|v| v.as_str()).collect();
+
+    if symbol_strs.is_empty() {
+        return tool_error("symbols array is empty".to_string());
+    }
+
+    if symbol_strs.len() > 20 {
+        return tool_error("batch_context supports at most 20 symbols per call".to_string());
+    }
+
+    let mut results: Vec<Value> = Vec::with_capacity(symbol_strs.len());
+    for symbol in &symbol_strs {
+        match query::context::query_context(&state.graph, symbol) {
+            Ok(ctx) => {
+                results.push(json!({
+                    "query": symbol,
+                    "result": serde_json::to_value(&ctx).unwrap_or(Value::Null),
+                }));
+            }
+            Err(e) => {
+                results.push(json!({
+                    "query": symbol,
+                    "error": format_query_error(&e),
+                }));
+            }
+        }
+    }
+
+    serialize_result(&results)
+}
+
+fn handle_analyze_complexity(state: &McpState, arguments: &Value) -> Value {
+    let symbol = match arguments.get("symbol").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return tool_error("missing required parameter: symbol".to_string()),
+    };
+
+    match query::complexity::query_complexity(&state.graph, symbol) {
+        Ok(result) => serialize_result(&result),
+        Err(e) => tool_error(format_query_error(&e)),
+    }
+}
+
+fn handle_detect_smells(state: &McpState, arguments: &Value) -> Value {
+    let module_filter = arguments.get("module").and_then(|v| v.as_str());
+
+    let mut result = query::smells::detect_smells(&state.graph);
+
+    // Filter by module if specified
+    if let Some(module) = module_filter {
+        let module_lower = module.to_lowercase();
+        result.smells.retain(|smell| {
+            // Check if the symbol's file or the smell's symbol belongs to the module
+            // by looking up the node's module in the graph
+            state.graph.nodes.iter().any(|n| {
+                n.id == smell.symbol.id
+                    && n.module
+                        .as_ref()
+                        .is_some_and(|m| m.to_lowercase() == module_lower)
+            })
+        });
+        result.total = result.smells.len();
+        result.by_severity.clear();
+        for smell in &result.smells {
+            *result
+                .by_severity
+                .entry(smell.severity.clone())
+                .or_default() += 1;
+        }
+    }
+
+    serialize_result(&result)
+}
+
+fn handle_get_module_summary(state: &McpState) -> Value {
+    let result = query::module_summary::query_module_summary(&state.graph);
+    serialize_result(&result)
+}
+
+fn handle_reload(state: &mut McpState) -> Value {
+    let db_path = state.store_path.join("grapha.db");
+    let search_index_path = state.store_path.join("search_index");
+
+    // Reload graph from SQLite
+    let store = crate::store::sqlite::SqliteStore::new(db_path);
+    let graph = match store.load() {
+        Ok(g) => g,
+        Err(e) => return tool_error(format!("failed to reload graph: {e}")),
+    };
+
+    // Reload search index
+    let search_index = if search_index_path.exists() {
+        match tantivy::Index::open_in_dir(&search_index_path) {
+            Ok(idx) => idx,
+            Err(e) => return tool_error(format!("failed to reload search index: {e}")),
+        }
+    } else {
+        match search::build_index(&graph, &search_index_path) {
+            Ok(idx) => idx,
+            Err(e) => return tool_error(format!("failed to build search index: {e}")),
+        }
+    };
+
+    let node_count = graph.nodes.len();
+    let edge_count = graph.edges.len();
+
+    state.graph = graph;
+    state.search_index = search_index;
+
+    text_content(format!(
+        "Reloaded successfully: {node_count} nodes, {edge_count} edges"
+    ))
 }
 
 #[cfg(test)]
@@ -323,9 +517,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tool_definitions_returns_six_tools() {
+    fn tool_definitions_count() {
         let tools = tool_definitions();
-        assert_eq!(tools.len(), 6);
+        assert_eq!(tools.len(), 11);
 
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"search_symbols"));
@@ -333,7 +527,12 @@ mod tests {
         assert!(names.contains(&"get_impact"));
         assert!(names.contains(&"get_file_map"));
         assert!(names.contains(&"trace"));
-        assert!(names.contains(&"index_project"));
+        assert!(names.contains(&"get_file_symbols"));
+        assert!(names.contains(&"batch_context"));
+        assert!(names.contains(&"analyze_complexity"));
+        assert!(names.contains(&"detect_smells"));
+        assert!(names.contains(&"get_module_summary"));
+        assert!(names.contains(&"reload"));
     }
 
     #[test]
@@ -361,11 +560,51 @@ mod tests {
     }
 
     #[test]
-    fn index_project_returns_placeholder() {
+    fn get_file_symbols_missing_file_returns_error() {
         let state = make_test_state();
-        let result = handle_tool_call(&state, "index_project", &json!({}));
-        let text = result["content"][0]["text"].as_str().unwrap();
-        assert!(text.contains("not yet available"));
+        let result = handle_tool_call(&state, "get_file_symbols", &json!({}));
+        assert!(
+            result
+                .get("isError")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        );
+    }
+
+    #[test]
+    fn batch_context_empty_array_returns_error() {
+        let state = make_test_state();
+        let result = handle_tool_call(&state, "batch_context", &json!({"symbols": []}));
+        assert!(
+            result
+                .get("isError")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        );
+    }
+
+    #[test]
+    fn detect_smells_on_empty_graph() {
+        let state = make_test_state();
+        let result = handle_tool_call(&state, "detect_smells", &json!({}));
+        assert!(
+            !result
+                .get("isError")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        );
+    }
+
+    #[test]
+    fn get_module_summary_on_empty_graph() {
+        let state = make_test_state();
+        let result = handle_tool_call(&state, "get_module_summary", &json!({}));
+        assert!(
+            !result
+                .get("isError")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        );
     }
 
     fn make_test_state() -> McpState {

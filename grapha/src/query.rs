@@ -1,12 +1,16 @@
+pub mod complexity;
 pub mod context;
 pub mod dataflow;
 pub mod entries;
+pub mod file_symbols;
 pub(crate) mod flow;
 pub mod impact;
 pub(crate) mod l10n;
 pub mod localize;
 pub mod map;
+pub mod module_summary;
 pub mod reverse;
+pub mod smells;
 pub mod trace;
 pub mod usages;
 
