@@ -1,4 +1,5 @@
 [adapters]
 enabled = ["claude"]
-[dependencies]
+[dev-dependencies]
+codex_plugin_cc = { github = "openai/codex-plugin-cc", tag = "v1.0.2", members = ["codex"] }
 superpowers = { github = "obra/superpowers", branch = "main" }
