@@ -236,6 +236,7 @@ private final class SwiftSyntaxExtractor {
     private let converter: SourceLocationConverter
     private var result = BridgeExtractionResult()
     private var existingNodeIDs = Set<String>()
+    private var pushedNodeIDs = Set<String>()
     private var existingEdgeKeys = Set<BridgeEdgeKey>()
 
     init(source: String, filePath: String) {
@@ -762,7 +763,8 @@ private final class SwiftSyntaxExtractor {
     }
 
     private func pushNode(_ node: BridgeNode) {
-        if result.nodes.contains(where: { $0.id == node.id }) {
+        // O(1) dedup check instead of O(n) linear scan on result.nodes
+        if !pushedNodeIDs.insert(node.id).inserted {
             return
         }
         result.nodes.append(node)
@@ -833,12 +835,13 @@ private final class SwiftSyntaxExtractor {
 
     private func signatureText(for syntax: Syntax) -> String? {
         let text = syntax.trimmedDescription
-        let signature = text.split(separator: "{", maxSplits: 1, omittingEmptySubsequences: false).first?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let signature, !signature.isEmpty else {
-            return nil
+        guard let braceIndex = text.firstIndex(of: "{") else {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
         }
-        return signature
+        let signature = text[text.startIndex..<braceIndex]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return signature.isEmpty ? nil : signature
     }
 
     private func makeDeclID(parentID: String?, name: String) -> String {
@@ -850,7 +853,11 @@ private final class SwiftSyntaxExtractor {
 }
 
 private func normalizeIdentifier(_ text: String) -> String {
-    text
+    // Fast path: most identifiers have no backticks or whitespace
+    if !text.contains("`") && text.first?.isWhitespace != true && text.last?.isWhitespace != true {
+        return text
+    }
+    return text
         .replacingOccurrences(of: "`", with: "")
         .trimmingCharacters(in: .whitespacesAndNewlines)
 }
