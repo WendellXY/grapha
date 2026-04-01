@@ -324,8 +324,7 @@ fn run_pipeline(path: &Path, verbose: bool) -> anyhow::Result<grapha_core::graph
                     let source_str = String::from_utf8_lossy(&source);
                     for node in &mut result.nodes {
                         if snippet::should_extract_snippet(node.kind) {
-                            node.snippet =
-                                snippet::extract_snippet(&source_str, &node.span, 600);
+                            node.snippet = snippet::extract_snippet(&source_str, &node.span, 600);
                         }
                     }
                     Some(result)
