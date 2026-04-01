@@ -129,6 +129,24 @@ enum SymbolCommands {
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
+        /// Filter by symbol kind (function, struct, enum, trait, etc.)
+        #[arg(long)]
+        kind: Option<String>,
+        /// Filter by module name
+        #[arg(long)]
+        module: Option<String>,
+        /// Filter by file path glob
+        #[arg(long)]
+        file: Option<String>,
+        /// Filter by role (entry_point, terminal, internal)
+        #[arg(long)]
+        role: Option<String>,
+        /// Enable fuzzy matching (tolerates typos)
+        #[arg(long)]
+        fuzzy: bool,
+        /// Include source snippet and relationships in results
+        #[arg(long)]
+        context: bool,
     },
     /// Query symbol context (callers, callees, implementors)
     Context {
@@ -742,10 +760,43 @@ fn handle_symbol_command(
     render_options: render::RenderOptions,
 ) -> anyhow::Result<()> {
     match command {
-        SymbolCommands::Search { query, limit, path } => {
+        SymbolCommands::Search {
+            query,
+            limit,
+            path,
+            kind,
+            module,
+            file,
+            role,
+            fuzzy,
+            context,
+        } => {
             let index = open_search_index(&path)?;
-            let results = search::search(&index, &query, limit)?;
-            print_json(&results)
+            let options = search::SearchOptions {
+                kind,
+                module,
+                file_glob: file,
+                role,
+                fuzzy,
+            };
+            let t = Instant::now();
+            let results = search::search_filtered(&index, &query, limit, &options)?;
+            let elapsed = t.elapsed();
+
+            if context {
+                let graph = load_graph(&path)?;
+                let enriched = search::enrich_with_context(&results, &graph);
+                print_json(&enriched)?;
+            } else {
+                print_json(&results)?;
+            }
+
+            eprintln!(
+                "\n  {} results in {:.1}ms",
+                results.len(),
+                elapsed.as_secs_f64() * 1000.0,
+            );
+            Ok(())
         }
         SymbolCommands::Context {
             symbol,

@@ -8,7 +8,7 @@ use tantivy::schema::{IndexRecordOption, STORED, STRING, Schema, TEXT, Value};
 use tantivy::{Index, IndexWriter, ReloadPolicy, TantivyDocument, Term, doc};
 
 use crate::delta::{EntitySyncStats, GraphDelta, SyncMode};
-use grapha_core::graph::Graph;
+use grapha_core::graph::{EdgeKind, Graph};
 use grapha_core::graph::{Node, NodeRole};
 
 #[derive(Debug, Clone, Serialize)]
@@ -300,6 +300,59 @@ pub fn search_filtered(
     }
 
     Ok(results)
+}
+
+#[derive(Debug, Serialize)]
+pub struct EnrichedSearchResult {
+    #[serde(flatten)]
+    pub base: SearchResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub calls: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub called_by: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub type_refs: Vec<String>,
+}
+
+pub fn enrich_with_context(results: &[SearchResult], graph: &Graph) -> Vec<EnrichedSearchResult> {
+    results
+        .iter()
+        .map(|r| {
+            let node = graph.nodes.iter().find(|n| n.id == r.id);
+            let snippet = node.and_then(|n| n.snippet.clone());
+
+            let calls: Vec<String> = graph
+                .edges
+                .iter()
+                .filter(|e| e.source == r.id && e.kind == EdgeKind::Calls)
+                .map(|e| e.target.clone())
+                .collect();
+
+            let called_by: Vec<String> = graph
+                .edges
+                .iter()
+                .filter(|e| e.target == r.id && e.kind == EdgeKind::Calls)
+                .map(|e| e.source.clone())
+                .collect();
+
+            let type_refs: Vec<String> = graph
+                .edges
+                .iter()
+                .filter(|e| e.source == r.id && e.kind == EdgeKind::TypeRef)
+                .map(|e| e.target.clone())
+                .collect();
+
+            EnrichedSearchResult {
+                base: r.clone(),
+                snippet,
+                calls,
+                called_by,
+                type_refs,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
