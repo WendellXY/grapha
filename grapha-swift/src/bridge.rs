@@ -1,4 +1,6 @@
+#[cfg(not(no_swift_bridge))]
 use std::path::{Path, PathBuf};
+#[cfg(not(no_swift_bridge))]
 use std::sync::OnceLock;
 
 use libloading::Library;
@@ -44,9 +46,11 @@ pub struct SwiftBridge {
     pub free_buffer: FreeBufferFn,
 }
 
+#[cfg(not(no_swift_bridge))]
 static BRIDGE: OnceLock<Option<SwiftBridge>> = OnceLock::new();
 
 impl SwiftBridge {
+    #[cfg(not(no_swift_bridge))]
     fn load() -> Option<Self> {
         let lib_path = Self::find_dylib()?;
         let lib = unsafe { Library::new(&lib_path) }.ok()?;
@@ -79,6 +83,7 @@ impl SwiftBridge {
         }
     }
 
+    #[cfg(not(no_swift_bridge))]
     fn find_dylib() -> Option<PathBuf> {
         if let Some(dir) = option_env!("SWIFT_BRIDGE_PATH") {
             let dylib = Path::new(dir).join("libGraphaSwiftBridge.dylib");

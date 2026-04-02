@@ -6,7 +6,7 @@
 
 Grapha builds a symbol-level dependency graph from source code — not by guessing with regex, but by reading the compiler's own index. For Swift, it taps directly into Xcode's pre-built index store via binary FFI for 100% type-resolved symbols, then enriches with tree-sitter for view structure, docs, and localization. For Rust, it uses tree-sitter with Cargo workspace awareness. The result is a queryable graph with confidence-scored edges, dataflow tracing, impact analysis, and code smell detection — available as both a CLI and an MCP server for AI agent integration.
 
-> **1,991 Swift files — 131K nodes — 787K edges — 9.7 seconds.** Zero-copy binary FFI. Lock-free parallel extraction. No serde on the hot path.
+> **1,991 Swift files — 131K nodes — 784K edges — 8.7 seconds.** Zero-copy binary FFI. Lock-free parallel extraction. No serde on the hot path.
 
 ## Why Grapha
 
@@ -28,14 +28,14 @@ Benchmarked on a production iOS app (1,991 Swift files, ~300K lines):
 
 | Phase | Time |
 |-------|------|
-| Extraction (index store + tree-sitter enrichment) | **3.6s** |
+| Extraction (index store + tree-sitter enrichment) | **3.5s** |
 | Merge (module-aware cross-file resolution) | 0.3s |
-| Classification (entry points + terminals) | 1.5s |
-| SQLite persistence (deferred indexing, 918K rows) | 3.1s |
-| Search index (BM25 via tantivy) | 0.7s |
-| **Total** | **9.7s** |
+| Classification (entry points + terminals) | 1.7s |
+| SQLite persistence (deferred indexing) | 2.0s |
+| Search index (BM25 via tantivy) | 1.0s |
+| **Total** | **8.7s** |
 
-**Graph:** 131,242 nodes · 787,021 edges · 2,985 entry points · 11,148 terminal operations
+**Graph:** 131,185 nodes · 783,793 edges · 2,983 entry points · 11,149 terminal operations
 
 **Why it's fast:** zero-copy index store FFI via pointer arithmetic (no serde), lock-free rayon extraction, single shared tree-sitter parse, marker-based enrichment skip, deferred SQLite indexing, USR-scoped edge resolution. Run `grapha index --timing` for a per-phase breakdown.
 
