@@ -16,7 +16,7 @@ Use grapha's code intelligence to navigate, understand, and assess codebases bef
 
 ## Core workflow
 
-1. **Search first:** `grapha symbol search "<query>" --context` to find relevant symbols with snippets
+1. **Search first:** `grapha symbol search "<query>" --context` to find relevant symbols with full indexed snippets
 2. **Understand relationships:** `grapha symbol context <symbol>` to see callers, callees, and dependencies
 3. **Check impact before changes:** `grapha symbol impact <symbol>` to understand blast radius
 4. **Assess complexity:** `grapha symbol complexity <type>` to check structural health of a type
@@ -38,6 +38,8 @@ Use grapha's code intelligence to navigate, understand, and assess codebases bef
 
 - Use `--kind function` to narrow search to functions only
 - Use `--module ModuleName` to search within a specific module
+- Use `--file RoomPage.swift` to restrict results to a file or `--file "Sources/*/RoomPage.swift"` for a glob
+- Use `--role entry_point`, `--role terminal`, or `--role internal` when symbol names are common
 - Use `--fuzzy` if unsure of exact spelling
 - Use `file.swift::symbol` to disambiguate when multiple symbols share a name
-- After significant code changes, run `grapha index .` to keep the graph fresh
+- After significant code changes, run `grapha index .` to keep the graph fresh and refresh stored snippets
