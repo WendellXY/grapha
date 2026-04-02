@@ -2,6 +2,7 @@
 name = "grapha-rust"
 version = "0.1.0"
 edition = "2024"
+publish = false
 description = "Rust extractor for Grapha based on tree-sitter"
 license = "MIT"
 repository = "https://github.com/WendellXY/grapha"

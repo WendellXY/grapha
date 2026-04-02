@@ -4,6 +4,7 @@ mod classify;
 mod compress;
 mod config;
 mod delta;
+mod extract;
 mod fields;
 mod filter;
 mod localization;
@@ -12,6 +13,7 @@ mod progress;
 mod query;
 mod recall;
 mod render;
+mod rust_plugin;
 mod search;
 mod serve;
 mod snippet;
@@ -355,7 +357,7 @@ enum RepoCommands {
 
 fn builtin_registry() -> anyhow::Result<grapha_core::LanguageRegistry> {
     let mut registry = grapha_core::LanguageRegistry::new();
-    grapha_rust::register_builtin(&mut registry)?;
+    rust_plugin::register_builtin(&mut registry)?;
     grapha_swift::register_builtin(&mut registry)?;
     Ok(registry)
 }

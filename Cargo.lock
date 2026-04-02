@@ -736,7 +736,6 @@ dependencies = [
  "clap",
  "git2",
  "grapha-core",
- "grapha-rust",
  "grapha-swift",
  "ignore",
  "indicatif",
@@ -755,6 +754,8 @@ dependencies = [
  "tokio",
  "toml",
  "tower-http",
+ "tree-sitter",
+ "tree-sitter-rust",
  "urlencoding",
  "xcassets",
 ]
