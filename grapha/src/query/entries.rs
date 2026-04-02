@@ -15,12 +15,7 @@ pub fn query_entries(graph: &Graph) -> EntriesResult {
         .nodes
         .iter()
         .filter(|n| n.role == Some(NodeRole::EntryPoint))
-        .map(|n| SymbolRef {
-            id: n.id.clone(),
-            name: n.name.clone(),
-            kind: n.kind,
-            file: n.file.to_string_lossy().to_string(),
-        })
+        .map(SymbolRef::from_node)
         .collect();
 
     let total = entries.len();

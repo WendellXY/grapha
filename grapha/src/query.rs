@@ -17,7 +17,7 @@ pub mod usages;
 use serde::Serialize;
 use thiserror::Error;
 
-use grapha_core::graph::{Node, NodeKind};
+use grapha_core::graph::{Node, NodeKind, NodeRole, Visibility};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QueryCandidate {
@@ -208,6 +208,16 @@ pub struct SymbolInfo {
     pub kind: NodeKind,
     pub file: String,
     pub span: [usize; 2],
+    #[serde(skip)]
+    pub visibility: Option<Visibility>,
+    #[serde(skip)]
+    pub role: Option<NodeRole>,
+    #[serde(skip)]
+    pub signature: Option<String>,
+    #[serde(skip)]
+    pub module: Option<String>,
+    #[serde(skip)]
+    pub snippet: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -216,6 +226,18 @@ pub struct SymbolRef {
     pub name: String,
     pub kind: NodeKind,
     pub file: String,
+    #[serde(skip)]
+    pub span: Option<[usize; 2]>,
+    #[serde(skip)]
+    pub visibility: Option<Visibility>,
+    #[serde(skip)]
+    pub role: Option<NodeRole>,
+    #[serde(skip)]
+    pub signature: Option<String>,
+    #[serde(skip)]
+    pub module: Option<String>,
+    #[serde(skip)]
+    pub snippet: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -224,8 +246,76 @@ pub struct SymbolTreeRef {
     pub name: String,
     pub kind: NodeKind,
     pub file: String,
+    #[serde(skip)]
+    pub span: Option<[usize; 2]>,
+    #[serde(skip)]
+    pub visibility: Option<Visibility>,
+    #[serde(skip)]
+    pub role: Option<NodeRole>,
+    #[serde(skip)]
+    pub signature: Option<String>,
+    #[serde(skip)]
+    pub module: Option<String>,
+    #[serde(skip)]
+    pub snippet: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub contains: Vec<SymbolTreeRef>,
+}
+
+fn node_span_lines(node: &Node) -> [usize; 2] {
+    [node.span.start[0], node.span.end[0]]
+}
+
+impl SymbolInfo {
+    pub(crate) fn from_node(node: &Node) -> Self {
+        Self {
+            id: node.id.clone(),
+            name: node.name.clone(),
+            kind: node.kind,
+            file: node.file.to_string_lossy().to_string(),
+            span: node_span_lines(node),
+            visibility: Some(node.visibility),
+            role: node.role.clone(),
+            signature: node.signature.clone(),
+            module: node.module.clone(),
+            snippet: node.snippet.clone(),
+        }
+    }
+}
+
+impl SymbolRef {
+    pub(crate) fn from_node(node: &Node) -> Self {
+        Self {
+            id: node.id.clone(),
+            name: node.name.clone(),
+            kind: node.kind,
+            file: node.file.to_string_lossy().to_string(),
+            span: Some(node_span_lines(node)),
+            visibility: Some(node.visibility),
+            role: node.role.clone(),
+            signature: node.signature.clone(),
+            module: node.module.clone(),
+            snippet: node.snippet.clone(),
+        }
+    }
+}
+
+impl SymbolTreeRef {
+    pub(crate) fn from_node(node: &Node, contains: Vec<SymbolTreeRef>) -> Self {
+        Self {
+            id: node.id.clone(),
+            name: node.name.clone(),
+            kind: node.kind,
+            file: node.file.to_string_lossy().to_string(),
+            span: Some(node_span_lines(node)),
+            visibility: Some(node.visibility),
+            role: node.role.clone(),
+            signature: node.signature.clone(),
+            module: node.module.clone(),
+            snippet: node.snippet.clone(),
+            contains,
+        }
+    }
 }
 
 #[cfg(test)]

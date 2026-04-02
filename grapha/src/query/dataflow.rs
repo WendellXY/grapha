@@ -106,12 +106,7 @@ struct SemanticEdgeAccumulator {
 }
 
 fn node_ref(node: &Node) -> SymbolRef {
-    SymbolRef {
-        id: node.id.clone(),
-        name: node.name.clone(),
-        kind: node.kind,
-        file: node.file.to_string_lossy().to_string(),
-    }
+    SymbolRef::from_node(node)
 }
 
 fn kind_order(kind: DataflowNodeKind) -> usize {

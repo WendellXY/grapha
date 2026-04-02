@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use grapha_core::graph::NodeKind;
+use grapha_core::graph::{NodeKind, NodeRole, Visibility};
 
 use crate::fields::FieldSet;
 use crate::query::{
@@ -168,14 +168,55 @@ fn kind_label(kind: NodeKind) -> String {
         .to_string()
 }
 
+fn visibility_label(visibility: Visibility) -> &'static str {
+    match visibility {
+        Visibility::Public => "public",
+        Visibility::Crate => "crate",
+        Visibility::Private => "private",
+    }
+}
+
+fn role_label(role: &NodeRole) -> String {
+    match role {
+        NodeRole::EntryPoint => "entry_point".to_string(),
+        NodeRole::Terminal { kind } => format!(
+            "terminal:{}",
+            serde_json::to_string(kind)
+                .unwrap_or_else(|_| format!("{kind:?}"))
+                .trim_matches('"')
+        ),
+        NodeRole::Internal => "internal".to_string(),
+    }
+}
+
+fn format_span(span: [usize; 2]) -> String {
+    if span[0] == span[1] {
+        span[0].to_string()
+    } else {
+        format!("{}..{}", span[0], span[1])
+    }
+}
+
+fn escape_snippet(snippet: &str) -> String {
+    snippet
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
 fn format_name_kind_file(name: &str, kind: NodeKind, file: &str, options: RenderOptions) -> String {
     let palette = Palette::new(options);
-    format!(
-        "{} {} {}",
+    let mut label = format!(
+        "{} {}",
         palette.symbol_name(name),
         palette.tag(format!("[{}]", kind_label(kind))),
-        palette.file(format!("({file})")),
-    )
+    );
+    if options.fields.file {
+        label.push(' ');
+        label.push_str(&palette.file(format!("({file})")));
+    }
+    label
 }
 
 fn format_symbol_info(symbol: &SymbolInfo, options: RenderOptions) -> String {
@@ -188,6 +229,203 @@ fn format_symbol_ref(symbol: &SymbolRef, options: RenderOptions) -> String {
 
 fn format_symbol_tree_ref(symbol: &SymbolTreeRef, options: RenderOptions) -> String {
     format_name_kind_file(&symbol.name, symbol.kind, &symbol.file, options)
+}
+
+fn push_detail(
+    children: &mut Vec<TreeNode>,
+    key: &str,
+    value: Option<String>,
+    options: RenderOptions,
+) {
+    if let Some(value) = value {
+        children.push(TreeNode::leaf(format_key_value(key, &value, options)));
+    }
+}
+
+fn symbol_info_details(symbol: &SymbolInfo, options: RenderOptions) -> Vec<TreeNode> {
+    let mut children = Vec::new();
+    let fields = options.fields;
+
+    if fields.id {
+        push_detail(&mut children, "id", Some(symbol.id.clone()), options);
+    }
+    if fields.module {
+        push_detail(&mut children, "module", symbol.module.clone(), options);
+    }
+    if fields.span {
+        push_detail(
+            &mut children,
+            "span",
+            Some(format_span(symbol.span)),
+            options,
+        );
+    }
+    if fields.visibility {
+        push_detail(
+            &mut children,
+            "visibility",
+            symbol
+                .visibility
+                .map(|value| visibility_label(value).to_string()),
+            options,
+        );
+    }
+    if fields.signature {
+        push_detail(
+            &mut children,
+            "signature",
+            symbol.signature.clone(),
+            options,
+        );
+    }
+    if fields.role {
+        push_detail(
+            &mut children,
+            "role",
+            symbol.role.as_ref().map(role_label),
+            options,
+        );
+    }
+    if fields.snippet {
+        push_detail(
+            &mut children,
+            "snippet",
+            symbol.snippet.as_deref().map(escape_snippet),
+            options,
+        );
+    }
+
+    children
+}
+
+fn symbol_ref_details(symbol: &SymbolRef, options: RenderOptions) -> Vec<TreeNode> {
+    let mut children = Vec::new();
+    let fields = options.fields;
+
+    if fields.id {
+        push_detail(&mut children, "id", Some(symbol.id.clone()), options);
+    }
+    if fields.module {
+        push_detail(&mut children, "module", symbol.module.clone(), options);
+    }
+    if fields.span {
+        push_detail(&mut children, "span", symbol.span.map(format_span), options);
+    }
+    if fields.visibility {
+        push_detail(
+            &mut children,
+            "visibility",
+            symbol
+                .visibility
+                .map(|value| visibility_label(value).to_string()),
+            options,
+        );
+    }
+    if fields.signature {
+        push_detail(
+            &mut children,
+            "signature",
+            symbol.signature.clone(),
+            options,
+        );
+    }
+    if fields.role {
+        push_detail(
+            &mut children,
+            "role",
+            symbol.role.as_ref().map(role_label),
+            options,
+        );
+    }
+    if fields.snippet {
+        push_detail(
+            &mut children,
+            "snippet",
+            symbol.snippet.as_deref().map(escape_snippet),
+            options,
+        );
+    }
+
+    children
+}
+
+fn symbol_tree_ref_details(symbol: &SymbolTreeRef, options: RenderOptions) -> Vec<TreeNode> {
+    let mut children = Vec::new();
+    let fields = options.fields;
+
+    if fields.id {
+        push_detail(&mut children, "id", Some(symbol.id.clone()), options);
+    }
+    if fields.module {
+        push_detail(&mut children, "module", symbol.module.clone(), options);
+    }
+    if fields.span {
+        push_detail(&mut children, "span", symbol.span.map(format_span), options);
+    }
+    if fields.visibility {
+        push_detail(
+            &mut children,
+            "visibility",
+            symbol
+                .visibility
+                .map(|value| visibility_label(value).to_string()),
+            options,
+        );
+    }
+    if fields.signature {
+        push_detail(
+            &mut children,
+            "signature",
+            symbol.signature.clone(),
+            options,
+        );
+    }
+    if fields.role {
+        push_detail(
+            &mut children,
+            "role",
+            symbol.role.as_ref().map(role_label),
+            options,
+        );
+    }
+    if fields.snippet {
+        push_detail(
+            &mut children,
+            "snippet",
+            symbol.snippet.as_deref().map(escape_snippet),
+            options,
+        );
+    }
+
+    children
+}
+
+fn tree_node(label: String, children: Vec<TreeNode>) -> TreeNode {
+    if children.is_empty() {
+        TreeNode::leaf(label)
+    } else {
+        TreeNode::branch(label, children)
+    }
+}
+
+fn symbol_info_node(
+    symbol: &SymbolInfo,
+    mut children: Vec<TreeNode>,
+    options: RenderOptions,
+) -> TreeNode {
+    let mut detail_children = symbol_info_details(symbol, options);
+    detail_children.append(&mut children);
+    tree_node(format_symbol_info(symbol, options), detail_children)
+}
+
+fn symbol_ref_node(
+    symbol: &SymbolRef,
+    mut children: Vec<TreeNode>,
+    options: RenderOptions,
+) -> TreeNode {
+    let mut detail_children = symbol_ref_details(symbol, options);
+    detail_children.append(&mut children);
+    tree_node(format_symbol_ref(symbol, options), detail_children)
 }
 
 fn format_section_count(label: &str, count: usize, options: RenderOptions) -> String {
@@ -231,14 +469,14 @@ fn sorted_symbol_refs(symbols: &[SymbolRef]) -> Vec<SymbolRef> {
 }
 
 fn symbol_tree_ref_to_tree_node(symbol: &SymbolTreeRef, options: RenderOptions) -> TreeNode {
-    TreeNode::branch(
-        format_symbol_tree_ref(symbol, options),
+    let mut children = symbol_tree_ref_details(symbol, options);
+    children.extend(
         symbol
             .contains
             .iter()
-            .map(|child| symbol_tree_ref_to_tree_node(child, options))
-            .collect(),
-    )
+            .map(|child| symbol_tree_ref_to_tree_node(child, options)),
+    );
+    tree_node(format_symbol_tree_ref(symbol, options), children)
 }
 
 fn push_symbol_section(
@@ -255,7 +493,7 @@ fn push_symbol_section(
         format_section_count(label, symbols.len(), options),
         symbols
             .iter()
-            .map(|symbol| TreeNode::leaf(format_symbol_ref(symbol, options)))
+            .map(|symbol| symbol_ref_node(symbol, Vec::new(), options))
             .collect(),
     ));
 }
@@ -277,12 +515,13 @@ fn render_children(children: &[TreeNode], prefix: &str, lines: &mut Vec<String>)
 }
 
 fn impact_tree_to_tree_node(node: &ImpactTreeNode, options: RenderOptions) -> TreeNode {
-    TreeNode::branch(
-        format_symbol_ref(&node.symbol, options),
+    symbol_ref_node(
+        &node.symbol,
         node.children
             .iter()
             .map(|child| impact_tree_to_tree_node(child, options))
             .collect(),
+        options,
     )
 }
 
@@ -388,10 +627,7 @@ pub fn render_context_with_options(result: &ContextResult, options: RenderOption
     push_symbol_section(&mut children, "implements", &result.implements, options);
     push_symbol_section(&mut children, "type_refs", &result.type_refs, options);
 
-    render_tree(&TreeNode::branch(
-        format_symbol_info(&result.symbol, options),
-        children,
-    ))
+    render_tree(&symbol_info_node(&result.symbol, children, options))
 }
 
 pub fn render_entries_with_options(result: &EntriesResult, options: RenderOptions) -> String {
@@ -820,8 +1056,8 @@ pub fn render_impact_with_options(result: &ImpactResult, options: RenderOptions)
         .map(|node| impact_tree_to_tree_node(node, options))
         .collect();
 
-    let root = TreeNode::branch(
-        format_symbol_ref(&result.source_ref, options),
+    let root = symbol_ref_node(
+        &result.source_ref,
         vec![
             TreeNode::leaf(format_summary(
                 &[
@@ -837,6 +1073,7 @@ pub fn render_impact_with_options(result: &ImpactResult, options: RenderOptions)
                 dependents,
             ),
         ],
+        options,
     );
 
     render_tree(&root)
@@ -844,7 +1081,7 @@ pub fn render_impact_with_options(result: &ImpactResult, options: RenderOptions)
 
 #[cfg(test)]
 mod tests {
-    use grapha_core::graph::NodeKind;
+    use grapha_core::graph::{NodeKind, Visibility};
 
     use crate::query::{
         ContextResult, SymbolInfo, SymbolRef, SymbolTreeRef, dataflow::DataflowEdge,
@@ -881,6 +1118,12 @@ mod tests {
             name: name.to_string(),
             kind,
             file: file.to_string(),
+            span: Some([1, 2]),
+            visibility: Some(Visibility::Public),
+            role: None,
+            signature: None,
+            module: None,
+            snippet: None,
         }
     }
 
@@ -891,6 +1134,11 @@ mod tests {
             kind,
             file: file.to_string(),
             span: [1, 2],
+            visibility: Some(Visibility::Public),
+            role: None,
+            signature: None,
+            module: None,
+            snippet: None,
         }
     }
 
@@ -942,12 +1190,24 @@ mod tests {
                 name: "VStack".into(),
                 kind: NodeKind::View,
                 file: "ContentView.swift".into(),
+                span: Some([1, 2]),
+                visibility: Some(Visibility::Public),
+                role: None,
+                signature: None,
+                module: None,
+                snippet: None,
                 contains: vec![
                     SymbolTreeRef {
                         id: "ContentView.swift::body::Text".into(),
                         name: "Text".into(),
                         kind: NodeKind::View,
                         file: "ContentView.swift".into(),
+                        span: Some([1, 2]),
+                        visibility: Some(Visibility::Public),
+                        role: None,
+                        signature: None,
+                        module: None,
+                        snippet: None,
                         contains: Vec::new(),
                     },
                     SymbolTreeRef {
@@ -955,6 +1215,12 @@ mod tests {
                         name: "Row".into(),
                         kind: NodeKind::View,
                         file: "ContentView.swift".into(),
+                        span: Some([1, 2]),
+                        visibility: Some(Visibility::Public),
+                        role: None,
+                        signature: None,
+                        module: None,
+                        snippet: None,
                         contains: Vec::new(),
                     },
                 ],
@@ -980,6 +1246,51 @@ mod tests {
         assert!(rendered.contains("│       └── Row [view] (ContentView.swift)"));
         assert!(rendered.contains("contained_by (1)"));
         assert!(rendered.contains("ContentView [struct] (ContentView.swift)"));
+    }
+
+    #[test]
+    fn context_renders_requested_fields_in_tree_output() {
+        let mut root = symbol_info("body", NodeKind::Property, "ContentView.swift");
+        root.module = Some("Room".into());
+        root.signature = Some("var body: some View".into());
+        root.role = Some(grapha_core::graph::NodeRole::Internal);
+        root.snippet = Some("Text(\"Hello\")\n.padding()".into());
+
+        let mut dependency = symbol_ref("roomMode", NodeKind::Property, "ContentView.swift");
+        dependency.module = Some("Room".into());
+        dependency.signature = Some("@State var roomMode: RoomMode".into());
+        dependency.role = Some(grapha_core::graph::NodeRole::Internal);
+        dependency.snippet = Some("roomMode".into());
+
+        let result = ContextResult {
+            symbol: root,
+            callers: Vec::new(),
+            callees: Vec::new(),
+            reads: vec![dependency],
+            read_by: Vec::new(),
+            invalidation_sources: Vec::new(),
+            contains: Vec::new(),
+            contains_tree: Vec::new(),
+            contained_by: Vec::new(),
+            implementors: Vec::new(),
+            implements: Vec::new(),
+            type_refs: Vec::new(),
+        };
+
+        let rendered = render_context_with_options(
+            &result,
+            RenderOptions::plain().with_fields(FieldSet::all()),
+        );
+
+        assert!(rendered.contains("id: ContentView.swift::body"));
+        assert!(rendered.contains("module: Room"));
+        assert!(rendered.contains("span: 1..2"));
+        assert!(rendered.contains("visibility: public"));
+        assert!(rendered.contains("signature: var body: some View"));
+        assert!(rendered.contains("role: internal"));
+        assert!(rendered.contains("snippet: Text(\"Hello\")\\n.padding()"));
+        assert!(rendered.contains("id: ContentView.swift::roomMode"));
+        assert!(rendered.contains("signature: @State var roomMode: RoomMode"));
     }
 
     #[test]

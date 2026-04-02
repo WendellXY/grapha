@@ -26,12 +26,7 @@ pub struct ImpactResult {
 }
 
 fn to_symbol_ref(node: &Node) -> SymbolRef {
-    SymbolRef {
-        id: node.id.clone(),
-        name: node.name.clone(),
-        kind: node.kind,
-        file: node.file.to_string_lossy().to_string(),
-    }
+    SymbolRef::from_node(node)
 }
 
 fn is_structural_node(node: &Node) -> bool {

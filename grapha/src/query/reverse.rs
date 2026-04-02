@@ -82,12 +82,7 @@ fn canonical_cluster_name(cluster_nodes: &[&Node]) -> String {
 }
 
 fn to_symbol_ref(node: &Node) -> SymbolRef {
-    SymbolRef {
-        id: node.id.clone(),
-        name: node.name.clone(),
-        kind: node.kind,
-        file: node.file.to_string_lossy().to_string(),
-    }
+    SymbolRef::from_node(node)
 }
 
 fn build_accessor_adjacency<'a>(

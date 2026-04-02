@@ -42,12 +42,7 @@ pub fn query_file_symbols(graph: &Graph, file_query: &str) -> FileSymbolsResult 
         })
         .filter(|node| !matches!(node.kind, NodeKind::View | NodeKind::Branch))
         .map(|node| FileSymbol {
-            symbol: SymbolRef {
-                id: node.id.clone(),
-                name: node.name.clone(),
-                kind: node.kind,
-                file: node.file.to_string_lossy().to_string(),
-            },
+            symbol: SymbolRef::from_node(node),
             module: node.module.clone(),
             role: role_string(node),
             span: [node.span.start[0], node.span.end[0]],

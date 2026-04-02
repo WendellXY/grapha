@@ -210,12 +210,7 @@ pub fn query_trace(
         entry: entry_node.id.clone(),
         flows,
         summary,
-        entry_ref: SymbolRef {
-            id: entry_node.id.clone(),
-            name: entry_node.name.clone(),
-            kind: entry_node.kind,
-            file: entry_node.file.to_string_lossy().to_string(),
-        },
+        entry_ref: SymbolRef::from_node(entry_node),
     })
 }
 

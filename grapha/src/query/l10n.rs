@@ -5,13 +5,7 @@ use grapha_core::graph::{EdgeKind, Graph, Node, NodeKind};
 use super::SymbolInfo;
 
 pub(crate) fn to_symbol_info(node: &Node) -> SymbolInfo {
-    SymbolInfo {
-        id: node.id.clone(),
-        name: node.name.clone(),
-        kind: node.kind,
-        file: node.file.to_string_lossy().to_string(),
-        span: [node.span.start[0], node.span.end[0]],
-    }
+    SymbolInfo::from_node(node)
 }
 
 pub(crate) fn contains_adjacency(graph: &Graph) -> HashMap<&str, Vec<&str>> {

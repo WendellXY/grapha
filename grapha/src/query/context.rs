@@ -8,25 +8,14 @@ use super::{
 };
 
 fn to_symbol_ref(node: &grapha_core::graph::Node) -> SymbolRef {
-    SymbolRef {
-        id: node.id.clone(),
-        name: node.name.clone(),
-        kind: node.kind,
-        file: node.file.to_string_lossy().to_string(),
-    }
+    SymbolRef::from_node(node)
 }
 
 fn to_symbol_tree_ref(
     node: &grapha_core::graph::Node,
     contains: Vec<SymbolTreeRef>,
 ) -> SymbolTreeRef {
-    SymbolTreeRef {
-        id: node.id.clone(),
-        name: node.name.clone(),
-        kind: node.kind,
-        file: node.file.to_string_lossy().to_string(),
-        contains,
-    }
+    SymbolTreeRef::from_node(node, contains)
 }
 
 fn sort_refs_by_name(symbols: &mut [SymbolRef]) {
@@ -235,13 +224,7 @@ pub fn query_context(graph: &Graph, query: &str) -> Result<ContextResult, QueryR
         .collect();
 
     Ok(ContextResult {
-        symbol: SymbolInfo {
-            id: node.id.clone(),
-            name: node.name.clone(),
-            kind: node.kind,
-            file: node.file.to_string_lossy().to_string(),
-            span: [node.span.start[0], node.span.end[0]],
-        },
+        symbol: SymbolInfo::from_node(node),
         callers,
         callees,
         reads,

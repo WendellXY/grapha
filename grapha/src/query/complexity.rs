@@ -31,12 +31,7 @@ pub struct ComplexityMetrics {
 }
 
 fn to_symbol_ref(node: &Node) -> SymbolRef {
-    SymbolRef {
-        id: node.id.clone(),
-        name: node.name.clone(),
-        kind: node.kind,
-        file: node.file.to_string_lossy().to_string(),
-    }
+    SymbolRef::from_node(node)
 }
 
 fn count_init_params(node: &Node) -> usize {
@@ -291,13 +286,7 @@ pub fn query_complexity(graph: &Graph, query: &str) -> Result<ComplexityResult, 
     };
 
     Ok(ComplexityResult {
-        symbol: SymbolInfo {
-            id: node.id.clone(),
-            name: node.name.clone(),
-            kind: node.kind,
-            file: node.file.to_string_lossy().to_string(),
-            span: [node.span.start[0], node.span.end[0]],
-        },
+        symbol: SymbolInfo::from_node(node),
         metrics,
         severity: severity_from_score(severity_score).to_string(),
     })
