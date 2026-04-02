@@ -7,12 +7,7 @@ use grapha_core::graph::{NodeKind, Span};
 fn should_extract_snippet(kind: NodeKind) -> bool {
     !matches!(
         kind,
-        NodeKind::Field
-            | NodeKind::Variant
-            | NodeKind::Property
-            | NodeKind::Constant
-            | NodeKind::View
-            | NodeKind::Branch
+        NodeKind::Field | NodeKind::Variant | NodeKind::View | NodeKind::Branch
     )
 }
 
@@ -88,14 +83,14 @@ fn test_should_extract_snippet_eligible_kinds() {
     assert!(should_extract_snippet(NodeKind::Protocol));
     assert!(should_extract_snippet(NodeKind::Extension));
     assert!(should_extract_snippet(NodeKind::TypeAlias));
+    assert!(should_extract_snippet(NodeKind::Property));
+    assert!(should_extract_snippet(NodeKind::Constant));
 }
 
 #[test]
 fn test_should_extract_snippet_excluded_kinds() {
     assert!(!should_extract_snippet(NodeKind::Field));
     assert!(!should_extract_snippet(NodeKind::Variant));
-    assert!(!should_extract_snippet(NodeKind::Property));
-    assert!(!should_extract_snippet(NodeKind::Constant));
     assert!(!should_extract_snippet(NodeKind::View));
     assert!(!should_extract_snippet(NodeKind::Branch));
 }

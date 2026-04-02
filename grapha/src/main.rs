@@ -515,7 +515,7 @@ fn run_pipeline(
                         let line_idx = snippet::LineIndex::new(&source_str);
                         for node in &mut result.nodes {
                             if snippet::should_extract_snippet(node.kind) {
-                                node.snippet = line_idx.extract_snippet(&node.span, 600);
+                                node.snippet = line_idx.extract_full_snippet(&node.span);
                             }
                         }
                     }

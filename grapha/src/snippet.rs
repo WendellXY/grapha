@@ -3,12 +3,7 @@ use grapha_core::graph::{NodeKind, Span};
 pub fn should_extract_snippet(kind: NodeKind) -> bool {
     !matches!(
         kind,
-        NodeKind::Field
-            | NodeKind::Variant
-            | NodeKind::Property
-            | NodeKind::Constant
-            | NodeKind::View
-            | NodeKind::Branch
+        NodeKind::Field | NodeKind::Variant | NodeKind::View | NodeKind::Branch
     )
 }
 
@@ -33,9 +28,43 @@ impl<'a> LineIndex<'a> {
         }
     }
 
-    pub fn extract_snippet(&self, span: &Span, max_len: usize) -> Option<String> {
-        let start_line = span.start[0];
-        let end_line = span.end[0];
+    fn normalize_line(&self, line: usize, one_based: bool) -> Option<usize> {
+        if one_based {
+            line.checked_sub(1)
+        } else {
+            Some(line)
+        }
+    }
+
+    fn byte_offset(&self, line: usize, column: usize) -> Option<usize> {
+        let line_start = *self.line_starts.get(line)?;
+        let line_limit = self
+            .line_starts
+            .get(line + 1)
+            .copied()
+            .unwrap_or(self.source.len());
+        Some((line_start + column).min(line_limit))
+    }
+
+    fn extract_exact_span_with_base(&self, span: &Span, one_based_lines: bool) -> Option<String> {
+        let start_line = self.normalize_line(span.start[0], one_based_lines)?;
+        let end_line = self.normalize_line(span.end[0], one_based_lines)?;
+        let byte_start = self.byte_offset(start_line, span.start[1])?;
+        let byte_end = self.byte_offset(end_line, span.end[1])?;
+        if byte_start > byte_end || byte_end > self.source.len() {
+            return None;
+        }
+
+        let slice = &self.source.as_bytes()[byte_start..byte_end];
+        let snippet = String::from_utf8_lossy(slice)
+            .trim_end_matches(['\n', '\r'])
+            .to_string();
+        if snippet.is_empty() { None } else { Some(snippet) }
+    }
+
+    fn extract_full_lines_with_base(&self, span: &Span, one_based_lines: bool) -> Option<String> {
+        let start_line = self.normalize_line(span.start[0], one_based_lines)?;
+        let end_line = self.normalize_line(span.end[0], one_based_lines)?;
 
         if start_line >= self.line_starts.len() {
             return None;
@@ -43,30 +72,41 @@ impl<'a> LineIndex<'a> {
 
         let end_line = end_line.min(self.line_starts.len().saturating_sub(1));
         let byte_start = self.line_starts[start_line];
-
-        // Find byte end: end of end_line (or end of source)
         let byte_end = if end_line + 1 < self.line_starts.len() {
-            // Strip trailing newline
             self.line_starts[end_line + 1].saturating_sub(1)
         } else {
             self.source.len()
         };
 
-        let slice = &self.source[byte_start..byte_end];
-        // Trim trailing whitespace/newlines
-        let slice = slice.trim_end();
+        let slice = &self.source.as_bytes()[byte_start..byte_end];
+        Some(
+            String::from_utf8_lossy(slice)
+                .trim_end_matches(['\n', '\r'])
+                .to_string(),
+        )
+    }
 
-        if slice.len() <= max_len {
-            return Some(slice.to_string());
+    pub fn extract_full_snippet(&self, span: &Span) -> Option<String> {
+        self.extract_exact_span_with_base(span, false)
+            .or_else(|| self.extract_exact_span_with_base(span, true))
+            .or_else(|| self.extract_full_lines_with_base(span, false))
+            .or_else(|| self.extract_full_lines_with_base(span, true))
+    }
+
+    #[allow(dead_code)]
+    pub fn extract_snippet(&self, span: &Span, max_len: usize) -> Option<String> {
+        let full = self.extract_full_snippet(span)?;
+
+        if full.len() <= max_len {
+            return Some(full);
         }
 
-        // Truncate at a clean line boundary within max_len
         let mut truncate_at = max_len;
-        while !slice.is_char_boundary(truncate_at) {
+        while !full.is_char_boundary(truncate_at) {
             truncate_at -= 1;
         }
 
-        let truncated = &slice[..truncate_at];
+        let truncated = &full[..truncate_at];
         match truncated.rfind('\n') {
             Some(pos) if pos > 0 => Some(truncated[..pos].to_string()),
             _ => Some(truncated.to_string()),
@@ -101,5 +141,35 @@ mod tests {
         };
 
         assert_eq!(index.extract_snippet(&span, 8), Some("alpha".to_string()));
+    }
+
+    #[test]
+    fn extract_full_snippet_uses_exact_columns() {
+        let source = "let before = 1; fn hello() {\n    println!(\"hi\");\n} let after = 2;";
+        let index = LineIndex::new(source);
+        let span = Span {
+            start: [0, 16],
+            end: [2, 1],
+        };
+
+        assert_eq!(
+            index.extract_full_snippet(&span),
+            Some("fn hello() {\n    println!(\"hi\");\n}".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_full_snippet_accepts_one_based_lines_as_fallback() {
+        let source = "struct A {}\nfn greet() {\n    println!(\"hi\");\n}\n";
+        let index = LineIndex::new(source);
+        let span = Span {
+            start: [2, 0],
+            end: [4, 1],
+        };
+
+        assert_eq!(
+            index.extract_full_snippet(&span),
+            Some("fn greet() {\n    println!(\"hi\");\n}".to_string())
+        );
     }
 }
