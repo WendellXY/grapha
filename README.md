@@ -10,17 +10,17 @@ Grapha builds a symbol-level dependency graph from source code — not by guessi
 
 ## Why Grapha
 
-| | Grapha | Typical code-context tools |
-|---|---|---|
-| **Parsing** | Compiler index store (confidence 1.0) + tree-sitter fallback | tree-sitter only |
-| **Relationship types** | 10 (calls, reads, writes, publishes, subscribes, inherits, implements, contains, type_ref, uses) | 4-6 |
-| **Dataflow tracing** | Forward (entry → terminals) + reverse (symbol → entries) | None |
-| **Code quality** | Complexity analysis, smell detection, module coupling metrics | None |
-| **Confidence scores** | Per-edge 0.0–1.0 | None |
-| **Terminal classification** | Auto-detects network, persistence, cache, event, keychain, search | None |
-| **MCP tools** | 11 | 4-6 |
-| **Watch mode** | File watcher with debounced incremental re-index | Varies |
-| **Recall** | Session disambiguation — ambiguous symbols auto-resolve after first use | None |
+| | Grapha |
+|---|---|
+| **Parsing** | Compiler index store (confidence 1.0) + tree-sitter fallback |
+| **Relationship types** | 10 (calls, reads, writes, publishes, subscribes, inherits, implements, contains, type_ref, uses) |
+| **Dataflow tracing** | Forward (entry → terminals) + reverse (symbol → entries) |
+| **Code quality** | Complexity analysis, smell detection, module coupling metrics |
+| **Confidence scores** | Per-edge 0.0–1.0 |
+| **Terminal classification** | Auto-detects network, persistence, cache, event, keychain, search |
+| **MCP tools** | 11 |
+| **Watch mode** | File watcher with debounced incremental re-index |
+| **Recall** | Session disambiguation — ambiguous symbols auto-resolve after first use |
 
 ## Performance
 
