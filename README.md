@@ -42,6 +42,11 @@ Benchmarked on a production iOS app (1,991 Swift files, ~300K lines):
 ## Install
 
 ```bash
+brew tap oops-rs/tap
+brew install grapha
+```
+
+```bash
 cargo install grapha
 ```
 

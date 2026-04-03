@@ -9,7 +9,7 @@ Usage:
   install.sh [--version <tag>] [--install-dir <dir>] [--repo <owner/name>]
 
 Environment:
-  GRAPHA_RELEASE_REPO   GitHub repository to download from (default: wenext-limited/grapha)
+  GRAPHA_RELEASE_REPO   GitHub repository to download from (default: oops-rs/grapha)
   GRAPHA_INSTALL_DIR    Install destination (default: $HOME/.local/bin)
 
 Notes:
@@ -51,7 +51,7 @@ fetch_latest_tag() {
     | awk -F'"' '/"tag_name":/ { print $4; exit }'
 }
 
-repo="${GRAPHA_RELEASE_REPO:-wenext-limited/grapha}"
+repo="${GRAPHA_RELEASE_REPO:-oops-rs/grapha}"
 install_dir="${GRAPHA_INSTALL_DIR:-$HOME/.local/bin}"
 version=""
 
