@@ -99,8 +99,6 @@ pub fn classify_graph(graph: &Graph, classifier: &CompositeClassifier) -> Graph 
                 return edge.clone();
             }
 
-            let target_name = edge.target.rsplit("::").next().unwrap_or(&edge.target);
-
             let source_file = node_file_map
                 .get(edge.source.as_str())
                 .cloned()
@@ -114,7 +112,7 @@ pub fn classify_graph(graph: &Graph, classifier: &CompositeClassifier) -> Graph 
             };
 
             // Try string-based classifier first, then USR module-based fallback
-            if let Some(classification) = classifier.classify(target_name, &context) {
+            if let Some(classification) = classifier.classify(&edge.target, &context) {
                 terminal_nodes.insert(edge.target.clone(), classification.terminal_kind);
                 let mut new_edge = edge.clone();
                 new_edge.direction = Some(classification.direction);

@@ -55,7 +55,6 @@ pub fn classify_graph(graph: &Graph, classifier: &CompositeClassifier) -> Graph 
                 return edge.clone();
             }
 
-            let target_name = edge.target.rsplit("::").next().unwrap_or(&edge.target);
             let source_file = node_file_map
                 .get(edge.source.as_str())
                 .cloned()
@@ -67,7 +66,7 @@ pub fn classify_graph(graph: &Graph, classifier: &CompositeClassifier) -> Graph 
                 arguments: Vec::new(),
             };
 
-            let Some(classification) = classifier.classify(target_name, &context) else {
+            let Some(classification) = classifier.classify(&edge.target, &context) else {
                 return edge.clone();
             };
 
@@ -126,7 +125,6 @@ pub fn classify_extraction_result(
                 return edge;
             }
 
-            let target_name = edge.target.rsplit("::").next().unwrap_or(&edge.target);
             let source_file = node_file_map
                 .get(edge.source.as_str())
                 .cloned()
@@ -138,7 +136,7 @@ pub fn classify_extraction_result(
                 arguments: Vec::new(),
             };
 
-            if let Some(classification) = classifier.classify(target_name, &context) {
+            if let Some(classification) = classifier.classify(&edge.target, &context) {
                 let terminal_node_id = if node_ids.contains(edge.target.as_str()) {
                     edge.target.clone()
                 } else {

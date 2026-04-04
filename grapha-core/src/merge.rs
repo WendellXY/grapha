@@ -8,6 +8,55 @@ struct NameEntry {
     module: Option<String>,
 }
 
+fn looks_like_file_path(segment: &str) -> bool {
+    segment.contains('/') || segment.ends_with(".rs") || segment.ends_with(".swift")
+}
+
+fn target_segments(target: &str) -> Vec<&str> {
+    let mut colon_parts: Vec<_> = target.split("::").collect();
+    if !colon_parts.is_empty() && looks_like_file_path(colon_parts[0]) {
+        colon_parts.remove(0);
+    }
+
+    if colon_parts.len() > 1 {
+        return colon_parts;
+    }
+
+    let mut segments = Vec::new();
+    if let Some(single_part) = colon_parts.into_iter().next() {
+        segments.extend(single_part.split('.').filter(|segment| !segment.is_empty()));
+    }
+    if segments.is_empty() {
+        segments.push(target);
+    }
+    segments
+}
+
+fn target_symbol_name(target: &str) -> &str {
+    let segments = target_segments(target);
+    segments.last().copied().unwrap_or(target)
+}
+
+fn target_prefix_hint(target: &str) -> Option<String> {
+    let segments = target_segments(target);
+    if segments.len() < 2 {
+        return None;
+    }
+
+    let hint = segments[segments.len() - 2];
+    if matches!(hint, "crate" | "super") {
+        None
+    } else {
+        Some(hint.to_string())
+    }
+}
+
+fn should_enforce_hint(target: &str, hint: &str) -> bool {
+    hint.eq_ignore_ascii_case("self")
+        || target.contains('.')
+        || hint.chars().any(|ch| ch.is_ascii_uppercase())
+}
+
 pub fn merge(results: Vec<ExtractionResult>) -> Graph {
     let mut graph = Graph::new();
 
@@ -64,6 +113,16 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
         .nodes
         .iter()
         .map(|node| (node.id.as_str(), node.name.as_str()))
+        .collect();
+    let candidate_file_stems: HashMap<String, String> = graph
+        .nodes
+        .iter()
+        .filter_map(|node| {
+            node.file
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|stem| (node.id.clone(), stem.to_ascii_lowercase()))
+        })
         .collect();
     let mut candidate_to_owner_names: HashMap<String, Vec<String>> = HashMap::new();
     for result in &results {
@@ -123,7 +182,7 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
             continue;
         }
 
-        let target_name = edge.target.rsplit("::").next().unwrap_or(&edge.target);
+        let target_name = target_symbol_name(&edge.target);
         let Some(candidates) = name_to_entries.get(target_name) else {
             continue;
         };
@@ -136,12 +195,29 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
             .copied()
             .unwrap_or((None, ""));
         let source_imports = file_imports.get(source_file);
-        let prefix_hint = edge.operation.as_deref();
+        let source_owner_names = candidate_to_owner_names
+            .get(&edge.source)
+            .cloned()
+            .unwrap_or_default();
+        let owned_hint = target_prefix_hint(&edge.target);
+        let prefix_hint = edge.operation.as_deref().or(owned_hint.as_deref());
 
         if candidates.len() == 1 {
             let candidate = &candidates[0];
             let same_module = modules_match(source_module, candidate.module.as_deref());
             if same_module {
+                if let Some(hint) = prefix_hint
+                    && !candidate_matches_hint(
+                        candidate,
+                        hint,
+                        &source_owner_names,
+                        &candidate_to_owner_names,
+                        &candidate_file_stems,
+                    )
+                    && should_enforce_hint(&edge.target, hint)
+                {
+                    continue;
+                }
                 edge.target = candidate.id.clone();
                 edge.confidence *= 0.9;
                 graph.edges.push(edge);
@@ -236,11 +312,14 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
         }
 
         let resolved = resolve_candidates(
+            &edge.target,
             candidates,
             source_module,
             source_imports,
             prefix_hint,
+            &source_owner_names,
             &candidate_to_owner_names,
+            &candidate_file_stems,
         );
         for (candidate_id, factor) in resolved {
             let mut resolved_edge = edge.clone();
@@ -274,54 +353,95 @@ fn usr_type_prefix(usr: &str) -> Option<String> {
     last_v_pos.map(|pos| usr[..pos].to_string())
 }
 
+fn candidate_matches_hint(
+    candidate: &NameEntry,
+    hint: &str,
+    source_owner_names: &[String],
+    candidate_to_owner_names: &HashMap<String, Vec<String>>,
+    candidate_file_stems: &HashMap<String, String>,
+) -> bool {
+    let normalized_hint = hint.to_ascii_lowercase();
+
+    if normalized_hint == "self" {
+        return source_owner_names.iter().any(|source_owner| {
+            candidate_to_owner_names
+                .get(&candidate.id)
+                .is_some_and(|owners| {
+                    owners
+                        .iter()
+                        .any(|owner| owner.eq_ignore_ascii_case(source_owner))
+                })
+        });
+    }
+
+    if candidate_to_owner_names
+        .get(&candidate.id)
+        .is_some_and(|owners| {
+            owners.iter().any(|owner| {
+                owner.eq_ignore_ascii_case(hint)
+                    || owner
+                        .to_ascii_lowercase()
+                        .starts_with(normalized_hint.as_str())
+            })
+        })
+    {
+        return true;
+    }
+
+    candidate_file_stems
+        .get(&candidate.id)
+        .is_some_and(|stem| stem == &normalized_hint)
+}
+
 fn resolve_candidates(
+    raw_target: &str,
     candidates: &[NameEntry],
     source_module: Option<&str>,
     source_imports: Option<&HashSet<String>>,
     prefix_hint: Option<&str>,
+    source_owner_names: &[String],
     candidate_to_owner_names: &HashMap<String, Vec<String>>,
+    candidate_file_stems: &HashMap<String, String>,
 ) -> Vec<(String, f64)> {
     let same_module: Vec<&NameEntry> = candidates
         .iter()
         .filter(|candidate| modules_match(source_module, candidate.module.as_deref()))
         .collect();
     if same_module.len() == 1 {
+        if let Some(hint) = prefix_hint
+            && !candidate_matches_hint(
+                same_module[0],
+                hint,
+                source_owner_names,
+                candidate_to_owner_names,
+                candidate_file_stems,
+            )
+            && should_enforce_hint(raw_target, hint)
+        {
+            return Vec::new();
+        }
         return vec![(same_module[0].id.clone(), 0.9)];
     }
 
     if same_module.len() > 1 {
         if let Some(hint) = prefix_hint {
-            let hint_name = hint.rsplit('.').next().unwrap_or(hint).to_lowercase();
-            let exact: Vec<&&NameEntry> = same_module
-                .iter()
-                .filter(|candidate| {
-                    candidate_to_owner_names
-                        .get(&candidate.id)
-                        .is_some_and(|parents| {
-                            parents
-                                .iter()
-                                .any(|parent| parent.eq_ignore_ascii_case(&hint_name))
-                        })
-                })
-                .collect();
-            if exact.len() == 1 {
-                return vec![(exact[0].id.clone(), 0.85)];
-            }
-
             let narrowed: Vec<&&NameEntry> = same_module
                 .iter()
                 .filter(|candidate| {
-                    candidate_to_owner_names
-                        .get(&candidate.id)
-                        .is_some_and(|parents| {
-                            parents
-                                .iter()
-                                .any(|parent| parent.to_lowercase().contains(&hint_name))
-                        })
+                    candidate_matches_hint(
+                        candidate,
+                        hint,
+                        source_owner_names,
+                        candidate_to_owner_names,
+                        candidate_file_stems,
+                    )
                 })
                 .collect();
             if narrowed.len() == 1 {
                 return vec![(narrowed[0].id.clone(), 0.85)];
+            }
+            if narrowed.is_empty() && should_enforce_hint(raw_target, hint) {
+                return Vec::new();
             }
         }
 
@@ -573,5 +693,115 @@ mod tests {
         assert_eq!(type_refs.len(), 1);
         assert_eq!(type_refs[0].target, "room::RoomPage::chatRoomFragViewPanel");
         assert!((type_refs[0].confidence - 0.85).abs() < 0.001);
+    }
+
+    #[test]
+    fn qualified_call_hint_drops_false_local_resolution() {
+        let caller = make_node("sqlite.rs::open", "open", NodeKind::Function);
+        let callee = make_node("sqlite.rs::helper", "open", NodeKind::Function);
+
+        let graph = merge(vec![ExtractionResult {
+            nodes: vec![caller, callee],
+            edges: vec![Edge {
+                source: "sqlite.rs::open".to_string(),
+                target: "Connection::open".to_string(),
+                kind: EdgeKind::Calls,
+                confidence: 1.0,
+                direction: None,
+                operation: None,
+                condition: None,
+                async_boundary: None,
+                provenance: Vec::new(),
+            }],
+            imports: vec![],
+        }]);
+
+        assert!(graph.edges.is_empty());
+    }
+
+    #[test]
+    fn module_hint_resolves_call_by_file_stem() {
+        let caller = Node {
+            file: PathBuf::from("lib.rs"),
+            ..make_node("lib.rs::run", "run", NodeKind::Function)
+        };
+        let callee = Node {
+            file: PathBuf::from("utils.rs"),
+            ..make_node("utils.rs::helper", "helper", NodeKind::Function)
+        };
+
+        let graph = merge(vec![ExtractionResult {
+            nodes: vec![caller, callee],
+            edges: vec![Edge {
+                source: "lib.rs::run".to_string(),
+                target: "utils::helper".to_string(),
+                kind: EdgeKind::Calls,
+                confidence: 1.0,
+                direction: None,
+                operation: None,
+                condition: None,
+                async_boundary: None,
+                provenance: Vec::new(),
+            }],
+            imports: vec![],
+        }]);
+
+        assert_eq!(graph.edges.len(), 1);
+        assert_eq!(graph.edges[0].target, "utils.rs::helper");
+    }
+
+    #[test]
+    fn self_field_read_resolves_to_matching_field() {
+        let struct_node = make_node("sqlite.rs::SqliteStore", "SqliteStore", NodeKind::Struct);
+        let field_node = make_node("sqlite.rs::SqliteStore.path", "path", NodeKind::Field);
+        let impl_node = make_node("sqlite.rs::impl_SqliteStore", "SqliteStore", NodeKind::Impl);
+        let fn_node = make_node("sqlite.rs::open", "open", NodeKind::Function);
+
+        let graph = merge(vec![ExtractionResult {
+            nodes: vec![struct_node, field_node, impl_node, fn_node],
+            edges: vec![
+                Edge {
+                    source: "sqlite.rs::SqliteStore".to_string(),
+                    target: "sqlite.rs::SqliteStore.path".to_string(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "sqlite.rs::impl_SqliteStore".to_string(),
+                    target: "sqlite.rs::open".to_string(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "sqlite.rs::open".to_string(),
+                    target: "self.path".to_string(),
+                    kind: EdgeKind::Reads,
+                    confidence: 0.8,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+            ],
+            imports: vec![],
+        }]);
+
+        let read_edge = graph
+            .edges
+            .iter()
+            .find(|edge| edge.kind == EdgeKind::Reads)
+            .unwrap();
+        assert_eq!(read_edge.target, "sqlite.rs::SqliteStore.path");
     }
 }

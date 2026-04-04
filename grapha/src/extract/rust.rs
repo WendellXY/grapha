@@ -97,7 +97,58 @@ fn walk_node(
                 // Walk function body for nested items and call expressions
                 if let Some(body) = node.child_by_field_name("body") {
                     walk_children(body, source, file, module_path, Some(&node_id), result);
+                    extract_reads_and_writes(body, source, file, &node_id, result);
                     extract_calls(body, source, file, module_path, &node_id, result);
+                }
+            }
+        }
+        "const_item" | "static_item" => {
+            if let Some(graph_node) = extract_constant(node, source, file, module_path) {
+                if let Some(pid) = parent_id {
+                    result.edges.push(Edge {
+                        source: pid.to_string(),
+                        target: graph_node.id.clone(),
+                        kind: EdgeKind::Contains,
+                        confidence: 1.0,
+                        direction: None,
+                        operation: None,
+                        condition: None,
+                        async_boundary: None,
+                        provenance: edge_provenance(file, node, pid),
+                    });
+                }
+                let node_id = graph_node.id.clone();
+                result.nodes.push(graph_node);
+
+                if let Some(type_node) = node.child_by_field_name("type")
+                    && let Ok(type_name) = type_node.utf8_text(source)
+                {
+                    push_type_ref_edge(result, file, type_node, &node_id, module_path, type_name);
+                }
+            }
+        }
+        "type_item" => {
+            if let Some(graph_node) = extract_type_alias(node, source, file, module_path) {
+                if let Some(pid) = parent_id {
+                    result.edges.push(Edge {
+                        source: pid.to_string(),
+                        target: graph_node.id.clone(),
+                        kind: EdgeKind::Contains,
+                        confidence: 1.0,
+                        direction: None,
+                        operation: None,
+                        condition: None,
+                        async_boundary: None,
+                        provenance: edge_provenance(file, node, pid),
+                    });
+                }
+                let node_id = graph_node.id.clone();
+                result.nodes.push(graph_node);
+
+                if let Some(type_node) = node.child_by_field_name("type")
+                    && let Ok(type_name) = type_node.utf8_text(source)
+                {
+                    push_type_ref_edge(result, file, type_node, &node_id, module_path, type_name);
                 }
             }
         }
@@ -545,6 +596,15 @@ fn extract_signature(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     }
 }
 
+fn extract_decl_signature(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    node.utf8_text(source)
+        .ok()
+        .map(str::trim)
+        .map(|text| text.trim_end_matches(';').trim())
+        .filter(|text| !text.is_empty())
+        .map(ToString::to_string)
+}
+
 /// Extract doc comments from previous sibling comment nodes.
 fn extract_doc_comment(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let mut comments = Vec::new();
@@ -640,6 +700,32 @@ fn detect_async_boundary(node: tree_sitter::Node, source: &[u8]) -> Option<bool>
     None
 }
 
+fn push_type_ref_edge(
+    result: &mut ExtractionResult,
+    file: &str,
+    type_node: tree_sitter::Node,
+    source_id: &str,
+    module_path: &[String],
+    raw_type_name: &str,
+) {
+    let type_name = raw_type_name.trim();
+    if type_name.is_empty() || is_primitive(type_name) || type_name == "Self" {
+        return;
+    }
+
+    result.edges.push(Edge {
+        source: source_id.to_string(),
+        target: make_id(file, module_path, type_name),
+        kind: EdgeKind::TypeRef,
+        confidence: 0.85,
+        direction: None,
+        operation: None,
+        condition: None,
+        async_boundary: None,
+        provenance: edge_provenance(file, type_node, source_id),
+    });
+}
+
 /// Extract a named symbol (struct, enum, trait, module) into a Node.
 fn extract_named_item(
     node: tree_sitter::Node,
@@ -702,6 +788,80 @@ fn extract_impl_item(
         role: None,
         signature: None,
         doc_comment: None,
+        module: None,
+        snippet: None,
+    })
+}
+
+fn extract_constant(
+    node: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    module_path: &[String],
+) -> Option<Node> {
+    let name = field_text(node, "name", source)?;
+    let id = make_id(file, module_path, &name);
+    let visibility = extract_visibility(node, source);
+    let start = node.start_position();
+    let end = node.end_position();
+    let mut metadata = HashMap::new();
+
+    if node.kind() == "static_item" {
+        metadata.insert("static".to_string(), "true".to_string());
+        let mut cursor = node.walk();
+        if node
+            .children(&mut cursor)
+            .any(|child| child.kind() == "mutable_specifier")
+        {
+            metadata.insert("mutable".to_string(), "true".to_string());
+        }
+    }
+
+    Some(Node {
+        id,
+        kind: NodeKind::Constant,
+        name,
+        file: file.into(),
+        span: Span {
+            start: [start.row, start.column],
+            end: [end.row, end.column],
+        },
+        visibility,
+        metadata,
+        role: None,
+        signature: extract_decl_signature(node, source),
+        doc_comment: extract_doc_comment(node, source),
+        module: None,
+        snippet: None,
+    })
+}
+
+fn extract_type_alias(
+    node: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    module_path: &[String],
+) -> Option<Node> {
+    let name = field_text(node, "name", source)?;
+    let id = make_id(file, module_path, &name);
+    let visibility = extract_visibility(node, source);
+    let start = node.start_position();
+    let end = node.end_position();
+
+    Some(Node {
+        id,
+        kind: NodeKind::TypeAlias,
+        name,
+        file: file.into(),
+        span: Span {
+            start: [start.row, start.column],
+            end: [end.row, end.column],
+        },
+        visibility,
+        metadata: HashMap::new(),
+        role: None,
+        signature: extract_decl_signature(node, source),
+        doc_comment: extract_doc_comment(node, source),
         module: None,
         snippet: None,
     })
@@ -803,7 +963,11 @@ fn extract_calls(
         if !fn_text.ends_with('!') {
             let callee_name = fn_text.trim();
             if !callee_name.is_empty() {
-                let target_id = make_id(file, module_path, callee_name);
+                let target_id = if is_unqualified_call_target(callee_name) {
+                    make_id(file, module_path, callee_name)
+                } else {
+                    callee_name.to_string()
+                };
                 let condition = find_enclosing_condition(node, source);
                 let async_boundary = detect_async_boundary(node, source);
                 result.edges.push(Edge {
@@ -826,6 +990,180 @@ fn extract_calls(
     for child in node.named_children(&mut cursor) {
         extract_calls(child, source, file, module_path, caller_id, result);
     }
+}
+
+fn is_unqualified_call_target(target: &str) -> bool {
+    !target.contains("::") && !target.contains('.')
+}
+
+fn extract_reads_and_writes(
+    node: tree_sitter::Node,
+    source: &[u8],
+    file: &str,
+    caller_id: &str,
+    result: &mut ExtractionResult,
+) {
+    match node.kind() {
+        "assignment_expression" | "compound_assignment_expr" => {
+            if let Some(left) = node.child_by_field_name("left")
+                && let Some(target) = extract_self_field_target(left, source)
+            {
+                let provenance = edge_provenance(file, left, caller_id);
+                result.edges.push(Edge {
+                    source: caller_id.to_string(),
+                    target: target.clone(),
+                    kind: EdgeKind::Writes,
+                    confidence: 0.8,
+                    direction: Some(grapha_core::graph::FlowDirection::Write),
+                    operation: None,
+                    condition: find_enclosing_condition(node, source),
+                    async_boundary: detect_async_boundary(node, source),
+                    provenance: provenance.clone(),
+                });
+                if node.kind() == "compound_assignment_expr" {
+                    result.edges.push(Edge {
+                        source: caller_id.to_string(),
+                        target,
+                        kind: EdgeKind::Reads,
+                        confidence: 0.75,
+                        direction: Some(grapha_core::graph::FlowDirection::Read),
+                        operation: None,
+                        condition: find_enclosing_condition(node, source),
+                        async_boundary: detect_async_boundary(node, source),
+                        provenance,
+                    });
+                }
+            }
+
+            if let Some(right) = node.child_by_field_name("right") {
+                extract_reads_and_writes(right, source, file, caller_id, result);
+            }
+        }
+        "field_expression" => {
+            if should_emit_field_read(node)
+                && let Some(target) = extract_self_field_target(node, source)
+            {
+                result.edges.push(Edge {
+                    source: caller_id.to_string(),
+                    target,
+                    kind: EdgeKind::Reads,
+                    confidence: 0.75,
+                    direction: Some(grapha_core::graph::FlowDirection::Read),
+                    operation: None,
+                    condition: find_enclosing_condition(node, source),
+                    async_boundary: detect_async_boundary(node, source),
+                    provenance: edge_provenance(file, node, caller_id),
+                });
+            }
+        }
+        "identifier" | "scoped_identifier" => {
+            if should_emit_constant_read(node, source) {
+                let target = node
+                    .utf8_text(source)
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                result.edges.push(Edge {
+                    source: caller_id.to_string(),
+                    target,
+                    kind: EdgeKind::Reads,
+                    confidence: 0.7,
+                    direction: Some(grapha_core::graph::FlowDirection::Read),
+                    operation: None,
+                    condition: find_enclosing_condition(node, source),
+                    async_boundary: detect_async_boundary(node, source),
+                    provenance: edge_provenance(file, node, caller_id),
+                });
+            }
+        }
+        _ => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                extract_reads_and_writes(child, source, file, caller_id, result);
+            }
+        }
+    }
+}
+
+fn extract_self_field_target(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    if node.kind() != "field_expression" {
+        return None;
+    }
+
+    let value = node.child_by_field_name("value")?;
+    let field = node.child_by_field_name("field")?;
+    let receiver = value.utf8_text(source).ok()?.trim();
+    let field_name = field.utf8_text(source).ok()?.trim();
+    if receiver == "self" && !field_name.is_empty() {
+        Some(format!("{receiver}.{field_name}"))
+    } else {
+        None
+    }
+}
+
+fn should_emit_field_read(node: tree_sitter::Node) -> bool {
+    let Some(parent) = node.parent() else {
+        return true;
+    };
+
+    if parent.kind() == "call_expression" && parent.child_by_field_name("function") == Some(node) {
+        return false;
+    }
+
+    if matches!(
+        parent.kind(),
+        "assignment_expression" | "compound_assignment_expr"
+    ) && parent.child_by_field_name("left") == Some(node)
+    {
+        return false;
+    }
+
+    true
+}
+
+fn should_emit_constant_read(node: tree_sitter::Node, source: &[u8]) -> bool {
+    let Ok(text) = node.utf8_text(source) else {
+        return false;
+    };
+    if !is_constant_like(text.trim()) {
+        return false;
+    }
+
+    let Some(parent) = node.parent() else {
+        return true;
+    };
+
+    if parent.child_by_field_name("name") == Some(node)
+        || parent.child_by_field_name("field") == Some(node)
+        || parent.child_by_field_name("alias") == Some(node)
+        || (parent.kind() == "call_expression"
+            && parent.child_by_field_name("function") == Some(node))
+    {
+        return false;
+    }
+
+    true
+}
+
+fn is_constant_like(text: &str) -> bool {
+    let candidate = text
+        .rsplit("::")
+        .next()
+        .unwrap_or(text)
+        .trim_start_matches("r#");
+    let mut has_uppercase = false;
+    for ch in candidate.chars() {
+        if ch.is_ascii_lowercase() {
+            return false;
+        }
+        if ch.is_ascii_uppercase() {
+            has_uppercase = true;
+        }
+        if !(ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_') {
+            return false;
+        }
+    }
+    has_uppercase
 }
 
 /// Extract enum_variant children from an enum body.
@@ -1100,6 +1438,81 @@ mod tests {
             "#,
         );
         assert!(result.edges.iter().any(|e| e.kind == EdgeKind::TypeRef));
+    }
+
+    #[test]
+    fn extracts_constants_and_type_aliases() {
+        let result = extract(
+            r#"
+            pub const STORE_SCHEMA_VERSION: &str = "6";
+            static mut GLOBAL_COUNTER: usize = 0;
+            pub type SchemaVersion = String;
+            "#,
+        );
+
+        let const_node = find_node(&result, "STORE_SCHEMA_VERSION");
+        assert_eq!(const_node.kind, NodeKind::Constant);
+        assert_eq!(const_node.visibility, Visibility::Public);
+
+        let static_node = find_node(&result, "GLOBAL_COUNTER");
+        assert_eq!(static_node.kind, NodeKind::Constant);
+        assert_eq!(
+            static_node.metadata.get("static").map(|s| s.as_str()),
+            Some("true")
+        );
+        assert_eq!(
+            static_node.metadata.get("mutable").map(|s| s.as_str()),
+            Some("true")
+        );
+
+        let alias_node = find_node(&result, "SchemaVersion");
+        assert_eq!(alias_node.kind, NodeKind::TypeAlias);
+        assert!(
+            result
+                .edges
+                .iter()
+                .any(|edge| { edge.source == alias_node.id && edge.kind == EdgeKind::TypeRef })
+        );
+    }
+
+    #[test]
+    fn extracts_self_field_reads_writes_and_constant_reads() {
+        let result = extract(
+            r#"
+            const STORE_SCHEMA_VERSION: &str = "6";
+
+            struct SqliteStore {
+                path: String,
+            }
+
+            impl SqliteStore {
+                fn open(&self) {
+                    let _ = &self.path;
+                    let _ = STORE_SCHEMA_VERSION;
+                }
+
+                fn set_path(&mut self, next: String) {
+                    self.path = next;
+                }
+            }
+            "#,
+        );
+
+        assert!(result.edges.iter().any(|edge| {
+            edge.source == "test.rs::open"
+                && edge.target == "self.path"
+                && edge.kind == EdgeKind::Reads
+        }));
+        assert!(result.edges.iter().any(|edge| {
+            edge.source == "test.rs::open"
+                && edge.target == "STORE_SCHEMA_VERSION"
+                && edge.kind == EdgeKind::Reads
+        }));
+        assert!(result.edges.iter().any(|edge| {
+            edge.source == "test.rs::set_path"
+                && edge.target == "self.path"
+                && edge.kind == EdgeKind::Writes
+        }));
     }
 
     #[test]
