@@ -82,7 +82,6 @@ struct EnrichmentContext<'a> {
     result: &'a mut ExtractionResult,
     node_snapshots: Vec<NodeSnapshot>,
     nodes_by_kind_name: HashMap<(NodeKind, String), Vec<usize>>,
-    view_candidates_by_name: HashMap<String, Vec<usize>>,
     node_index_by_id: HashMap<String, usize>,
     candidate_owner_names: HashMap<String, Vec<String>>,
     existing_node_ids: HashSet<String>,
@@ -104,7 +103,6 @@ impl<'a> EnrichmentContext<'a> {
             result,
             node_snapshots: Vec::with_capacity(snapshots.len()),
             nodes_by_kind_name: HashMap::new(),
-            view_candidates_by_name: HashMap::new(),
             node_index_by_id: HashMap::new(),
             candidate_owner_names,
             existing_node_ids,
@@ -124,18 +122,24 @@ impl<'a> EnrichmentContext<'a> {
             .entry((snapshot.kind, snapshot.name.clone()))
             .or_default()
             .push(snapshot_index);
-        if snapshot.kind == NodeKind::View {
-            self.view_candidates_by_name
-                .entry(snapshot.name.clone())
-                .or_default()
-                .push(snapshot_index);
-        }
         self.node_snapshots.push(snapshot);
     }
 
     fn node_mut(&mut self, node_id: &str) -> Option<&mut Node> {
         let index = *self.node_index_by_id.get(node_id)?;
         self.result.nodes.get_mut(index)
+    }
+
+    fn local_wrapper_id(&self, file_path: &Path, wrapper_name: &str) -> Option<String> {
+        self.result
+            .nodes
+            .iter()
+            .find(|node| {
+                file_matches(&node.file, file_path)
+                    && node.name == wrapper_name
+                    && node.metadata.contains_key("l10n.wrapper.key")
+            })
+            .map(|node| node.id.clone())
     }
 
     fn push_node(&mut self, node: Node) -> bool {
@@ -228,41 +232,6 @@ impl<'a> EnrichmentContext<'a> {
                 file_matches(&node.file, file_path) && line_matches(node.span.start[0], body_line)
             })
             .min_by_key(|node| node.span.start[0].abs_diff(body_line))
-            .map(|node| node.id.clone())
-    }
-
-    fn matching_view_id(
-        &self,
-        file_path: &Path,
-        view_node: tree_sitter::Node,
-        name: &str,
-    ) -> Option<String> {
-        let span = make_span(view_node);
-        let candidates = self.view_candidates_by_name.get(name)?;
-
-        let exact = candidates
-            .iter()
-            .map(|snapshot_index| &self.node_snapshots[*snapshot_index])
-            .find(|node| {
-                file_matches(&node.file, file_path)
-                    && node.span.start == span.start
-                    && node.span.end == span.end
-            });
-        if let Some(node) = exact {
-            return Some(node.id.clone());
-        }
-
-        candidates
-            .iter()
-            .map(|snapshot_index| &self.node_snapshots[*snapshot_index])
-            .filter(|node| {
-                file_matches(&node.file, file_path)
-                    && line_matches(node.span.start[0], span.start[0])
-            })
-            .min_by_key(|node| {
-                node.span.start[0].abs_diff(span.start[0])
-                    + node.span.start[1].abs_diff(span.start[1])
-            })
             .map(|node| node.id.clone())
     }
 }
@@ -2855,7 +2824,7 @@ fn extract_swiftui_declaration_structure(
 }
 
 fn type_text_looks_like_swiftui_view(type_text: &str) -> bool {
-    let trimmed = type_text.trim();
+    let trimmed = normalized_swiftui_type_text(type_text);
     if trimmed.is_empty() {
         return false;
     }
@@ -2881,20 +2850,61 @@ fn type_text_looks_like_swiftui_view(type_text: &str) -> bool {
     base == "View" || base.ends_with("View") || is_builtin_swiftui_view(base)
 }
 
-fn declaration_returns_swiftui_view(node: tree_sitter::Node, source: &[u8]) -> bool {
-    let Ok(text) = node.utf8_text(source) else {
-        return false;
-    };
+fn normalized_swiftui_type_text(type_text: &str) -> &str {
+    let mut trimmed = type_text.trim().trim_start_matches(':').trim();
+    loop {
+        let without_optional = trimmed.trim_end_matches(['?', '!']).trim();
+        let stripped_parens = strip_outer_parentheses(without_optional);
+        if stripped_parens == trimmed {
+            return stripped_parens;
+        }
+        trimmed = stripped_parens;
+    }
+}
 
+fn strip_outer_parentheses(text: &str) -> &str {
+    if !(text.starts_with('(') && text.ends_with(')')) {
+        return text;
+    }
+
+    let mut depth = 0usize;
+    for (idx, ch) in text.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 && idx + ch.len_utf8() != text.len() {
+                    return text;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if depth == 0 {
+        &text[1..text.len() - 1]
+    } else {
+        text
+    }
+}
+
+fn declaration_returns_swiftui_view(node: tree_sitter::Node, source: &[u8]) -> bool {
     match node.kind() {
-        "property_declaration" => text
-            .split_once(':')
-            .map(|(_, type_text)| type_text_looks_like_swiftui_view(type_text))
-            .unwrap_or(false),
-        "function_declaration" | "protocol_function_declaration" => text
-            .split_once("->")
-            .map(|(_, type_text)| type_text_looks_like_swiftui_view(type_text))
-            .unwrap_or(false),
+        "property_declaration" => {
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor)
+                .find(|child| child.kind() == "type_annotation")
+                .and_then(|type_node| type_node.utf8_text(source).ok())
+                .is_some_and(type_text_looks_like_swiftui_view)
+        }
+        "function_declaration" | "protocol_function_declaration" => {
+            let Ok(text) = node.utf8_text(source) else {
+                return false;
+            };
+            text.split_once("->")
+                .map(|(_, type_text)| type_text_looks_like_swiftui_view(type_text))
+                .unwrap_or(false)
+        }
         _ => false,
     }
 }
@@ -2912,6 +2922,10 @@ fn file_matches(node_file: &Path, file_path: &Path) -> bool {
             .is_some_and(|(left, right)| left == right)
 }
 
+fn swiftui_owner_id(node_id: &str) -> Option<&str> {
+    node_id.split_once("::view:").map(|(owner_id, _)| owner_id)
+}
+
 fn line_matches(node_line: usize, ast_row_zero_based: usize) -> bool {
     node_line.abs_diff(ast_row_zero_based) <= 1
 }
@@ -2924,9 +2938,8 @@ struct LocalizationWrapperMetadata {
     arg_count: usize,
 }
 
-#[derive(Debug, Clone)]
-struct LocalizedTextCall<'a> {
-    node: tree_sitter::Node<'a>,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LocalizationReferenceData {
     ref_kind: &'static str,
     wrapper_name: Option<String>,
     wrapper_base: Option<String>,
@@ -2934,19 +2947,7 @@ struct LocalizedTextCall<'a> {
     literal: Option<String>,
 }
 
-static LOCALIZED_TEXT_WRAPPER_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(
-        r#"(?s)^\s*Text\s*\(\s*(?:i18n\s*:\s*)?(?:(?:([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)|\.)([A-Za-z_][A-Za-z0-9_]*)\s*(?:\((.*)\))?\s*(?:\)|,)"#,
-    )
-    .expect("localized text wrapper regex should compile")
-});
-
-static LOCALIZED_TEXT_LITERAL_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(
-        r#"(?s)^\s*Text\s*\(\s*"((?:[^"\\]|\\.)*)"(?:\s*,\s*bundle\s*:\s*[^,)]+)?\s*(?:\)|,)"#,
-    )
-    .expect("localized text literal regex should compile")
-});
+type LocalizationBindings = HashMap<String, Vec<LocalizationReferenceData>>;
 
 static L10N_TR_METADATA_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(
@@ -2960,6 +2961,27 @@ static L10N_RESOURCE_METADATA_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
         r#"(?s)L10nResource\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*table:\s*"((?:[^"\\]|\\.)*)".*?fallback:\s*"((?:[^"\\]|\\.)*)""#,
     )
     .expect("L10nResource metadata regex should compile")
+});
+
+static LOCALIZATION_WRAPPER_EXPR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r#"(?s)^\s*(?:(?:([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)|\.)([A-Za-z_][A-Za-z0-9_]*)\s*(?:\((.*)\))?\s*$"#,
+    )
+    .expect("localization wrapper expression regex should compile")
+});
+
+static LOCALIZED_TEXT_WRAPPER_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r#"(?s)^\s*Text\s*\(\s*((?:i18n)\s*:\s*)?(?:(?:([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*)|\.)([A-Za-z_][A-Za-z0-9_]*)\s*(?:\((.*)\))?\s*(?:\)|,)"#,
+    )
+    .expect("localized text wrapper regex should compile")
+});
+
+static LOCALIZED_TEXT_LITERAL_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r#"(?s)^\s*Text\s*\(\s*"((?:[^"\\]|\\.)*)"(?:\s*,\s*bundle\s*:\s*[^,)]+)?\s*(?:\)|,)"#,
+    )
+    .expect("localized text literal regex should compile")
 });
 
 fn decode_swift_string_literal(raw: &str) -> String {
@@ -3079,72 +3101,6 @@ fn collect_localizable_wrapper_nodes<'a>(
     }
 }
 
-fn parse_localized_text_call<'a>(
-    node: tree_sitter::Node<'a>,
-    source: &[u8],
-) -> Option<LocalizedTextCall<'a>> {
-    if node.kind() != "call_expression" {
-        return None;
-    }
-    if swiftui_call_name(node, source).as_deref() != Some("Text") {
-        return None;
-    }
-
-    let text = node.utf8_text(source).ok()?.trim();
-    if text.starts_with("Text(verbatim:") {
-        return None;
-    }
-
-    if let Some(captures) = LOCALIZED_TEXT_WRAPPER_RE.captures(text) {
-        let args = captures.get(3).map(|value| value.as_str()).unwrap_or("");
-        return Some(LocalizedTextCall {
-            node,
-            ref_kind: "wrapper",
-            wrapper_name: Some(captures.get(2)?.as_str().to_string()),
-            wrapper_base: captures.get(1).map(|value| value.as_str().to_string()),
-            arg_count: count_top_level_call_args(args),
-            literal: None,
-        });
-    }
-
-    LOCALIZED_TEXT_LITERAL_RE
-        .captures(text)
-        .map(|captures| LocalizedTextCall {
-            node,
-            ref_kind: "literal",
-            wrapper_name: None,
-            wrapper_base: None,
-            arg_count: 0,
-            literal: Some(decode_swift_string_literal(
-                captures.get(1).unwrap().as_str(),
-            )),
-        })
-}
-
-fn collect_localized_text_calls<'a>(
-    node: tree_sitter::Node<'a>,
-    source: &[u8],
-    out: &mut Vec<LocalizedTextCall<'a>>,
-) {
-    if let Some(call) = parse_localized_text_call(node, source) {
-        out.push(call);
-    }
-
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        collect_localized_text_calls(child, source, out);
-    }
-}
-
-fn matching_synthetic_view_id(
-    context: &EnrichmentContext<'_>,
-    file_path: &Path,
-    view_node: tree_sitter::Node,
-    name: &str,
-) -> Option<String> {
-    context.matching_view_id(file_path, view_node, name)
-}
-
 fn apply_wrapper_metadata(
     context: &mut EnrichmentContext<'_>,
     node_id: &str,
@@ -3167,43 +3123,588 @@ fn apply_wrapper_metadata(
     );
 }
 
-fn apply_localized_text_call(
+fn apply_localization_reference(
     context: &mut EnrichmentContext<'_>,
+    file_path: &Path,
     file: &str,
-    view_id: &str,
-    call: &LocalizedTextCall<'_>,
+    usage_id: &str,
+    usage_span: &Span,
+    reference: &LocalizationReferenceData,
+    argument_label: Option<&str>,
 ) {
     {
-        let Some(node) = context.node_mut(view_id) else {
+        let Some(node) = context.node_mut(usage_id) else {
             return;
         };
         node.metadata
-            .insert("l10n.ref_kind".to_string(), call.ref_kind.to_string());
-        node.metadata
-            .insert("l10n.arg_count".to_string(), call.arg_count.to_string());
-        if let Some(wrapper_name) = &call.wrapper_name {
+            .insert("l10n.ref_kind".to_string(), reference.ref_kind.to_string());
+        node.metadata.insert(
+            "l10n.arg_count".to_string(),
+            reference.arg_count.to_string(),
+        );
+        if let Some(wrapper_name) = &reference.wrapper_name {
             node.metadata
                 .insert("l10n.wrapper_name".to_string(), wrapper_name.clone());
         }
-        if let Some(literal) = &call.literal {
+        if let Some(wrapper_base) = &reference.wrapper_base {
+            node.metadata
+                .insert("l10n.wrapper_base".to_string(), wrapper_base.clone());
+        }
+        if let Some(literal) = &reference.literal {
             node.metadata
                 .insert("l10n.literal".to_string(), literal.clone());
         }
+        if let Some(label) = argument_label {
+            node.metadata
+                .insert("l10n.argument_label".to_string(), label.to_string());
+        }
     }
 
-    if let Some(wrapper_name) = &call.wrapper_name {
+    if let Some(wrapper_name) = &reference.wrapper_name
+        && let Some(wrapper_id) = context.local_wrapper_id(file_path, wrapper_name)
+    {
         context.emit_edge(Edge {
-            source: view_id.to_string(),
-            target: make_id(file, &[], wrapper_name),
+            source: usage_id.to_string(),
+            target: wrapper_id,
             kind: EdgeKind::TypeRef,
             confidence: 0.85,
             direction: None,
-            operation: call.wrapper_base.clone(),
+            operation: reference.wrapper_base.clone(),
             condition: None,
             async_boundary: None,
-            provenance: node_edge_provenance(file, call.node, view_id),
+            provenance: vec![EdgeProvenance {
+                file: file.into(),
+                span: usage_span.clone(),
+                symbol_id: usage_id.to_string(),
+            }],
         });
     }
+}
+
+fn apply_localization_reference_to_span(
+    context: &mut EnrichmentContext<'_>,
+    file_path: &Path,
+    file: &str,
+    usage_id: &str,
+    usage_span: &Span,
+    reference: &LocalizationReferenceData,
+    argument_label: Option<&str>,
+) {
+    apply_localization_reference(
+        context,
+        file_path,
+        file,
+        usage_id,
+        usage_span,
+        reference,
+        argument_label,
+    );
+}
+
+fn emit_localization_usage_node(
+    context: &mut EnrichmentContext<'_>,
+    parent_id: &str,
+    file: &str,
+    label: &str,
+    span: &Span,
+    unique_suffix: Option<&str>,
+) -> String {
+    let suffix = unique_suffix
+        .map(sanitize_id_component)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!(":{value}"))
+        .unwrap_or_default();
+    let id = format!(
+        "{parent_id}::l10n:{}{}@{}:{}:{}:{}",
+        sanitize_id_component(label),
+        suffix,
+        span.start[0],
+        span.start[1],
+        span.end[0],
+        span.end[1]
+    );
+    context.push_node(Node {
+        id: id.clone(),
+        kind: NodeKind::Property,
+        name: label.to_string(),
+        file: file.into(),
+        span: span.clone(),
+        visibility: Visibility::Private,
+        metadata: HashMap::new(),
+        role: None,
+        signature: None,
+        doc_comment: None,
+        module: None,
+        snippet: None,
+    });
+    context.emit_edge(Edge {
+        source: parent_id.to_string(),
+        target: id.clone(),
+        kind: EdgeKind::Contains,
+        confidence: 1.0,
+        direction: None,
+        operation: None,
+        condition: None,
+        async_boundary: None,
+        provenance: vec![EdgeProvenance {
+            file: file.into(),
+            span: span.clone(),
+            symbol_id: parent_id.to_string(),
+        }],
+    });
+    id
+}
+
+fn localized_reference_for_expression_text(text: &str) -> Option<LocalizationReferenceData> {
+    let trimmed = text.trim();
+    if let Some(captures) = LOCALIZED_TEXT_LITERAL_RE.captures(&format!("Text({trimmed})")) {
+        return Some(LocalizationReferenceData {
+            ref_kind: "literal",
+            wrapper_name: None,
+            wrapper_base: None,
+            arg_count: 0,
+            literal: Some(decode_swift_string_literal(captures.get(1)?.as_str())),
+        });
+    }
+
+    if let Some(reference) = localized_i18n_call_reference(trimmed, "Text") {
+        return Some(reference);
+    }
+
+    if let Some(reference) = localized_i18n_call_reference(trimmed, "String") {
+        return Some(reference);
+    }
+
+    let captures = LOCALIZATION_WRAPPER_EXPR_RE.captures(trimmed)?;
+    let wrapper_base = captures.get(1).map(|value| value.as_str().to_string());
+    if !looks_like_localized_wrapper_expression(trimmed, wrapper_base.as_deref()) {
+        return None;
+    }
+    let args = captures.get(3).map(|value| value.as_str()).unwrap_or("");
+    Some(LocalizationReferenceData {
+        ref_kind: "wrapper",
+        wrapper_name: Some(captures.get(2)?.as_str().to_string()),
+        wrapper_base,
+        arg_count: count_top_level_call_args(args),
+        literal: None,
+    })
+}
+
+fn looks_like_localized_wrapper_expression(text: &str, wrapper_base: Option<&str>) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.starts_with('.')
+        || trimmed.contains("i18n:")
+        || trimmed.contains("i10n:")
+        || matches_localization_wrapper_base(wrapper_base)
+}
+
+fn matches_localization_wrapper_base(wrapper_base: Option<&str>) -> bool {
+    match wrapper_base.map(str::trim) {
+        None => false,
+        Some(base) if base.is_empty() => false,
+        Some(base) => {
+            let normalized = base.rsplit('.').next().unwrap_or(base);
+            matches!(
+                normalized,
+                "L10n" | "L10nResource" | "l10n" | "i18n" | "i10n"
+            ) || normalized.ends_with("L10n")
+                || normalized.ends_with("Resource")
+                || normalized.ends_with("Strings")
+                || normalized
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_ascii_uppercase())
+        }
+    }
+}
+
+fn expression_maybe_string_text(text: &str) -> bool {
+    let trimmed = text.trim();
+    !trimmed.is_empty()
+        && trimmed != "true"
+        && trimmed != "false"
+        && !trimmed.starts_with('{')
+        && !trimmed.starts_with('[')
+        && !trimmed.starts_with('#')
+        && trimmed.parse::<f64>().is_err()
+}
+
+fn is_text_like_argument_label(label: &str) -> bool {
+    let lower = label.to_ascii_lowercase();
+    [
+        "text",
+        "title",
+        "subtitle",
+        "message",
+        "label",
+        "placeholder",
+        "caption",
+        "hint",
+        "prompt",
+        "description",
+        "header",
+        "footer",
+    ]
+    .iter()
+    .any(|needle| lower == *needle || lower.ends_with(needle))
+}
+
+fn localized_i18n_call_reference(text: &str, callee: &str) -> Option<LocalizationReferenceData> {
+    let trimmed = text.trim();
+    let prefix = format!("{callee}(");
+    if !trimmed.starts_with(&prefix) {
+        return None;
+    }
+
+    let args = call_argument_list(trimmed)?;
+    for segment in split_top_level_arguments(args) {
+        let (label, value) = split_argument_label(segment);
+        if !matches!(label.as_deref(), Some("i18n" | "i10n")) {
+            continue;
+        }
+
+        if let Some(mut reference) = localized_reference_for_expression_text(value) {
+            if reference.wrapper_base.is_none() {
+                reference.wrapper_base = Some("L10nResource".to_string());
+            }
+            return Some(reference);
+        }
+
+        return Some(LocalizationReferenceData {
+            ref_kind: "possible_wrapper",
+            wrapper_name: None,
+            wrapper_base: Some("L10nResource".to_string()),
+            arg_count: 0,
+            literal: None,
+        });
+    }
+
+    None
+}
+
+fn localized_text_references_from_text(
+    text: &str,
+    bindings: Option<&LocalizationBindings>,
+) -> Vec<LocalizationReferenceData> {
+    let trimmed = text.trim();
+    if trimmed.starts_with("Text(verbatim:") {
+        return Vec::new();
+    }
+
+    let binding_references = if let Some(args) = call_argument_list(trimmed) {
+        split_top_level_arguments(args)
+            .into_iter()
+            .next()
+            .map(|first_argument| {
+                let (_, value) = split_argument_label(first_argument);
+                simple_identifier_binding_references(value, bindings)
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if !binding_references.is_empty() {
+        return binding_references;
+    }
+
+    if let Some(reference) = localized_i18n_call_reference(trimmed, "Text") {
+        return vec![reference];
+    }
+
+    if let Some(captures) = LOCALIZED_TEXT_WRAPPER_RE.captures(trimmed) {
+        let Some(wrapper_name) = captures.get(3).map(|value| value.as_str().to_string()) else {
+            return Vec::new();
+        };
+        let uses_i18n_label = captures.get(1).is_some();
+        let args = captures.get(4).map(|value| value.as_str()).unwrap_or("");
+        return vec![LocalizationReferenceData {
+            ref_kind: "wrapper",
+            wrapper_name: Some(wrapper_name),
+            wrapper_base: captures
+                .get(2)
+                .map(|value| value.as_str().to_string())
+                .or_else(|| uses_i18n_label.then_some("L10nResource".to_string())),
+            arg_count: count_top_level_call_args(args),
+            literal: None,
+        }];
+    }
+
+    if let Some(captures) = LOCALIZED_TEXT_LITERAL_RE.captures(trimmed) {
+        let Some(literal) = captures
+            .get(1)
+            .map(|value| decode_swift_string_literal(value.as_str()))
+        else {
+            return Vec::new();
+        };
+        return vec![LocalizationReferenceData {
+            ref_kind: "literal",
+            wrapper_name: None,
+            wrapper_base: None,
+            arg_count: 0,
+            literal: Some(literal),
+        }];
+    }
+
+    if trimmed.starts_with("Text(") && trimmed.ends_with(')') {
+        if let Some(args) = call_argument_list(trimmed)
+            && let Some(first_argument) = split_top_level_arguments(args).into_iter().next()
+        {
+            let (label, value) = split_argument_label(first_argument);
+            if label.as_deref() == Some("i18n") && expression_maybe_string_text(value) {
+                return vec![LocalizationReferenceData {
+                    ref_kind: "possible_wrapper",
+                    wrapper_name: None,
+                    wrapper_base: Some("L10nResource".to_string()),
+                    arg_count: 0,
+                    literal: None,
+                }];
+            }
+        }
+
+        return vec![LocalizationReferenceData {
+            ref_kind: "possible_string",
+            wrapper_name: None,
+            wrapper_base: None,
+            arg_count: 0,
+            literal: None,
+        }];
+    }
+
+    Vec::new()
+}
+
+fn call_argument_list(text: &str) -> Option<&str> {
+    let open = text.find('(')?;
+    let close = text.rfind(')')?;
+    (close > open).then_some(&text[open + 1..close])
+}
+
+fn split_top_level_arguments(args: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in args.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '(' => paren_depth += 1,
+            ')' => paren_depth = paren_depth.saturating_sub(1),
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth = bracket_depth.saturating_sub(1),
+            '{' => brace_depth += 1,
+            '}' => brace_depth = brace_depth.saturating_sub(1),
+            ',' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                parts.push(args[start..idx].trim());
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+
+    let tail = args[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail);
+    }
+
+    parts
+}
+
+fn split_argument_label(segment: &str) -> (Option<String>, &str) {
+    let trimmed = segment.trim();
+    let Some(colon) = trimmed.find(':') else {
+        return (None, trimmed);
+    };
+    let label = trimmed[..colon].trim();
+    if label.is_empty()
+        || !label
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return (None, trimmed);
+    }
+    (Some(label.to_string()), trimmed[colon + 1..].trim())
+}
+
+fn simple_identifier_binding_references(
+    text: &str,
+    bindings: Option<&LocalizationBindings>,
+) -> Vec<LocalizationReferenceData> {
+    let Some(bindings) = bindings else {
+        return Vec::new();
+    };
+
+    let trimmed = text.trim();
+    if trimmed.is_empty()
+        || !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+    {
+        return Vec::new();
+    }
+
+    bindings.get(trimmed).cloned().unwrap_or_default()
+}
+
+fn push_unique_localization_reference(
+    references: &mut Vec<LocalizationReferenceData>,
+    reference: LocalizationReferenceData,
+) {
+    if !references.contains(&reference) {
+        references.push(reference);
+    }
+}
+
+fn localization_reference_suffix(reference: &LocalizationReferenceData, index: usize) -> String {
+    reference
+        .wrapper_name
+        .clone()
+        .or_else(|| reference.literal.clone())
+        .or_else(|| reference.wrapper_base.clone())
+        .unwrap_or_else(|| format!("ref{index}"))
+}
+
+fn collect_localization_references_in_subtree(
+    node: tree_sitter::Node,
+    source: &[u8],
+    references: &mut Vec<LocalizationReferenceData>,
+) {
+    match node.kind() {
+        "call_expression" | "navigation_expression" => {
+            if let Ok(text) = node.utf8_text(source)
+                && let Some(reference) = localized_reference_for_expression_text(text)
+            {
+                push_unique_localization_reference(references, reference);
+                return;
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_localization_references_in_subtree(child, source, references);
+    }
+}
+
+fn collect_localization_bindings(
+    node: tree_sitter::Node,
+    source: &[u8],
+    bindings: &mut LocalizationBindings,
+) {
+    match node.kind() {
+        "class_declaration"
+        | "protocol_declaration"
+        | "function_declaration"
+        | "protocol_function_declaration"
+        | "init_declaration"
+        | "deinit_declaration"
+        | "lambda_literal" => return,
+        "property_declaration" => {
+            if let Some(name) = find_pattern_name(node, source) {
+                let mut references = Vec::new();
+                collect_localization_references_in_subtree(node, source, &mut references);
+                if !references.is_empty() {
+                    let entry = bindings.entry(name).or_default();
+                    for reference in references {
+                        push_unique_localization_reference(entry, reference);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        collect_localization_bindings(child, source, bindings);
+    }
+}
+
+fn localization_bindings_for_declaration(
+    node: tree_sitter::Node,
+    source: &[u8],
+) -> LocalizationBindings {
+    let mut bindings = LocalizationBindings::new();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if matches!(child.kind(), "computed_property" | "function_body") {
+            collect_localization_bindings(child, source, &mut bindings);
+        }
+    }
+    bindings
+}
+
+fn custom_view_localization_arguments_from_text(
+    text: &str,
+    bindings: Option<&LocalizationBindings>,
+) -> Vec<(Option<String>, LocalizationReferenceData)> {
+    let Some(args) = call_argument_list(text) else {
+        return Vec::new();
+    };
+
+    let mut localized_args = Vec::new();
+    for segment in split_top_level_arguments(args) {
+        let (label, value) = split_argument_label(segment);
+        let accepts_reference = label
+            .as_deref()
+            .is_some_and(|label| label == "i18n" || is_text_like_argument_label(label));
+        let binding_references = simple_identifier_binding_references(value, bindings);
+        if accepts_reference && !binding_references.is_empty() {
+            localized_args.extend(
+                binding_references
+                    .into_iter()
+                    .map(|reference| (label.clone(), reference)),
+            );
+            continue;
+        }
+
+        let reference = if let Some(reference) = localized_reference_for_expression_text(value) {
+            reference
+        } else if label.as_deref() == Some("i18n") && expression_maybe_string_text(value) {
+            LocalizationReferenceData {
+                ref_kind: "possible_wrapper",
+                wrapper_name: None,
+                wrapper_base: Some("L10nResource".to_string()),
+                arg_count: 0,
+                literal: None,
+            }
+        } else if label.as_deref().is_some_and(is_text_like_argument_label)
+            && expression_maybe_string_text(value)
+        {
+            LocalizationReferenceData {
+                ref_kind: "possible_string",
+                wrapper_name: None,
+                wrapper_base: None,
+                arg_count: 0,
+                literal: None,
+            }
+        } else {
+            continue;
+        };
+        if !accepts_reference {
+            continue;
+        }
+        localized_args.push((label, reference));
+    }
+
+    localized_args
 }
 
 fn collect_swiftui_declaration_nodes<'a>(
@@ -3586,6 +4087,46 @@ fn find_enclosing_node_index(result: &ExtractionResult, line: usize) -> Option<u
     best.map(|(idx, _)| idx)
 }
 
+struct SourceSpanIndex {
+    line_starts: Vec<usize>,
+}
+
+impl SourceSpanIndex {
+    fn new(source: &[u8]) -> Self {
+        let mut line_starts = vec![0usize];
+        for (idx, &byte) in source.iter().enumerate() {
+            if byte == b'\n' {
+                line_starts.push(idx + 1);
+            }
+        }
+        Self { line_starts }
+    }
+
+    fn byte_offset(&self, line: usize, column: usize, source: &[u8]) -> Option<usize> {
+        let start = *self.line_starts.get(line)?;
+        let next_line_start = self
+            .line_starts
+            .get(line + 1)
+            .copied()
+            .unwrap_or(source.len());
+        let line_slice = source.get(start..next_line_start)?;
+        let mut remaining = column;
+        for (offset, _) in std::str::from_utf8(line_slice).ok()?.char_indices() {
+            if remaining == 0 {
+                return Some(start + offset);
+            }
+            remaining -= 1;
+        }
+        (remaining == 0).then_some(next_line_start.saturating_sub(1))
+    }
+
+    fn text_for_span<'a>(&self, source: &'a [u8], span: &Span) -> Option<&'a str> {
+        let start = self.byte_offset(span.start[0], span.start[1], source)?;
+        let end = self.byte_offset(span.end[0], span.end[1], source)?;
+        std::str::from_utf8(source.get(start..end)?).ok()
+    }
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 pub fn enrich_localization_metadata(
@@ -3605,6 +4146,7 @@ pub fn enrich_localization_metadata_with_tree(
 ) -> anyhow::Result<()> {
     let mut context = EnrichmentContext::new(result);
     let file_str = file_path.to_string_lossy().to_string();
+    let source_spans = SourceSpanIndex::new(source);
 
     let mut wrapper_nodes = Vec::new();
     collect_localizable_wrapper_nodes(tree.root_node(), source, &mut wrapper_nodes);
@@ -3620,14 +4162,94 @@ pub fn enrich_localization_metadata_with_tree(
         apply_wrapper_metadata(&mut context, &node_id, &wrapper_metadata);
     }
 
-    let mut localized_text_calls = Vec::new();
-    collect_localized_text_calls(tree.root_node(), source, &mut localized_text_calls);
-    for call in localized_text_calls {
-        let Some(view_id) = matching_synthetic_view_id(&context, file_path, call.node, "Text")
+    let mut declaration_nodes = Vec::new();
+    collect_swiftui_declaration_nodes(tree.root_node(), source, &mut declaration_nodes);
+    let mut localization_bindings_by_owner: HashMap<String, LocalizationBindings> = HashMap::new();
+    for declaration_node in declaration_nodes {
+        let Some(decl_id) =
+            matching_swiftui_declaration_id(&context, file_path, declaration_node, source)
         else {
             continue;
         };
-        apply_localized_text_call(&mut context, &file_str, &view_id, &call);
+        let bindings = localization_bindings_for_declaration(declaration_node, source);
+        if !bindings.is_empty() {
+            localization_bindings_by_owner.insert(decl_id, bindings);
+        }
+    }
+
+    let view_nodes = context.node_snapshots.clone();
+    for view_node in view_nodes {
+        if view_node.kind != NodeKind::View || !file_matches(&view_node.file, file_path) {
+            continue;
+        }
+        let Some(text) = source_spans.text_for_span(source, &view_node.span) else {
+            continue;
+        };
+        let bindings = swiftui_owner_id(&view_node.id)
+            .and_then(|owner_id| localization_bindings_by_owner.get(owner_id));
+
+        if view_node.name == "Text" {
+            let references = localized_text_references_from_text(text, bindings);
+            if let Some(reference) = references.first() {
+                apply_localization_reference_to_span(
+                    &mut context,
+                    file_path,
+                    &file_str,
+                    &view_node.id,
+                    &view_node.span,
+                    reference,
+                    None,
+                );
+            }
+            for (index, reference) in references.iter().enumerate().skip(1) {
+                let usage_id = emit_localization_usage_node(
+                    &mut context,
+                    &view_node.id,
+                    &file_str,
+                    "text",
+                    &view_node.span,
+                    Some(&localization_reference_suffix(reference, index)),
+                );
+                apply_localization_reference_to_span(
+                    &mut context,
+                    file_path,
+                    &file_str,
+                    &usage_id,
+                    &view_node.span,
+                    reference,
+                    None,
+                );
+            }
+            continue;
+        }
+
+        if is_builtin_swiftui_view(&view_node.name) {
+            continue;
+        }
+
+        for (index, (label, reference)) in
+            custom_view_localization_arguments_from_text(text, bindings)
+                .into_iter()
+                .enumerate()
+        {
+            let usage_id = emit_localization_usage_node(
+                &mut context,
+                &view_node.id,
+                &file_str,
+                label.as_deref().unwrap_or("text"),
+                &view_node.span,
+                Some(&localization_reference_suffix(&reference, index)),
+            );
+            apply_localization_reference_to_span(
+                &mut context,
+                file_path,
+                &file_str,
+                &usage_id,
+                &view_node.span,
+                &reference,
+                label.as_deref(),
+            );
+        }
     }
 
     Ok(())
@@ -5207,8 +5829,8 @@ class GameManager {
             .collect();
         assert_eq!(
             localized_texts.len(),
-            5,
-            "expected wrapper and literal Text usages, but not verbatim or dynamic text"
+            6,
+            "expected wrapper, literal, and possible string Text usages, but not verbatim text"
         );
 
         let account_text = localized_texts
@@ -5243,6 +5865,13 @@ class GameManager {
                 .get("l10n.arg_count")
                 .map(|value| value.as_str()),
             Some("0")
+        );
+        assert_eq!(
+            common_share_text
+                .metadata
+                .get("l10n.wrapper_base")
+                .map(|value| value.as_str()),
+            Some("L10nResource")
         );
 
         let common_count_text = localized_texts
@@ -5279,6 +5908,20 @@ class GameManager {
             Some("Party Game & Voice Chat")
         );
 
+        let possible_string_text = localized_texts
+            .iter()
+            .find(|node| {
+                node.metadata
+                    .get("l10n.ref_kind")
+                    .map(|value| value.as_str())
+                    == Some("possible_string")
+            })
+            .expect("dynamic string Text usage should be marked as possible");
+        assert!(
+            !possible_string_text.metadata.contains_key("l10n.literal"),
+            "possible string usages should not pretend to have a concrete literal"
+        );
+
         assert!(
             result.edges.iter().any(|edge| {
                 edge.kind == EdgeKind::TypeRef
@@ -5286,6 +5929,291 @@ class GameManager {
                     && edge.target.ends_with("accountForgetPassword")
             }),
             "localized Text usage should emit a type-ref edge to its wrapper symbol"
+        );
+    }
+
+    #[test]
+    fn enrich_localization_metadata_marks_custom_view_string_arguments() {
+        let result = extract_with_localization(
+            r#"
+            import SwiftUI
+
+            public enum L10n {
+                public static var welcomeTitle: String {
+                    L10n.tr("Localizable", "welcome_title", fallback: "Welcome")
+                }
+            }
+
+            struct TitleRow: View {
+                let title: String
+                let subtitle: String
+
+                var body: some View {
+                    VStack {
+                        Text(title)
+                        Text(subtitle)
+                    }
+                }
+            }
+
+            struct ContentView: View {
+                let subtitle: String
+
+                var body: some View {
+                    TitleRow(title: L10n.welcomeTitle, subtitle: subtitle)
+                }
+            }
+            "#,
+        );
+        let wrapper_argument = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.metadata
+                    .get("l10n.argument_label")
+                    .map(|value| value.as_str())
+                    == Some("title")
+                    && node
+                        .metadata
+                        .get("l10n.ref_kind")
+                        .map(|value| value.as_str())
+                        == Some("wrapper")
+            })
+            .expect("custom view title argument should be marked");
+        assert!(
+            result.edges.iter().any(|edge| {
+                edge.kind == EdgeKind::TypeRef
+                    && edge.source == wrapper_argument.id
+                    && edge.target.ends_with("welcomeTitle")
+            }),
+            "custom view wrapper arguments should link to wrapper symbols"
+        );
+
+        let possible_argument = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.metadata
+                    .get("l10n.argument_label")
+                    .map(|value| value.as_str())
+                    == Some("subtitle")
+                    && node
+                        .metadata
+                        .get("l10n.ref_kind")
+                        .map(|value| value.as_str())
+                        == Some("possible_string")
+            })
+            .expect("dynamic custom view text arguments should be marked as possible");
+        assert!(
+            result.edges.iter().any(|edge| {
+                edge.kind == EdgeKind::Contains
+                    && edge.target == possible_argument.id
+                    && edge.source.contains("TitleRow")
+            }),
+            "custom-view localization markers should sit under the invocation subtree"
+        );
+    }
+
+    #[test]
+    fn localized_text_reference_marks_text_i18n_identifier_as_possible_wrapper() {
+        let text = localized_text_references_from_text("Text(i18n: i18n)", None)
+            .into_iter()
+            .next()
+            .expect("Text(i18n: identifier) should be classified");
+        assert_eq!(text.ref_kind, "possible_wrapper");
+        assert_eq!(text.wrapper_base.as_deref(), Some("L10nResource"));
+    }
+
+    #[test]
+    fn localized_reference_ignores_non_localized_member_access() {
+        assert!(localized_reference_for_expression_text("friendList.isNilOrEmpty").is_none());
+        assert!(localized_reference_for_expression_text("searchUserList.isEmpty").is_none());
+
+        let wrapper = localized_reference_for_expression_text("L10n.welcomeTitle")
+            .expect("L10n wrapper references should still resolve");
+        assert_eq!(wrapper.wrapper_name.as_deref(), Some("welcomeTitle"));
+        assert_eq!(wrapper.wrapper_base.as_deref(), Some("L10n"));
+    }
+
+    #[test]
+    fn enrich_localization_metadata_marks_string_i18n_identifier_in_custom_view_args() {
+        let result = extract_with_localization(
+            r#"
+            import SwiftUI
+
+            public struct L10nResource {
+                public var translation: String { "" }
+            }
+
+            extension String {
+                init(i18n: L10nResource) {
+                    self.init(i18n.translation)
+                }
+            }
+
+            struct TitleRow: View {
+                let title: String
+
+                var body: some View {
+                    Text(title)
+                }
+            }
+
+            struct ContentView: View {
+                let resource: L10nResource
+
+                var body: some View {
+                    TitleRow(title: String(i18n: resource))
+                }
+            }
+            "#,
+        );
+
+        let title_argument = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.metadata
+                    .get("l10n.argument_label")
+                    .map(|value| value.as_str())
+                    == Some("title")
+                    && node
+                        .metadata
+                        .get("l10n.ref_kind")
+                        .map(|value| value.as_str())
+                        == Some("possible_wrapper")
+            })
+            .expect("String(i18n: identifier) should be tracked as a possible wrapper");
+        assert_eq!(
+            title_argument
+                .metadata
+                .get("l10n.wrapper_base")
+                .map(|value| value.as_str()),
+            Some("L10nResource")
+        );
+    }
+
+    #[test]
+    fn extracts_optional_some_view_structure_and_localized_aliases() {
+        let result = extract_with_localization(
+            r#"
+            import SwiftUI
+
+            public struct L10nResource {
+                public init(_ key: String, table: String, bundle: Bundle, fallback: String) {}
+                public var translation: String { "" }
+            }
+
+            extension String {
+                init(i18n: L10nResource) {
+                    self.init(i18n.translation)
+                }
+            }
+
+            extension L10nResource {
+                static let roomShareNoFriends = L10nResource(
+                    "room_share_no_friends",
+                    table: "Localizable",
+                    bundle: .module,
+                    fallback: "No friends"
+                )
+                static let commonSearchEmpty = L10nResource(
+                    "common_search_empty",
+                    table: "Localizable",
+                    bundle: .module,
+                    fallback: "No results"
+                )
+            }
+
+            struct ListEmptyView: View {
+                let title: String
+
+                var body: some View {
+                    Text(title)
+                }
+            }
+
+            struct ContentView: View {
+                let isEmpty: Bool
+
+                private var emptyPlaceholderView: (some View)? {
+                    let title: String? =
+                        if isEmpty {
+                            String(i18n: .roomShareNoFriends)
+                        } else {
+                            String(i18n: .commonSearchEmpty)
+                        }
+
+                    return if let title {
+                        ListEmptyView(title: title)
+                    } else {
+                        nil
+                    }
+                }
+            }
+            "#,
+        );
+
+        let list_empty_view = result
+            .nodes
+            .iter()
+            .find(|node| {
+                node.kind == NodeKind::View
+                    && node.name == "ListEmptyView"
+                    && node.id.contains("emptyPlaceholderView::view:")
+            })
+            .expect("optional some View property should still emit SwiftUI structure");
+        assert!(
+            result.edges.iter().any(|edge| {
+                edge.kind == EdgeKind::TypeRef
+                    && edge.source == list_empty_view.id
+                    && edge.target.ends_with("ListEmptyView")
+            }),
+            "custom view should keep its type-ref edge"
+        );
+
+        let alias_arguments: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.metadata
+                    .get("l10n.argument_label")
+                    .map(|value| value.as_str())
+                    == Some("title")
+                    && node
+                        .metadata
+                        .get("l10n.ref_kind")
+                        .map(|value| value.as_str())
+                        == Some("wrapper")
+            })
+            .collect();
+        assert_eq!(alias_arguments.len(), 2);
+        assert!(
+            alias_arguments.iter().any(|node| {
+                node.metadata
+                    .get("l10n.wrapper_name")
+                    .map(|value| value.as_str())
+                    == Some("roomShareNoFriends")
+            }),
+            "first branch localization should propagate into the custom view argument"
+        );
+        assert!(
+            alias_arguments.iter().any(|node| {
+                node.metadata
+                    .get("l10n.wrapper_name")
+                    .map(|value| value.as_str())
+                    == Some("commonSearchEmpty")
+            }),
+            "second branch localization should propagate into the custom view argument"
+        );
+
+        assert!(
+            alias_arguments.iter().all(|node| {
+                node.metadata
+                    .get("l10n.wrapper_name")
+                    .is_some_and(|value| value != "isEmpty" && value != "isNilOrEmpty")
+            }),
+            "condition helper members should not leak into localized alias bindings"
         );
     }
 }

@@ -345,6 +345,10 @@ fn source_contains_l10n_markers(source: &[u8]) -> bool {
         || bytes_contains(source, b"LocalizedStringKey")
         || bytes_contains(source, b"Text(\"")
         || bytes_contains(source, b"Text(.")
+        || bytes_contains(source, b"Text(i18n:")
+        || bytes_contains(source, b"String(i18n:")
+        || bytes_contains(source, b"i18n:")
+        || bytes_contains(source, b".translation")
         || bytes_contains(source, b"Localizable")
 }
 
@@ -398,7 +402,7 @@ pub fn extract_swift(
             // Parse once, share tree across all enrichment passes.
             // Check which enrichment passes are needed before parsing
             let has_swiftui = source_contains_swiftui_markers(source);
-            let has_l10n = source_contains_l10n_markers(source);
+            let has_l10n = has_swiftui || source_contains_l10n_markers(source);
             let has_assets = source_contains_asset_markers(source);
             let needs_doc = result.nodes.iter().any(|n| n.doc_comment.is_none());
             let needs_parse = needs_doc || has_swiftui || has_l10n || has_assets;
@@ -506,7 +510,7 @@ fn enrich_fallback_result(
     result: &mut ExtractionResult,
 ) -> anyhow::Result<()> {
     let has_swiftui = source_contains_swiftui_markers(source);
-    let has_l10n = source_contains_l10n_markers(source);
+    let has_l10n = has_swiftui || source_contains_l10n_markers(source);
     let has_assets = source_contains_asset_markers(source);
     let needs_tree = has_swiftui || has_l10n || has_assets;
 
@@ -756,9 +760,10 @@ mod discovery_cache_tests {
 #[cfg(test)]
 mod marker_tests {
     use super::{
-        source_contains_asset_markers, source_contains_l10n_markers,
-        source_contains_swiftui_markers,
+        extract_swift_via_fallback_for_tests, source_contains_asset_markers,
+        source_contains_l10n_markers, source_contains_swiftui_markers,
     };
+    use std::path::Path;
 
     #[test]
     fn swiftui_markers_ignore_plain_imports() {
@@ -804,9 +809,48 @@ mod marker_tests {
         assert!(source_contains_l10n_markers(
             br#"Text(.accountForgetPassword)"#
         ));
+        assert!(source_contains_l10n_markers(br#"Text(i18n: .commonShare)"#));
+        assert!(source_contains_l10n_markers(
+            br#"String(i18n: .commonShare)"#
+        ));
         assert!(source_contains_l10n_markers(
             br#"NSLocalizedString("hello", comment: "")"#
         ));
         assert!(source_contains_asset_markers(br#"Image("logo")"#));
+    }
+
+    #[test]
+    fn fallback_runs_l10n_enrichment_for_swiftui_custom_views_without_explicit_markers() {
+        let source = br#"
+        import SwiftUI
+
+        struct TitleRow: View {
+            let title: String
+
+            var body: some View {
+                Text(title)
+            }
+        }
+
+        struct ContentView: View {
+            let title: String
+
+            var body: some View {
+                TitleRow(title: title)
+            }
+        }
+        "#;
+
+        let result =
+            extract_swift_via_fallback_for_tests(source, Path::new("ContentView.swift")).unwrap();
+
+        assert!(
+            result.nodes.iter().any(|node| {
+                node.metadata
+                    .get("l10n.ref_kind")
+                    .is_some_and(|value| value == "possible_string")
+            }),
+            "SwiftUI files should still receive l10n enrichment even without explicit L10n markers"
+        );
     }
 }

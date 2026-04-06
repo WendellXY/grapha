@@ -1835,6 +1835,7 @@ mod tests {
                 reference: LocalizationReference {
                     ref_kind: "wrapper".into(),
                     wrapper_name: Some("welcomeTitle".into()),
+                    wrapper_base: None,
                     wrapper_symbol: None,
                     table: Some("Localizable".into()),
                     key: Some("welcome_title".into()),
@@ -1860,6 +1861,7 @@ mod tests {
                 reference: LocalizationReference {
                     ref_kind: "literal".into(),
                     wrapper_name: None,
+                    wrapper_base: None,
                     wrapper_symbol: None,
                     table: None,
                     key: None,
@@ -1904,6 +1906,7 @@ mod tests {
                     reference: LocalizationReference {
                         ref_kind: "wrapper".into(),
                         wrapper_name: Some("welcomeTitle".into()),
+                        wrapper_base: None,
                         wrapper_symbol: None,
                         table: Some("Localizable".into()),
                         key: Some("welcome_title".into()),

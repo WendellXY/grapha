@@ -191,6 +191,10 @@ fn write_localizable_fixture(path: &std::path::Path, key: &str, value: &str, com
     .unwrap();
 }
 
+fn write_strings_fixture(path: &std::path::Path, key: &str, value: &str) {
+    std::fs::write(path, format!(r#""{key}" = "{value}";"#)).unwrap();
+}
+
 #[test]
 fn index_creates_sqlite_db() {
     let dir = tempfile::tempdir().unwrap();
@@ -487,6 +491,142 @@ fn localize_and_usages_commands_resolve_swiftui_xcstrings() {
     assert_eq!(
         usage_sites[0]["reference"]["wrapper_name"].as_str(),
         Some("accountForgetPassword")
+    );
+}
+
+#[test]
+fn localize_and_usages_commands_resolve_swiftui_strings_with_l10n_resource() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+    let resources_dir = dir.path().join("Resources/en.lproj");
+    std::fs::create_dir_all(&resources_dir).unwrap();
+
+    std::fs::write(
+        dir.path().join("ContentView.swift"),
+        r#"
+        import SwiftUI
+
+        struct ContentView: View {
+            var body: some View {
+                VStack {
+                    Text(i18n: .accountForgetPassword)
+                }
+            }
+        }
+        "#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        dir.path().join("L10nResource.swift"),
+        r#"
+        import SwiftUI
+
+        public struct L10nResource {
+            public let key: String
+            public let table: String
+            public let fallback: String
+
+            public init(_ key: String, table: String, fallback: String) {
+                self.key = key
+                self.table = table
+                self.fallback = fallback
+            }
+
+            public var translation: String {
+                fallback
+            }
+        }
+
+        extension Text {
+            public init(i18n resource: L10nResource) {
+                self.init(resource.translation)
+            }
+        }
+        "#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        dir.path().join("Strings.generated.swift"),
+        r#"
+        import Foundation
+
+        extension L10nResource {
+            public static let accountForgetPassword = L10nResource(
+                "account_forget_password",
+                table: "Localizable",
+                fallback: "Forgot Password"
+            )
+        }
+        "#,
+    )
+    .unwrap();
+
+    write_strings_fixture(
+        &resources_dir.join("Localizable.strings"),
+        "account_forget_password",
+        "Forgot Password",
+    );
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let localize_output = grapha()
+        .args(["l10n", "symbol", "body", "-p", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let localize: Value = serde_json::from_slice(&localize_output).unwrap();
+    let matches = localize["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 1);
+    assert_eq!(
+        matches[0]["record"]["key"].as_str(),
+        Some("account_forget_password")
+    );
+    assert_eq!(
+        matches[0]["record"]["catalog_file"].as_str(),
+        Some("Resources/en.lproj/Localizable.strings")
+    );
+    assert_eq!(
+        matches[0]["reference"]["wrapper_base"].as_str(),
+        Some("L10nResource")
+    );
+
+    let usages_output = grapha()
+        .args([
+            "l10n",
+            "usages",
+            "account_forget_password",
+            "--table",
+            "Localizable",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let usages: Value = serde_json::from_slice(&usages_output).unwrap();
+    let usage_records = usages["records"].as_array().unwrap();
+    assert_eq!(usage_records.len(), 1);
+    assert_eq!(
+        usage_records[0]["record"]["catalog_dir"].as_str(),
+        Some("Resources")
+    );
+    assert_eq!(
+        usage_records[0]["usages"][0]["reference"]["wrapper_base"].as_str(),
+        Some("L10nResource")
     );
 }
 
