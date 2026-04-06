@@ -3301,7 +3301,7 @@ fn looks_like_localized_wrapper_expression(text: &str, wrapper_base: Option<&str
 fn matches_localization_wrapper_base(wrapper_base: Option<&str>) -> bool {
     match wrapper_base.map(str::trim) {
         None => false,
-        Some(base) if base.is_empty() => false,
+        Some("") => false,
         Some(base) => {
             let normalized = base.rsplit('.').next().unwrap_or(base);
             matches!(
