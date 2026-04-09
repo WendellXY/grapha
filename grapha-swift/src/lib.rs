@@ -47,7 +47,11 @@ impl LanguagePlugin for SwiftPlugin {
     }
 
     fn prepare_project(&self, context: &ProjectContext) -> anyhow::Result<()> {
-        prepare_project_index_store(&context.project_root);
+        if context.index_store_enabled {
+            prepare_project_index_store(&context.project_root);
+        } else {
+            clear_index_store_path(&context.project_root);
+        }
         Ok(())
     }
 
@@ -63,6 +67,7 @@ impl LanguagePlugin for SwiftPlugin {
             &context.relative_path,
             None,
             Some(&context.project_root),
+            context.index_store_enabled,
         )
     }
 
@@ -172,6 +177,17 @@ fn prepare_project_with<F>(
     let _ = refresh_index_store_with(cache, project_root, discover);
 }
 
+fn set_index_store_path_in(
+    cache: &RwLock<HashMap<PathBuf, Option<PathBuf>>>,
+    project_root: &Path,
+    store: Option<PathBuf>,
+) {
+    cache
+        .write()
+        .expect("index-store cache poisoned")
+        .insert(project_cache_key(project_root), store);
+}
+
 /// Force index-store rediscovery for a project, including after a cached miss.
 pub fn refresh_index_store(project_root: &Path) -> Option<PathBuf> {
     refresh_index_store_with(&INDEX_STORE_PATHS, project_root, discover_index_store)
@@ -226,6 +242,19 @@ fn project_cache_key(project_root: &Path) -> PathBuf {
 
 pub fn index_store_path(project_root: &Path) -> Option<PathBuf> {
     index_store_path_in(&INDEX_STORE_PATHS, project_root)
+}
+
+/// Seed or clear the cached index-store path for a project.
+///
+/// This is primarily useful for tests and for explicit cache invalidation when
+/// a caller knows index-store should not be used for a project.
+pub fn set_index_store_path(project_root: &Path, store: Option<PathBuf>) {
+    set_index_store_path_in(&INDEX_STORE_PATHS, project_root, store);
+}
+
+/// Clear any cached index-store path for a project.
+pub fn clear_index_store_path(project_root: &Path) {
+    set_index_store_path(project_root, None);
 }
 
 fn index_store_path_in(
@@ -366,13 +395,40 @@ pub fn extract_swift(
     file_path: &Path,
     explicit_index_store_path: Option<&Path>,
     project_root: Option<&Path>,
+    index_store_enabled: bool,
 ) -> anyhow::Result<ExtractionResult> {
-    if let Some(root) = project_root {
-        init_index_store(root);
+    extract_swift_with_init(
+        source,
+        file_path,
+        explicit_index_store_path,
+        project_root,
+        index_store_enabled,
+        init_index_store,
+    )
+}
+
+fn extract_swift_with_init<F>(
+    source: &[u8],
+    file_path: &Path,
+    explicit_index_store_path: Option<&Path>,
+    project_root: Option<&Path>,
+    index_store_enabled: bool,
+    mut init_index_store_fn: F,
+) -> anyhow::Result<ExtractionResult>
+where
+    F: FnMut(&Path),
+{
+    if index_store_enabled && let Some(root) = project_root {
+        init_index_store_fn(root);
     }
-    let effective_store = explicit_index_store_path
-        .map(Path::to_path_buf)
-        .or_else(|| project_root.and_then(index_store_path));
+
+    let effective_store = if index_store_enabled {
+        explicit_index_store_path
+            .map(Path::to_path_buf)
+            .or_else(|| project_root.and_then(index_store_path))
+    } else {
+        None
+    };
 
     if let Some(store_path) = effective_store.as_deref() {
         // Index store needs absolute file path for matching
@@ -754,6 +810,40 @@ mod discovery_cache_tests {
         assert!(project_b_attempts > 0);
         assert_eq!(index_store_path_in(&cache, project_a), None);
         assert_eq!(index_store_path_in(&cache, project_b), Some(expected));
+    }
+}
+
+#[cfg(test)]
+mod index_store_toggle_tests {
+    use super::extract_swift_with_init;
+    use std::cell::Cell;
+    use std::path::Path;
+
+    #[test]
+    fn disabled_index_store_skips_initializer() {
+        let initializer_called = Cell::new(false);
+        let source = br#"
+        import SwiftUI
+
+        struct ContentView: View {
+            var body: some View {
+                Text("Hello")
+            }
+        }
+        "#;
+
+        let result = extract_swift_with_init(
+            source,
+            Path::new("ContentView.swift"),
+            None,
+            None,
+            false,
+            |_| initializer_called.set(true),
+        )
+        .unwrap();
+
+        assert!(!initializer_called.get());
+        assert!(result.nodes.iter().any(|node| node.name == "ContentView"));
     }
 }
 

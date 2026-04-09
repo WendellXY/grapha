@@ -13,6 +13,7 @@ use crate::module::ModuleMap;
 pub struct ProjectContext {
     pub input_path: PathBuf,
     pub project_root: PathBuf,
+    pub index_store_enabled: bool,
 }
 
 impl ProjectContext {
@@ -21,6 +22,7 @@ impl ProjectContext {
             input_path: input_path.to_path_buf(),
             project_root: std::fs::canonicalize(input_path)
                 .unwrap_or_else(|_| input_path.to_path_buf()),
+            index_store_enabled: true,
         }
     }
 
@@ -36,6 +38,7 @@ pub struct FileContext {
     pub relative_path: PathBuf,
     pub absolute_path: PathBuf,
     pub module_name: Option<String>,
+    pub index_store_enabled: bool,
 }
 
 pub trait GraphPass: Send + Sync {

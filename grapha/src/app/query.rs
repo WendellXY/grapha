@@ -1,0 +1,548 @@
+use std::path::Path;
+use std::time::Instant;
+
+use anyhow::{anyhow, bail};
+use serde::Serialize;
+
+use crate::{
+    AssetCommands, ColorMode, FlowCommands, L10nCommands, OriginTerminalFilter, QueryOutputFormat,
+    SymbolCommands, assets, cache, changes, config, fields, localization, query, render, search,
+};
+
+use super::index::{load_graph, load_graph_for_l10n, open_search_index};
+
+fn query_cache_key(parts: &[&str]) -> String {
+    parts.join("\0")
+}
+
+fn kind_label(kind: grapha_core::graph::NodeKind) -> String {
+    serde_json::to_string(&kind)
+        .unwrap_or_else(|_| format!("{kind:?}"))
+        .trim_matches('"')
+        .to_string()
+}
+
+fn format_ambiguity_error(query: &str, candidates: &[query::QueryCandidate]) -> String {
+    let mut message = format!("ambiguous query: {query}\n");
+    for candidate in candidates {
+        message.push_str(&format!(
+            "  - {} [{}] in {} ({})\n",
+            candidate.name,
+            kind_label(candidate.kind),
+            candidate.file,
+            candidate
+                .locator
+                .as_deref()
+                .unwrap_or(candidate.id.as_str())
+        ));
+    }
+    message.push_str(&format!("hint: {}", query::ambiguity_hint()));
+    message
+}
+
+fn resolve_query_result<T>(
+    result: Result<T, query::QueryResolveError>,
+    missing_label: &str,
+) -> anyhow::Result<T> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(query::QueryResolveError::NotFound { query }) => {
+            Err(anyhow!("{missing_label} not found: {query}"))
+        }
+        Err(query::QueryResolveError::Ambiguous { query, candidates }) => {
+            Err(anyhow!(format_ambiguity_error(&query, &candidates)))
+        }
+        Err(query::QueryResolveError::NotFunction { hint }) => Err(anyhow!(hint)),
+    }
+}
+
+fn resolve_field_set(fields_flag: &Option<String>, path: &Path) -> fields::FieldSet {
+    match fields_flag {
+        Some(f) => fields::FieldSet::parse(f),
+        None => {
+            let cfg = config::load_config(path);
+            if cfg.output.default_fields.is_empty() {
+                fields::FieldSet::default()
+            } else {
+                fields::FieldSet::from_config(&cfg.output.default_fields)
+            }
+        }
+    }
+}
+
+fn resolve_search_field_set(fields_flag: &Option<String>, path: &Path) -> fields::FieldSet {
+    match fields_flag {
+        Some(_) => resolve_field_set(fields_flag, path),
+        None => resolve_field_set(fields_flag, path)
+            .with_id()
+            .with_locator(),
+    }
+}
+
+pub(crate) fn tree_render_options(color: ColorMode) -> render::RenderOptions {
+    use std::io::IsTerminal;
+
+    match color {
+        ColorMode::Always => render::RenderOptions::color(),
+        ColorMode::Never => render::RenderOptions::plain(),
+        ColorMode::Auto => {
+            if std::io::stdout().is_terminal() {
+                render::RenderOptions::color()
+            } else {
+                render::RenderOptions::plain()
+            }
+        }
+    }
+}
+
+fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+fn print_query_result<T, R>(
+    result: &T,
+    format: QueryOutputFormat,
+    render_options: render::RenderOptions,
+    tree_renderer: R,
+) -> anyhow::Result<()>
+where
+    T: Serialize,
+    R: FnOnce(&T, render::RenderOptions) -> String,
+{
+    match format {
+        QueryOutputFormat::Json => print_json(result),
+        QueryOutputFormat::Tree => {
+            println!("{}", tree_renderer(result, render_options));
+            Ok(())
+        }
+    }
+}
+
+fn handle_resolved_graph_query<T, Q, R>(
+    path: &Path,
+    format: QueryOutputFormat,
+    render_options: render::RenderOptions,
+    missing_label: &str,
+    query_fn: Q,
+    tree_renderer: R,
+) -> anyhow::Result<()>
+where
+    T: Serialize,
+    Q: FnOnce(&grapha_core::graph::Graph) -> Result<T, query::QueryResolveError>,
+    R: FnOnce(&T, render::RenderOptions) -> String,
+{
+    let graph = load_graph(path)?;
+    let result = resolve_query_result(query_fn(&graph), missing_label)?;
+    print_query_result(&result, format, render_options, tree_renderer)
+}
+
+fn handle_graph_query<T, Q, R>(
+    path: &Path,
+    format: QueryOutputFormat,
+    render_options: render::RenderOptions,
+    query_fn: Q,
+    tree_renderer: R,
+) -> anyhow::Result<()>
+where
+    T: Serialize,
+    Q: FnOnce(&grapha_core::graph::Graph) -> T,
+    R: FnOnce(&T, render::RenderOptions) -> String,
+{
+    let graph = load_graph(path)?;
+    let result = query_fn(&graph);
+    print_query_result(&result, format, render_options, tree_renderer)
+}
+
+pub(crate) fn handle_symbol_command(
+    command: SymbolCommands,
+    render_options: render::RenderOptions,
+) -> anyhow::Result<()> {
+    match command {
+        SymbolCommands::Search {
+            query,
+            limit,
+            path,
+            kind,
+            module,
+            file,
+            role,
+            fuzzy,
+            context,
+            fields,
+        } => {
+            let field_set = resolve_search_field_set(&fields, &path);
+            let index = open_search_index(&path)?;
+            let options = search::SearchOptions {
+                kind,
+                module,
+                file_glob: file,
+                role,
+                fuzzy,
+            };
+            let t = Instant::now();
+            let results = search::search_filtered(&index, &query, limit, &options)?;
+            let elapsed = t.elapsed();
+            let graph = if search::needs_graph_for_projection(field_set, context) {
+                Some(load_graph(&path)?)
+            } else {
+                None
+            };
+            let projected = search::project_results(&results, graph.as_ref(), field_set, context);
+            print_json(&projected)?;
+
+            eprintln!(
+                "\n  {} results in {:.1}ms",
+                results.len(),
+                elapsed.as_secs_f64() * 1000.0,
+            );
+            Ok(())
+        }
+        SymbolCommands::Context {
+            symbol,
+            path,
+            format,
+            fields,
+        } => {
+            let field_set = resolve_field_set(&fields, &path);
+            let render_options = render_options.with_fields(field_set);
+            handle_resolved_graph_query(
+                &path,
+                format,
+                render_options,
+                "symbol",
+                |graph| query::context::query_context(graph, &symbol),
+                render::render_context_with_options,
+            )
+        }
+        SymbolCommands::Impact {
+            symbol,
+            depth,
+            path,
+            format,
+            fields,
+        } => {
+            let field_set = resolve_field_set(&fields, &path);
+            let render_options = render_options.with_fields(field_set);
+            handle_resolved_graph_query(
+                &path,
+                format,
+                render_options,
+                "symbol",
+                |graph| query::impact::query_impact(graph, &symbol, depth),
+                render::render_impact_with_options,
+            )
+        }
+        SymbolCommands::Complexity { symbol, path } => {
+            let graph = load_graph(&path)?;
+            let result =
+                query::complexity::query_complexity(&graph, &symbol).map_err(|e| anyhow!("{e}"))?;
+            print_json(&result)
+        }
+        SymbolCommands::File { file, path } => {
+            let graph = load_graph(&path)?;
+            let result = query::file_symbols::query_file_symbols(&graph, &file);
+            if result.total == 0 {
+                anyhow::bail!("no symbols found in file matching: {file}");
+            }
+            print_json(&result)
+        }
+    }
+}
+
+pub(crate) fn handle_flow_command(
+    command: FlowCommands,
+    render_options: render::RenderOptions,
+) -> anyhow::Result<()> {
+    match command {
+        FlowCommands::Trace {
+            symbol,
+            direction,
+            depth,
+            path,
+            format,
+            fields,
+        } => match direction {
+            crate::TraceDirection::Forward => {
+                let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
+                handle_resolved_graph_query(
+                    &path,
+                    format,
+                    render_options,
+                    "symbol",
+                    |graph| query::trace::query_trace(graph, &symbol, depth.unwrap_or(10)),
+                    render::render_trace_with_options,
+                )
+            }
+            crate::TraceDirection::Reverse => {
+                let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
+                handle_resolved_graph_query(
+                    &path,
+                    format,
+                    render_options,
+                    "symbol",
+                    |graph| query::reverse::query_reverse(graph, &symbol, depth),
+                    render::render_reverse_with_options,
+                )
+            }
+        },
+        FlowCommands::Graph {
+            symbol,
+            depth,
+            path,
+            format,
+            fields,
+        } => {
+            let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
+            handle_resolved_graph_query(
+                &path,
+                format,
+                render_options,
+                "symbol",
+                |graph| query::dataflow::query_dataflow(graph, &symbol, depth),
+                render::render_dataflow_with_options,
+            )
+        }
+        FlowCommands::Origin {
+            symbol,
+            depth,
+            terminal_kind,
+            path,
+            format,
+            fields,
+        } => {
+            let field_set = resolve_field_set(&fields, &path);
+            let render_options = render_options.with_fields(field_set);
+            handle_resolved_graph_query(
+                &path,
+                format,
+                render_options,
+                "symbol",
+                |graph| {
+                    let result =
+                        query::origin::query_origin_with_path(graph, &symbol, depth, Some(&path))?;
+                    let result = query::origin::filter_origin_result_by_terminal_kind(
+                        result,
+                        terminal_kind.map(OriginTerminalFilter::as_str),
+                    );
+                    Ok(query::origin::project_origin_result(result, field_set))
+                },
+                render::render_origin_with_options,
+            )
+        }
+        FlowCommands::Entries {
+            path,
+            module,
+            file,
+            limit,
+            format,
+            fields,
+        } => {
+            let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
+            handle_graph_query(
+                &path,
+                format,
+                render_options,
+                move |graph| {
+                    query::entries::query_entries_with_options(
+                        graph,
+                        &query::entries::EntriesQueryOptions {
+                            module,
+                            file,
+                            limit,
+                        },
+                    )
+                },
+                render::render_entries_with_options,
+            )
+        }
+    }
+}
+
+pub(crate) fn handle_l10n_command(
+    command: L10nCommands,
+    render_options: render::RenderOptions,
+) -> anyhow::Result<()> {
+    match command {
+        L10nCommands::Symbol {
+            symbol,
+            path,
+            format,
+            fields,
+        } => {
+            let store_dir = path.join(".grapha");
+            let db_path = store_dir.join("grapha.db");
+            let query_cache = cache::QueryCache::new(&store_dir);
+            let format_key = format!("{format:?}");
+            let fields_key = fields.as_deref().unwrap_or("");
+            let cache_key = query_cache_key(&["l10n", "symbol", &symbol, &format_key, fields_key]);
+
+            if let Some(cached) = query_cache.get(&cache_key, &db_path) {
+                print!("{cached}");
+                return Ok(());
+            }
+
+            let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
+            let graph = load_graph_for_l10n(&path)?;
+            let catalogs = localization::load_catalog_index(&path)?;
+            let result = resolve_query_result(
+                query::localize::query_localize(&graph, &catalogs, &symbol),
+                "symbol",
+            )?;
+
+            let output = match format {
+                QueryOutputFormat::Json => {
+                    let s = serde_json::to_string_pretty(&result)?;
+                    println!("{s}");
+                    format!("{s}\n")
+                }
+                QueryOutputFormat::Tree => {
+                    let s = render::render_localize_with_options(&result, render_options);
+                    println!("{s}");
+                    format!("{s}\n")
+                }
+            };
+            let _ = query_cache.put(&cache_key, &db_path, &output);
+            Ok(())
+        }
+        L10nCommands::Usages {
+            key,
+            table,
+            path,
+            format,
+            fields,
+        } => {
+            let store_dir = path.join(".grapha");
+            let db_path = store_dir.join("grapha.db");
+            let query_cache = cache::QueryCache::new(&store_dir);
+            let format_key = format!("{format:?}");
+            let table_key = table.as_deref().unwrap_or("");
+            let fields_key = fields.as_deref().unwrap_or("");
+            let cache_key =
+                query_cache_key(&["l10n", "usages", &key, table_key, &format_key, fields_key]);
+
+            if let Some(cached) = query_cache.get(&cache_key, &db_path) {
+                print!("{cached}");
+                return Ok(());
+            }
+
+            let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
+            let graph = load_graph_for_l10n(&path)?;
+            let catalogs = localization::load_catalog_index(&path)?;
+            let result = query::usages::query_usages(&graph, &catalogs, &key, table.as_deref());
+
+            let output = match format {
+                QueryOutputFormat::Json => {
+                    let s = serde_json::to_string_pretty(&result)?;
+                    println!("{s}");
+                    format!("{s}\n")
+                }
+                QueryOutputFormat::Tree => {
+                    let s = render::render_usages_with_options(&result, render_options);
+                    println!("{s}");
+                    format!("{s}\n")
+                }
+            };
+            let _ = query_cache.put(&cache_key, &db_path, &output);
+            Ok(())
+        }
+    }
+}
+
+pub(crate) fn handle_asset_command(
+    command: AssetCommands,
+    render_options: render::RenderOptions,
+) -> anyhow::Result<()> {
+    match command {
+        AssetCommands::List { unused, path } => {
+            if unused {
+                let graph = load_graph(&path)?;
+                let index = assets::load_asset_index(&path)?;
+                let unused = assets::find_unused(&index, &graph);
+                print_json(&unused)
+            } else {
+                let index = assets::load_asset_index(&path)?;
+                let records = index.all_records().to_vec();
+                print_json(&records)
+            }
+        }
+        AssetCommands::Usages {
+            name,
+            path,
+            format,
+            fields,
+        } => {
+            let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
+            let graph = load_graph(&path)?;
+            let usages = assets::find_usages(&graph, &name);
+            match format {
+                QueryOutputFormat::Json => print_json(&usages),
+                QueryOutputFormat::Tree => {
+                    if usages.is_empty() {
+                        eprintln!("  no usages found for asset '{name}'");
+                    } else {
+                        for usage in &usages {
+                            let file_label = if render_options.fields.file {
+                                format!(" ({})", usage.file)
+                            } else {
+                                String::new()
+                            };
+                            println!("  {}{} — {}", usage.node_name, file_label, usage.asset_name);
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Result<()> {
+    match command {
+        crate::RepoCommands::Changes { scope, path } => {
+            let graph = load_graph(&path)?;
+            let report = changes::detect_changes(&path, &graph, &scope)?;
+            print_json(&report)
+        }
+        crate::RepoCommands::Map { module, path } => {
+            let graph = load_graph(&path)?;
+            let map = query::map::file_map(&graph, module.as_deref());
+            print_json(&map)
+        }
+        crate::RepoCommands::Smells {
+            module,
+            file,
+            symbol,
+            path,
+        } => {
+            let graph = load_graph(&path)?;
+            let selected_scope_count = usize::from(module.is_some())
+                + usize::from(file.is_some())
+                + usize::from(symbol.is_some());
+            if selected_scope_count > 1 {
+                bail!("choose only one of --module, --file, or --symbol");
+            }
+
+            let mut result = if let Some(ref file_query) = file {
+                query::smells::detect_smells_for_file(&graph, file_query)
+            } else if let Some(ref symbol_query) = symbol {
+                let node =
+                    resolve_query_result(query::resolve_node(&graph, symbol_query), "symbol")?;
+                query::smells::detect_smells_for_symbol(&graph, &node.id)
+            } else {
+                query::smells::detect_smells(&graph)
+            };
+
+            if let Some(ref module_name) = module {
+                query::smells::filter_smells_to_module(&graph, &mut result, module_name);
+            }
+
+            print_json(&result)
+        }
+        crate::RepoCommands::Modules { path } => {
+            let graph = load_graph(&path)?;
+            let result = query::module_summary::query_module_summary(&graph);
+            print_json(&result)
+        }
+    }
+}

@@ -284,6 +284,64 @@ fn write_repo_smells_scope_fixture(dir: &std::path::Path) {
 }
 
 #[test]
+fn cli_smoke_matrix_help_contracts() {
+    let cases = [
+        (
+            vec!["analyze", "--help"],
+            "Analyze source files and output graph",
+        ),
+        (
+            vec!["index", "--help"],
+            "Index a project into persistent storage",
+        ),
+        (
+            vec!["symbol", "--help"],
+            "Query symbol relationships and search indexed symbols",
+        ),
+        (
+            vec!["flow", "--help"],
+            "Inspect dataflow between symbols, entries, and effects",
+        ),
+        (
+            vec!["l10n", "--help"],
+            "Inspect localization references and usage sites",
+        ),
+        (
+            vec!["asset", "--help"],
+            "Inspect image asset catalogs and usage sites",
+        ),
+        (
+            vec!["repo", "--help"],
+            "Run repository-scoped analysis over the indexed graph",
+        ),
+        (
+            vec!["serve", "--mcp", "--help"],
+            "Launch web UI for interactive graph exploration",
+        ),
+    ];
+
+    for (args, expected) in cases {
+        grapha()
+            .args(&args)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(expected));
+    }
+}
+
+#[test]
+fn serve_mcp_help_mentions_stdio_contract() {
+    grapha()
+        .args(["serve", "--mcp", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Run as MCP server over stdio (instead of HTTP)",
+        ))
+        .stdout(predicate::str::contains("--mcp"));
+}
+
+#[test]
 fn index_creates_sqlite_db() {
     let dir = tempfile::tempdir().unwrap();
     let store_dir = dir.path().join(".grapha");

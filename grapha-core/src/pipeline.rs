@@ -69,6 +69,7 @@ pub fn file_context(context: &ProjectContext, modules: &ModuleMap, file: &Path) 
         relative_path,
         absolute_path,
         module_name,
+        index_store_enabled: context.index_store_enabled,
     }
 }
 
@@ -208,6 +209,7 @@ mod tests {
         let project = ProjectContext {
             input_path: dir.path().to_path_buf(),
             project_root: dir.path().to_path_buf(),
+            index_store_enabled: true,
         };
         let mut modules = ModuleMap::new();
         modules.modules.insert("core".to_string(), vec![src_dir]);

@@ -85,7 +85,14 @@ fn semantic_summary(result: &ExtractionResult) -> (Vec<String>, Vec<String>, Vec
 
 #[test]
 fn extract_swift_distinguishes_inherits_from_implements() {
-    let result = extract_swift(fixture(), Path::new("semantic_parity.swift"), None, None).unwrap();
+    let result = extract_swift(
+        fixture(),
+        Path::new("semantic_parity.swift"),
+        None,
+        None,
+        true,
+    )
+    .unwrap();
 
     assert!(has_edge(
         &result,
@@ -103,7 +110,14 @@ fn extract_swift_distinguishes_inherits_from_implements() {
 
 #[test]
 fn extract_swift_marks_dynamic_properties_as_invalidation_sources() {
-    let result = extract_swift(fixture(), Path::new("semantic_parity.swift"), None, None).unwrap();
+    let result = extract_swift(
+        fixture(),
+        Path::new("semantic_parity.swift"),
+        None,
+        None,
+        true,
+    )
+    .unwrap();
 
     let count = result
         .nodes
@@ -125,6 +139,27 @@ fn extract_swift_marks_dynamic_properties_as_invalidation_sources() {
             .map(String::as_str),
         Some("true")
     );
+}
+
+#[test]
+fn extract_swift_without_index_store_matches_fallback_semantics() {
+    let source = br#"
+    import SwiftUI
+
+    struct ContentView: View {
+        let title: String
+
+        var body: some View {
+            Text(title)
+        }
+    }
+    "#;
+
+    let path = Path::new("ContentView.swift");
+    let disabled = extract_swift(source, path, None, None, false).unwrap();
+    let fallback = extract_swift_via_fallback_for_tests(source, path).unwrap();
+
+    assert_eq!(semantic_summary(&disabled), semantic_summary(&fallback));
 }
 
 #[test]
@@ -338,7 +373,7 @@ fn extract_swift_fallback_does_not_upgrade_view_protocol_to_superclass() {
 #[test]
 fn extract_swift_matches_fallback_semantics_for_task3_fixture() {
     let path = Path::new("semantic_parity.swift");
-    let bridge_result = extract_swift(fixture(), path, None, None).unwrap();
+    let bridge_result = extract_swift(fixture(), path, None, None, true).unwrap();
     let fallback_result = extract_swift_via_fallback_for_tests(fixture(), path).unwrap();
 
     assert_eq!(
@@ -350,7 +385,7 @@ fn extract_swift_matches_fallback_semantics_for_task3_fixture() {
 #[test]
 fn extract_swift_covers_localization_and_asset_enrichment_paths() {
     let path = Path::new("semantic_parity.swift");
-    let result = extract_swift(fixture(), path, None, None).unwrap();
+    let result = extract_swift(fixture(), path, None, None, true).unwrap();
     let raw_fallback = extract_treesitter_fallback_direct(fixture(), path);
 
     let wrapper = result

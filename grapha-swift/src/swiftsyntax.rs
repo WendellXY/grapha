@@ -165,7 +165,8 @@ mod tests {
         }
         "#;
 
-        let result = extract_swift(source, Path::new("ContentView.swift"), None, None).unwrap();
+        let result =
+            extract_swift(source, Path::new("ContentView.swift"), None, None, true).unwrap();
 
         let body = result
             .nodes

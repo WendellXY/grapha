@@ -1,47 +1,20 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 
-use crate::delta::{GraphDelta, edge_fingerprint};
 use crate::store::{Store, StoreWriteStats};
-use grapha_core::graph::{
-    Edge, EdgeKind, EdgeProvenance, Graph, Node, NodeKind, NodeRole, Span, Visibility,
-};
+use grapha_core::graph::{EdgeKind, Graph, NodeKind, Visibility};
 
-const STORE_SCHEMA_VERSION: &str = "6";
-const BINARY_PROVENANCE_SCHEMA_VERSION: &str = "5";
+mod compat;
+mod read;
+mod schema;
+mod write;
+
+const STORE_SCHEMA_VERSION: &str = schema::STORE_SCHEMA_VERSION;
+const BINARY_PROVENANCE_SCHEMA_VERSION: &str = schema::BINARY_PROVENANCE_SCHEMA_VERSION;
 
 pub struct SqliteStore {
     path: PathBuf,
-}
-
-fn serialize_provenance(provenance: &[EdgeProvenance]) -> anyhow::Result<Vec<u8>> {
-    if provenance.is_empty() {
-        return Ok(Vec::new());
-    }
-    Ok(bincode::serialize(provenance)?)
-}
-
-fn deserialize_provenance(blob: &[u8]) -> anyhow::Result<Vec<EdgeProvenance>> {
-    if blob.is_empty() {
-        return Ok(Vec::new());
-    }
-    Ok(bincode::deserialize(blob)?)
-}
-
-fn remove_existing_store_files(path: &Path) -> anyhow::Result<()> {
-    for candidate in [
-        path.to_path_buf(),
-        PathBuf::from(format!("{}-wal", path.to_string_lossy())),
-        PathBuf::from(format!("{}-shm", path.to_string_lossy())),
-    ] {
-        match std::fs::remove_file(&candidate) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(())
 }
 
 impl SqliteStore {
@@ -67,254 +40,27 @@ impl SqliteStore {
         Ok(conn)
     }
 
-    fn create_tables(conn: &Connection) -> anyhow::Result<()> {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS meta (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS nodes (
-                id         TEXT PRIMARY KEY,
-                kind       TEXT NOT NULL,
-                name       TEXT NOT NULL,
-                file       TEXT NOT NULL,
-                span_start_line   INTEGER NOT NULL,
-                span_start_col    INTEGER NOT NULL,
-                span_end_line     INTEGER NOT NULL,
-                span_end_col      INTEGER NOT NULL,
-                visibility TEXT NOT NULL,
-                metadata   TEXT NOT NULL,
-                role       TEXT,
-                signature  TEXT,
-                doc_comment TEXT,
-                module     TEXT,
-                snippet    TEXT
-            );
-            CREATE TABLE IF NOT EXISTS edges (
-                edge_id    TEXT PRIMARY KEY,
-                source     TEXT NOT NULL,
-                target     TEXT NOT NULL,
-                kind       TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                direction  TEXT,
-                operation  TEXT,
-                condition  TEXT,
-                async_boundary INTEGER,
-                provenance BLOB NOT NULL
-            );",
-        )?;
-        Ok(())
+    /// Load the graph with optional filters to reduce I/O and deserialization cost.
+    ///
+    /// - `edge_kinds`: restrict which edge kinds are loaded (None = all)
+    /// - `metadata_key_prefix`: when set, only deserialize metadata for nodes whose raw
+    ///   metadata contains this prefix; other nodes get an empty map. Also skips loading
+    ///   signature, doc_comment, and snippet columns.
+    pub fn load_with_edge_filter(&self, edge_kinds: Option<&[EdgeKind]>) -> anyhow::Result<Graph> {
+        self.load_filtered(edge_kinds, None)
     }
 
-    fn schema_version(conn: &Connection) -> anyhow::Result<Option<String>> {
-        let has_meta = conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
-                [],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some();
-        if !has_meta {
-            return Ok(None);
-        }
-
-        Ok(conn
-            .query_row(
-                "SELECT value FROM meta WHERE key = 'store_schema_version'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?)
-    }
-
-    fn write_meta(tx: &rusqlite::Transaction<'_>, graph: &Graph) -> anyhow::Result<()> {
-        tx.execute(
-            "INSERT INTO meta (key, value) VALUES ('version', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [&graph.version],
-        )?;
-        tx.execute(
-            "INSERT INTO meta (key, value) VALUES ('store_schema_version', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [STORE_SCHEMA_VERSION],
-        )?;
-        Ok(())
-    }
-
-    fn insert_nodes(
-        tx: &rusqlite::Transaction<'_>,
-        nodes: &[Node],
-        replace: bool,
-    ) -> anyhow::Result<()> {
-        let verb = if replace {
-            "INSERT OR REPLACE"
-        } else {
-            "INSERT"
-        };
-        let sql = format!(
-            "{verb} INTO nodes (id, kind, name, file,
-                span_start_line, span_start_col, span_end_line, span_end_col,
-                visibility, metadata, role, signature, doc_comment, module, snippet)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"
-        );
-        let mut stmt = tx.prepare_cached(&sql)?;
-        let empty_meta = "{}".to_string();
-        let mut meta_buf = String::new();
-        for node in nodes {
-            let role_json: Option<String> =
-                node.role.as_ref().map(serde_json::to_string).transpose()?;
-            let meta_ref: &str = if node.metadata.is_empty() {
-                &empty_meta
-            } else {
-                meta_buf.clear();
-                serde_json::to_writer(unsafe { meta_buf.as_mut_vec() }, &node.metadata)?;
-                &meta_buf
-            };
-            let file_str = node.file.to_string_lossy();
-            stmt.execute(rusqlite::params![
-                node.id,
-                node_kind_str(&node.kind),
-                node.name,
-                file_str.as_ref(),
-                node.span.start[0] as i64,
-                node.span.start[1] as i64,
-                node.span.end[0] as i64,
-                node.span.end[1] as i64,
-                visibility_str(&node.visibility),
-                meta_ref,
-                role_json,
-                node.signature,
-                node.doc_comment,
-                node.module,
-                node.snippet,
-            ])?;
-        }
-        Ok(())
-    }
-
-    fn insert_edges<'a>(
-        tx: &rusqlite::Transaction<'_>,
-        edges: impl Iterator<Item = (String, &'a Edge)>,
-        replace: bool,
-    ) -> anyhow::Result<()> {
-        let verb = if replace {
-            "INSERT OR REPLACE"
-        } else {
-            "INSERT"
-        };
-        let sql = format!(
-            "{verb} INTO edges (edge_id, source, target, kind, confidence,
-                direction, operation, condition, async_boundary, provenance)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
-        );
-        let mut stmt = tx.prepare_cached(&sql)?;
-        for (edge_id, edge) in edges {
-            let direction_str: Option<&str> = edge.direction.as_ref().map(flow_direction_str);
-            let async_boundary_int: Option<i64> =
-                edge.async_boundary.map(|b| if b { 1 } else { 0 });
-            let provenance = serialize_provenance(&edge.provenance)?;
-            stmt.execute(rusqlite::params![
-                edge_id,
-                edge.source,
-                edge.target,
-                edge_kind_str(&edge.kind),
-                edge.confidence,
-                direction_str,
-                edge.operation,
-                edge.condition,
-                async_boundary_int,
-                provenance,
-            ])?;
-        }
-        Ok(())
-    }
-
-    fn save_full(&self, graph: &Graph) -> anyhow::Result<()> {
-        remove_existing_store_files(&self.path)?;
-        let conn = Connection::open(&self.path)?;
-        // For full rebuild: journal OFF (no crash safety needed — just redo),
-        // locking_mode EXCLUSIVE (no readers during rebuild),
-        // large page size for fewer I/O ops.
-        conn.execute_batch(
-            "PRAGMA journal_mode=OFF;
-             PRAGMA synchronous=OFF;
-             PRAGMA temp_store=MEMORY;
-             PRAGMA cache_size=-64000;
-             PRAGMA mmap_size=268435456;
-             PRAGMA locking_mode=EXCLUSIVE;
-             PRAGMA page_size=8192;",
-        )?;
-
-        conn.execute_batch(
-            "DROP TABLE IF EXISTS edges;
-             DROP TABLE IF EXISTS nodes;
-             DROP TABLE IF EXISTS meta;",
-        )?;
-
-        // Create tables WITHOUT primary key for fast sequential bulk insert.
-        // Unique indexes added after data load (much faster than maintaining during insert).
-        conn.execute_batch(
-            "CREATE TABLE meta (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            CREATE TABLE nodes (
-                id         TEXT NOT NULL,
-                kind       TEXT NOT NULL,
-                name       TEXT NOT NULL,
-                file       TEXT NOT NULL,
-                span_start_line   INTEGER NOT NULL,
-                span_start_col    INTEGER NOT NULL,
-                span_end_line     INTEGER NOT NULL,
-                span_end_col      INTEGER NOT NULL,
-                visibility TEXT NOT NULL,
-                metadata   TEXT NOT NULL,
-                role       TEXT,
-                signature  TEXT,
-                doc_comment TEXT,
-                module     TEXT,
-                snippet    TEXT
-            );
-            CREATE TABLE edges (
-                edge_id    TEXT NOT NULL,
-                source     TEXT NOT NULL,
-                target     TEXT NOT NULL,
-                kind       TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                direction  TEXT,
-                operation  TEXT,
-                condition  TEXT,
-                async_boundary INTEGER,
-                provenance BLOB NOT NULL
-            );",
-        )?;
-
-        let tx = conn.unchecked_transaction()?;
-        Self::write_meta(&tx, graph)?;
-        Self::insert_nodes(&tx, &graph.nodes, false)?;
-        Self::insert_edges(
-            &tx,
-            graph
-                .edges
-                .iter()
-                .map(|edge| (edge_fingerprint(edge), edge)),
-            false,
-        )?;
-        tx.commit()?;
-        // Add primary key unique indexes after bulk load
-        conn.execute_batch(
-            "CREATE UNIQUE INDEX idx_nodes_id ON nodes(id);
-             CREATE UNIQUE INDEX idx_edges_id ON edges(edge_id);",
-        )?;
-        conn.execute_batch("PRAGMA optimize;")?;
-        Ok(())
+    pub fn load_filtered(
+        &self,
+        edge_kinds: Option<&[EdgeKind]>,
+        metadata_key_prefix: Option<&str>,
+    ) -> anyhow::Result<Graph> {
+        read::load_filtered(self, edge_kinds, metadata_key_prefix)
     }
 }
 
-// Direct enum → &str conversions — avoids ~1M serde_json round-trips during save.
-
-fn node_kind_str(k: &NodeKind) -> &'static str {
+// Direct enum -> &str conversions avoid serde round-trips during save.
+pub(super) fn node_kind_str(k: &NodeKind) -> &'static str {
     match k {
         NodeKind::Function => "function",
         NodeKind::Class => "class",
@@ -335,22 +81,22 @@ fn node_kind_str(k: &NodeKind) -> &'static str {
     }
 }
 
-fn edge_kind_str(k: &EdgeKind) -> &'static str {
+pub(super) fn edge_kind_str(k: &EdgeKind) -> &'static str {
     match k {
-        EdgeKind::Calls => "calls",
-        EdgeKind::Uses => "uses",
-        EdgeKind::Implements => "implements",
-        EdgeKind::Contains => "contains",
-        EdgeKind::TypeRef => "type_ref",
-        EdgeKind::Inherits => "inherits",
-        EdgeKind::Reads => "reads",
-        EdgeKind::Writes => "writes",
-        EdgeKind::Publishes => "publishes",
-        EdgeKind::Subscribes => "subscribes",
+        grapha_core::graph::EdgeKind::Calls => "calls",
+        grapha_core::graph::EdgeKind::Uses => "uses",
+        grapha_core::graph::EdgeKind::Implements => "implements",
+        grapha_core::graph::EdgeKind::Contains => "contains",
+        grapha_core::graph::EdgeKind::TypeRef => "type_ref",
+        grapha_core::graph::EdgeKind::Inherits => "inherits",
+        grapha_core::graph::EdgeKind::Reads => "reads",
+        grapha_core::graph::EdgeKind::Writes => "writes",
+        grapha_core::graph::EdgeKind::Publishes => "publishes",
+        grapha_core::graph::EdgeKind::Subscribes => "subscribes",
     }
 }
 
-fn visibility_str(v: &Visibility) -> &'static str {
+pub(super) fn visibility_str(v: &Visibility) -> &'static str {
     match v {
         Visibility::Public => "public",
         Visibility::Crate => "crate",
@@ -358,7 +104,7 @@ fn visibility_str(v: &Visibility) -> &'static str {
     }
 }
 
-fn flow_direction_str(d: &grapha_core::graph::FlowDirection) -> &'static str {
+pub(super) fn flow_direction_str(d: &grapha_core::graph::FlowDirection) -> &'static str {
     use grapha_core::graph::FlowDirection;
     match d {
         FlowDirection::Read => "read",
@@ -368,15 +114,21 @@ fn flow_direction_str(d: &grapha_core::graph::FlowDirection) -> &'static str {
     }
 }
 
-/// Deserialize a snake_case string back into a serde enum value.
-fn str_to_enum<T: serde::de::DeserializeOwned>(s: &str) -> anyhow::Result<T> {
+pub(super) fn str_to_enum<T: serde::de::DeserializeOwned>(s: &str) -> anyhow::Result<T> {
     let quoted = format!("\"{s}\"");
     Ok(serde_json::from_str(&quoted)?)
 }
 
+#[cfg(test)]
+fn serialize_provenance(
+    provenance: &[grapha_core::graph::EdgeProvenance],
+) -> anyhow::Result<Vec<u8>> {
+    compat::serialize_provenance(provenance)
+}
+
 impl Store for SqliteStore {
     fn save(&self, graph: &Graph) -> anyhow::Result<()> {
-        self.save_full(graph)
+        write::save_full(self, graph)
     }
 
     fn save_incremental(
@@ -384,363 +136,11 @@ impl Store for SqliteStore {
         previous: Option<&Graph>,
         graph: &Graph,
     ) -> anyhow::Result<StoreWriteStats> {
-        let current_stats =
-            StoreWriteStats::from_graphs(previous, graph, crate::delta::SyncMode::Incremental);
-        let full_stats =
-            StoreWriteStats::from_graphs(previous, graph, crate::delta::SyncMode::FullRebuild);
-
-        let conn = self.open_for_write()?;
-        let schema_version = Self::schema_version(&conn)?;
-        if previous.is_none() || schema_version.as_deref() != Some(STORE_SCHEMA_VERSION) {
-            drop(conn);
-            self.save_full(graph)?;
-            return Ok(full_stats);
-        }
-
-        let previous_graph = previous.expect("checked is_some above");
-        let delta = GraphDelta::between(previous_graph, graph);
-        let tx = conn.unchecked_transaction()?;
-        Self::write_meta(&tx, graph)?;
-
-        {
-            let mut delete_edges = tx.prepare("DELETE FROM edges WHERE edge_id = ?1")?;
-            for edge_id in &delta.deleted_edge_ids {
-                delete_edges.execute([edge_id])?;
-            }
-        }
-
-        {
-            let mut delete_nodes = tx.prepare("DELETE FROM nodes WHERE id = ?1")?;
-            for node_id in &delta.deleted_node_ids {
-                delete_nodes.execute([node_id])?;
-            }
-        }
-
-        let mut changed_nodes = Vec::new();
-        changed_nodes.extend(delta.added_nodes.iter().copied().cloned());
-        changed_nodes.extend(delta.updated_nodes.iter().copied().cloned());
-        Self::insert_nodes(&tx, &changed_nodes, true)?;
-
-        {
-            let mut delete_edges = tx.prepare("DELETE FROM edges WHERE edge_id = ?1")?;
-            for edge in &delta.updated_edges {
-                delete_edges.execute([&edge.id])?;
-            }
-        }
-        Self::insert_edges(
-            &tx,
-            delta
-                .added_edges
-                .iter()
-                .chain(delta.updated_edges.iter())
-                .map(|edge| (edge.id.clone(), edge.edge)),
-            true,
-        )?;
-        tx.commit()?;
-        conn.execute_batch("PRAGMA optimize;")?;
-
-        Ok(current_stats)
+        write::save_incremental(self, previous, graph)
     }
 
     fn load(&self) -> anyhow::Result<Graph> {
         self.load_with_edge_filter(None)
-    }
-}
-
-impl SqliteStore {
-    /// Load the graph with optional filters to reduce I/O and deserialization cost.
-    ///
-    /// - `edge_kinds`: restrict which edge kinds are loaded (None = all)
-    /// - `metadata_key_prefix`: when set, only deserialize metadata for nodes whose raw
-    ///   metadata contains this prefix; other nodes get an empty map. Also skips loading
-    ///   signature, doc_comment, and snippet columns.
-    pub fn load_with_edge_filter(&self, edge_kinds: Option<&[EdgeKind]>) -> anyhow::Result<Graph> {
-        self.load_filtered(edge_kinds, None)
-    }
-
-    pub fn load_filtered(
-        &self,
-        edge_kinds: Option<&[EdgeKind]>,
-        metadata_key_prefix: Option<&str>,
-    ) -> anyhow::Result<Graph> {
-        let conn = self.open()?;
-        let schema_version = Self::schema_version(&conn)?;
-        Self::create_tables(&conn)?;
-
-        let version: String = conn
-            .query_row("SELECT value FROM meta WHERE key = 'version'", [], |row| {
-                row.get(0)
-            })
-            .unwrap_or_else(|_| "0.1.0".to_string());
-
-        let nodes = {
-            let node_sql = if let Some(prefix) = metadata_key_prefix {
-                format!(
-                    "SELECT id, kind, name, file,
-                            span_start_line, span_start_col, span_end_line, span_end_col,
-                            visibility,
-                            CASE WHEN metadata LIKE '%{prefix}%' THEN metadata ELSE '{{}}' END,
-                            role, NULL, NULL, module, NULL
-                     FROM nodes"
-                )
-            } else {
-                "SELECT id, kind, name, file,
-                        span_start_line, span_start_col, span_end_line, span_end_col,
-                        visibility, metadata, role, signature, doc_comment, module, snippet
-                 FROM nodes"
-                    .to_string()
-            };
-            let mut stmt = conn.prepare(&node_sql)?;
-            let rows = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, String>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, i64>(6)?,
-                    row.get::<_, i64>(7)?,
-                    row.get::<_, String>(8)?,
-                    row.get::<_, String>(9)?,
-                    row.get::<_, Option<String>>(10)?,
-                    row.get::<_, Option<String>>(11)?,
-                    row.get::<_, Option<String>>(12)?,
-                    row.get::<_, Option<String>>(13)?,
-                    row.get::<_, Option<String>>(14)?,
-                ))
-            })?;
-
-            let mut nodes = Vec::new();
-            for row in rows {
-                let (
-                    id,
-                    kind_str,
-                    name,
-                    file_str,
-                    sl,
-                    sc,
-                    el,
-                    ec,
-                    vis_str,
-                    meta_str,
-                    role_str,
-                    signature,
-                    doc_comment,
-                    module,
-                    snippet,
-                ) = row?;
-                let kind: NodeKind = str_to_enum(&kind_str)
-                    .map_err(|e| anyhow::anyhow!("invalid node kind '{kind_str}': {e}"))?;
-                let visibility: Visibility = str_to_enum(&vis_str)
-                    .map_err(|e| anyhow::anyhow!("invalid visibility '{vis_str}': {e}"))?;
-                let metadata: std::collections::HashMap<String, String> =
-                    serde_json::from_str(&meta_str)?;
-                let role: Option<NodeRole> = role_str
-                    .map(|s| serde_json::from_str(&s))
-                    .transpose()
-                    .map_err(|e| anyhow::anyhow!("invalid node role: {e}"))?;
-                nodes.push(Node {
-                    id,
-                    kind,
-                    name,
-                    file: PathBuf::from(file_str),
-                    span: Span {
-                        start: [sl as usize, sc as usize],
-                        end: [el as usize, ec as usize],
-                    },
-                    visibility,
-                    metadata,
-                    role,
-                    signature,
-                    doc_comment,
-                    module,
-                    snippet,
-                });
-            }
-            nodes
-        };
-
-        let edge_where = edge_kinds
-            .filter(|kinds| !kinds.is_empty())
-            .map(|kinds| {
-                let values: Vec<_> = kinds
-                    .iter()
-                    .map(|k| format!("'{}'", edge_kind_str(k)))
-                    .collect();
-                format!(" WHERE kind IN ({})", values.join(", "))
-            })
-            .unwrap_or_default();
-
-        let edges = if matches!(
-            schema_version.as_deref(),
-            Some(STORE_SCHEMA_VERSION) | Some(BINARY_PROVENANCE_SCHEMA_VERSION)
-        ) {
-            let mut stmt = conn.prepare(&format!(
-                "SELECT source, target, kind, confidence,
-                        direction, operation, condition, async_boundary, provenance
-                 FROM edges{edge_where}",
-            ))?;
-            let rows = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, f64>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
-                    row.get::<_, Vec<u8>>(8)?,
-                ))
-            })?;
-
-            let mut edges = Vec::new();
-            for row in rows {
-                let (
-                    source,
-                    target,
-                    kind_str,
-                    confidence,
-                    direction_str,
-                    operation,
-                    condition,
-                    async_boundary_int,
-                    provenance_blob,
-                ) = row?;
-                let kind: EdgeKind = str_to_enum(&kind_str)
-                    .map_err(|e| anyhow::anyhow!("invalid edge kind '{kind_str}': {e}"))?;
-                let direction = direction_str
-                    .map(|s| str_to_enum(&s))
-                    .transpose()
-                    .map_err(|e| anyhow::anyhow!("invalid flow direction: {e}"))?;
-                let async_boundary = async_boundary_int.map(|v| v != 0);
-                let provenance = deserialize_provenance(&provenance_blob)?;
-                edges.push(Edge {
-                    source,
-                    target,
-                    kind,
-                    confidence,
-                    direction,
-                    operation,
-                    condition,
-                    async_boundary,
-                    provenance,
-                });
-            }
-            edges
-        } else if schema_version.as_deref() == Some("4") {
-            let mut stmt = conn.prepare(&format!(
-                "SELECT source, target, kind, confidence,
-                        direction, operation, condition, async_boundary, provenance
-                 FROM edges{edge_where}",
-            ))?;
-            let rows = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, f64>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
-                    row.get::<_, String>(8)?,
-                ))
-            })?;
-
-            let mut edges = Vec::new();
-            for row in rows {
-                let (
-                    source,
-                    target,
-                    kind_str,
-                    confidence,
-                    direction_str,
-                    operation,
-                    condition,
-                    async_boundary_int,
-                    provenance_json,
-                ) = row?;
-                let kind: EdgeKind = str_to_enum(&kind_str)
-                    .map_err(|e| anyhow::anyhow!("invalid edge kind '{kind_str}': {e}"))?;
-                let direction = direction_str
-                    .map(|s| str_to_enum(&s))
-                    .transpose()
-                    .map_err(|e| anyhow::anyhow!("invalid flow direction: {e}"))?;
-                let async_boundary = async_boundary_int.map(|v| v != 0);
-                let provenance: Vec<EdgeProvenance> = serde_json::from_str(&provenance_json)?;
-                edges.push(Edge {
-                    source,
-                    target,
-                    kind,
-                    confidence,
-                    direction,
-                    operation,
-                    condition,
-                    async_boundary,
-                    provenance,
-                });
-            }
-            edges
-        } else {
-            let mut stmt = conn.prepare(&format!(
-                "SELECT source, target, kind, confidence,
-                        direction, operation, condition, async_boundary
-                 FROM edges{edge_where}",
-            ))?;
-            let rows = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, f64>(3)?,
-                    row.get::<_, Option<String>>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<String>>(6)?,
-                    row.get::<_, Option<i64>>(7)?,
-                ))
-            })?;
-
-            let mut edges = Vec::new();
-            for row in rows {
-                let (
-                    source,
-                    target,
-                    kind_str,
-                    confidence,
-                    direction_str,
-                    operation,
-                    condition,
-                    async_boundary_int,
-                ) = row?;
-                let kind: EdgeKind = str_to_enum(&kind_str)
-                    .map_err(|e| anyhow::anyhow!("invalid edge kind '{kind_str}': {e}"))?;
-                let direction = direction_str
-                    .map(|s| str_to_enum(&s))
-                    .transpose()
-                    .map_err(|e| anyhow::anyhow!("invalid flow direction: {e}"))?;
-                let async_boundary = async_boundary_int.map(|v| v != 0);
-                edges.push(Edge {
-                    source,
-                    target,
-                    kind,
-                    confidence,
-                    direction,
-                    operation,
-                    condition,
-                    async_boundary,
-                    provenance: Vec::new(),
-                });
-            }
-            edges
-        };
-
-        Ok(Graph {
-            version,
-            nodes,
-            edges,
-        })
     }
 }
 
@@ -925,7 +325,6 @@ mod tests {
         assert_eq!(loaded.nodes.len(), 3);
         assert_eq!(loaded.edges.len(), 3);
 
-        // Verify node dataflow fields
         let api_node = loaded
             .nodes
             .iter()
@@ -965,7 +364,6 @@ mod tests {
         assert_eq!(internal_node.signature, None);
         assert_eq!(internal_node.module, None);
 
-        // Verify edge dataflow fields
         let read_edge = loaded
             .edges
             .iter()
@@ -1643,7 +1041,6 @@ mod tests {
         assert_eq!(loaded.nodes.len(), node_count);
         assert_eq!(loaded.edges.len(), edge_count);
 
-        // Verify first and last node data
         let first = loaded.nodes.iter().find(|n| n.id == "mod::node_0").unwrap();
         assert_eq!(first.role, Some(NodeRole::EntryPoint));
         assert_eq!(first.signature.as_deref(), Some("fn node_0()"));
@@ -1659,24 +1056,20 @@ mod tests {
             last.signature.as_deref(),
             Some(format!("fn node_{}()", node_count - 1).as_str())
         );
-        // node_count - 1 = 1599, 1599 % 3 == 0, so snippet should be present
         assert_eq!(
             last.snippet.as_deref(),
             Some(format!("fn node_{}() {{ }}", node_count - 1).as_str())
         );
 
-        // Verify node without snippet
         let no_snippet = loaded.nodes.iter().find(|n| n.id == "mod::node_1").unwrap();
         assert_eq!(no_snippet.snippet, None);
 
-        // Verify metadata round-trip
         let with_meta = loaded.nodes.iter().find(|n| n.id == "mod::node_0").unwrap();
         assert_eq!(
             with_meta.metadata.get("key").map(|s| s.as_str()),
             Some("val_0")
         );
 
-        // Verify edge data
         let edge = loaded
             .edges
             .iter()
@@ -1828,6 +1221,64 @@ mod tests {
                 .iter()
                 .all(|e| matches!(e.kind, EdgeKind::Contains | EdgeKind::TypeRef))
         );
+    }
+
+    #[test]
+    fn load_with_edge_filter_empty_slice_behaves_like_no_filter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grapha_empty_filter.db");
+        let store = SqliteStore::new(path);
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![Node {
+                id: "a".to_string(),
+                kind: NodeKind::Struct,
+                name: "A".to_string(),
+                file: "a.swift".into(),
+                span: Span {
+                    start: [0, 0],
+                    end: [1, 0],
+                },
+                visibility: Visibility::Public,
+                metadata: HashMap::new(),
+                role: None,
+                signature: None,
+                doc_comment: None,
+                module: None,
+                snippet: None,
+            }],
+            edges: vec![
+                Edge {
+                    source: "a".to_string(),
+                    target: "b".to_string(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "a".to_string(),
+                    target: "c".to_string(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+            ],
+        };
+
+        store.save(&graph).unwrap();
+
+        let loaded = store.load_with_edge_filter(Some(&[])).unwrap();
+        assert_eq!(loaded.nodes.len(), 1);
+        assert_eq!(loaded.edges.len(), 2);
     }
 
     #[test]
