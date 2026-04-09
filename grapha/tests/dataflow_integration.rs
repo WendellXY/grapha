@@ -429,7 +429,7 @@ fn entries_tree_format_works() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("entry points (1)"))
+        .stdout(predicate::str::contains("entry points (1 shown / 1 total)"))
         .stdout(predicate::str::contains("main [function] (main.rs)"))
         .stdout(predicate::str::contains("└──"));
 }

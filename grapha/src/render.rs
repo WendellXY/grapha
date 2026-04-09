@@ -485,17 +485,6 @@ fn format_key_number(key: &str, value: usize, options: RenderOptions) -> String 
     format!("{}: {}", palette.key(key), palette.number(value))
 }
 
-fn sorted_symbol_refs(symbols: &[SymbolRef]) -> Vec<SymbolRef> {
-    let mut sorted = symbols.to_vec();
-    sorted.sort_by(|left, right| {
-        left.name
-            .cmp(&right.name)
-            .then_with(|| left.file.cmp(&right.file))
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    sorted
-}
-
 fn symbol_tree_ref_to_tree_node(symbol: &SymbolTreeRef, options: RenderOptions) -> TreeNode {
     let mut children = symbol_tree_ref_details(symbol, options);
     children.extend(
@@ -660,8 +649,10 @@ pub fn render_context_with_options(result: &ContextResult, options: RenderOption
 }
 
 pub fn render_entries_with_options(result: &EntriesResult, options: RenderOptions) -> String {
-    let children = sorted_symbol_refs(&result.entries)
-        .into_iter()
+    let children = result
+        .entries
+        .iter()
+        .cloned()
         .map(|entry| TreeNode::leaf(format_symbol_ref(&entry, options)))
         .collect();
 
