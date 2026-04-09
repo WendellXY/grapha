@@ -574,10 +574,42 @@ pub fn node_index(graph: &Graph) -> HashMap<&str, &Node> {
         .collect()
 }
 
+/// Pre-filter nodes that carry wrapper bindings (l10n.wrapper.table + l10n.wrapper.key).
+/// Build once, pass to [`resolve_usage_with`] for batch resolution.
+pub fn wrapper_binding_nodes<'a>(node_index: &HashMap<&str, &'a Node>) -> Vec<&'a Node> {
+    node_index
+        .values()
+        .copied()
+        .filter(|node| parse_wrapper_binding(node).is_some())
+        .collect()
+}
+
+/// Resolve a single usage node. Convenient but re-scans all nodes for wrapper candidates
+/// on every call. For batch resolution, use [`resolve_usage_with`] with pre-built
+/// [`wrapper_binding_nodes`].
+#[allow(dead_code)]
 pub fn resolve_usage(
     usage_node: &Node,
     edges_by_source: &HashMap<&str, Vec<&Edge>>,
     node_index: &HashMap<&str, &Node>,
+    catalogs: &LocalizationCatalogIndex,
+) -> Option<UsageResolution> {
+    let wrapper_nodes = wrapper_binding_nodes(node_index);
+    resolve_usage_with(
+        usage_node,
+        edges_by_source,
+        node_index,
+        &wrapper_nodes,
+        catalogs,
+    )
+}
+
+/// Resolve a usage node using pre-built wrapper nodes for efficient batch resolution.
+pub fn resolve_usage_with(
+    usage_node: &Node,
+    edges_by_source: &HashMap<&str, Vec<&Edge>>,
+    node_index: &HashMap<&str, &Node>,
+    wrapper_nodes: &[&Node],
     catalogs: &LocalizationCatalogIndex,
 ) -> Option<UsageResolution> {
     let base_reference = parse_usage_reference(usage_node)?;
@@ -600,6 +632,35 @@ pub fn resolve_usage(
                     reference: base_reference.clone(),
                     record,
                     match_kind: "direct_metadata".to_string(),
+                });
+            }
+        }
+    }
+
+    // Literal-as-key: in SwiftUI, Text("Foo") treats the literal as a LocalizedStringKey
+    if matches.is_empty()
+        && let Some(literal) = base_reference.literal.as_deref()
+    {
+        let literal_records = if let Some(table) = base_reference.table.as_deref() {
+            catalogs.records_for(table, literal)
+        } else {
+            catalogs.records_for_key(literal)
+        };
+        for record in closest_records(&usage_node.file, literal_records) {
+            let mut reference = base_reference.clone();
+            reference.table = Some(record.table.clone());
+            reference.key = Some(record.key.clone());
+            let dedupe_key = (
+                String::new(),
+                record.catalog_file.clone(),
+                record.table.clone(),
+                record.key.clone(),
+            );
+            if seen.insert(dedupe_key) {
+                matches.push(ResolvedLocalizationMatch {
+                    reference,
+                    record,
+                    match_kind: "literal_key".to_string(),
                 });
             }
         }
@@ -653,7 +714,7 @@ pub fn resolve_usage(
         && let Some(wrapper_name) = base_reference.wrapper_name.as_deref()
     {
         for wrapper_node in candidate_wrapper_nodes(
-            node_index,
+            wrapper_nodes,
             wrapper_name,
             base_reference.wrapper_base.as_deref(),
         ) {
@@ -718,16 +779,17 @@ fn wrapper_node_matches_base(node: &Node, wrapper_base: Option<&str>) -> bool {
 }
 
 fn candidate_wrapper_nodes<'a>(
-    node_index: &'a HashMap<&str, &'a Node>,
+    wrapper_nodes: &[&'a Node],
     wrapper_name: &str,
     wrapper_base: Option<&str>,
 ) -> Vec<&'a Node> {
     let mut exact = Vec::new();
     let mut normalized = Vec::new();
     let mut approximate = Vec::new();
-    for wrapper_node in node_index.values().copied().filter(|node| {
-        parse_wrapper_binding(node).is_some() && wrapper_node_matches_base(node, wrapper_base)
-    }) {
+    for &wrapper_node in wrapper_nodes
+        .iter()
+        .filter(|node| wrapper_node_matches_base(node, wrapper_base))
+    {
         if wrapper_node.name == wrapper_name {
             exact.push(wrapper_node);
         } else if wrapper_names_token_equivalent(wrapper_node.name.as_str(), wrapper_name) {
@@ -1456,5 +1518,112 @@ mod tests {
         );
         assert_eq!(resolution.matches[0].match_kind, "wrapper_name_approximate");
         assert_eq!(resolution.matches[0].record.key, "commonui_search_empty");
+    }
+
+    #[test]
+    fn resolve_usage_matches_literal_as_catalog_key() {
+        let mut usage = Node {
+            id: "Features/Tournament/TournamentView.swift::TournamentView::body::view:Text@5:8:5:30"
+                .to_string(),
+            kind: NodeKind::View,
+            name: "Text".to_string(),
+            file: PathBuf::from("Features/Tournament/TournamentView.swift"),
+            span: Span {
+                start: [5, 8],
+                end: [5, 30],
+            },
+            visibility: Visibility::Private,
+            metadata: HashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: Some("Tournament".to_string()),
+            snippet: None,
+        };
+        usage
+            .metadata
+            .insert(META_REF_KIND.to_string(), "literal".to_string());
+        usage
+            .metadata
+            .insert(META_LITERAL.to_string(), "Tournament".to_string());
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![usage.clone()],
+            edges: Vec::new(),
+        };
+        let catalogs = LocalizationCatalogIndex::from_records(vec![LocalizationCatalogRecord {
+            table: "Localizable".to_string(),
+            key: "Tournament".to_string(),
+            catalog_file: "Features/Tournament/Localizable.xcstrings".to_string(),
+            catalog_dir: "Features/Tournament".to_string(),
+            source_language: "en".to_string(),
+            source_value: "Tournament".to_string(),
+            status: "translated".to_string(),
+            comment: None,
+        }]);
+
+        let resolution = resolve_usage(
+            &usage,
+            &edges_by_source(&graph),
+            &node_index(&graph),
+            &catalogs,
+        )
+        .expect("usage should resolve");
+
+        assert_eq!(resolution.matches.len(), 1);
+        assert_eq!(resolution.matches[0].record.key, "Tournament");
+        assert_eq!(resolution.matches[0].record.table, "Localizable");
+        assert_eq!(resolution.matches[0].match_kind, "literal_key");
+        assert_eq!(
+            resolution.matches[0].reference.key.as_deref(),
+            Some("Tournament")
+        );
+        assert!(resolution.unmatched.is_none());
+    }
+
+    #[test]
+    fn resolve_usage_literal_without_catalog_record_remains_unmatched() {
+        let mut usage = Node {
+            id: "Features/Home/HomeView.swift::HomeView::body::view:Text@3:8:3:25".to_string(),
+            kind: NodeKind::View,
+            name: "Text".to_string(),
+            file: PathBuf::from("Features/Home/HomeView.swift"),
+            span: Span {
+                start: [3, 8],
+                end: [3, 25],
+            },
+            visibility: Visibility::Private,
+            metadata: HashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: Some("Home".to_string()),
+            snippet: None,
+        };
+        usage
+            .metadata
+            .insert(META_REF_KIND.to_string(), "literal".to_string());
+        usage
+            .metadata
+            .insert(META_LITERAL.to_string(), "Hello World".to_string());
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![usage.clone()],
+            edges: Vec::new(),
+        };
+        let catalogs = LocalizationCatalogIndex::from_records(Vec::new());
+
+        let resolution = resolve_usage(
+            &usage,
+            &edges_by_source(&graph),
+            &node_index(&graph),
+            &catalogs,
+        )
+        .expect("usage should resolve");
+
+        assert!(resolution.matches.is_empty());
+        assert!(resolution.unmatched.is_some());
     }
 }

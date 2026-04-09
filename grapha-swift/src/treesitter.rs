@@ -2116,6 +2116,22 @@ fn is_builtin_swiftui_view(name: &str) -> bool {
     )
 }
 
+/// Built-in SwiftUI views whose first argument is a `LocalizedStringKey`.
+fn builtin_view_accepts_localized_title(name: &str) -> bool {
+    matches!(
+        name,
+        "Button"
+            | "DisclosureGroup"
+            | "Label"
+            | "Link"
+            | "Menu"
+            | "NavigationLink"
+            | "Picker"
+            | "Section"
+            | "Toggle"
+    )
+}
+
 fn navigation_base_and_member_name<'a>(
     node: tree_sitter::Node<'a>,
     source: &[u8],
@@ -3255,6 +3271,36 @@ fn emit_localization_usage_node(
     id
 }
 
+/// Extract the first argument of a built-in SwiftUI view as a localization reference.
+/// Handles `Button("Title") { }`, `Label("Title", systemImage: "star")`, etc.
+fn builtin_view_title_reference(
+    text: &str,
+    view_name: &str,
+    bindings: Option<&LocalizationBindings>,
+) -> Option<LocalizationReferenceData> {
+    let trimmed = text.trim();
+    let prefix = format!("{view_name}(");
+    if !trimmed.starts_with(&prefix) {
+        return None;
+    }
+    let args = call_argument_list(trimmed)?;
+    let first_argument = split_top_level_arguments(args).into_iter().next()?;
+    let (label, value) = split_argument_label(first_argument);
+    // Skip labeled first arguments that aren't title-like (e.g. `Button(action:)`)
+    if let Some(label) = &label
+        && !is_text_like_argument_label(label)
+        && label != "i18n"
+    {
+        return None;
+    }
+    // Try binding-based resolution first
+    let binding_refs = simple_identifier_binding_references(value, bindings);
+    if let Some(reference) = binding_refs.into_iter().next() {
+        return Some(reference);
+    }
+    localized_reference_for_expression_text(value)
+}
+
 fn localized_reference_for_expression_text(text: &str) -> Option<LocalizationReferenceData> {
     let trimmed = text.trim();
     if let Some(captures) = LOCALIZED_TEXT_LITERAL_RE.captures(&format!("Text({trimmed})")) {
@@ -4218,6 +4264,30 @@ pub fn enrich_localization_metadata_with_tree(
                     &view_node.span,
                     reference,
                     None,
+                );
+            }
+            continue;
+        }
+
+        if builtin_view_accepts_localized_title(&view_node.name) {
+            if let Some(reference) = builtin_view_title_reference(text, &view_node.name, bindings)
+            {
+                let usage_id = emit_localization_usage_node(
+                    &mut context,
+                    &view_node.id,
+                    &file_str,
+                    "title",
+                    &view_node.span,
+                    Some(&localization_reference_suffix(&reference, 0)),
+                );
+                apply_localization_reference_to_span(
+                    &mut context,
+                    file_path,
+                    &file_str,
+                    &usage_id,
+                    &view_node.span,
+                    &reference,
+                    Some("title"),
                 );
             }
             continue;
@@ -6215,5 +6285,56 @@ class GameManager {
             }),
             "condition helper members should not leak into localized alias bindings"
         );
+    }
+
+    #[test]
+    fn enrich_localization_metadata_marks_builtin_views_with_localized_string_key() {
+        let result = extract_with_localization(
+            r#"
+            import SwiftUI
+
+            struct ContentView: View {
+                @State var isOn = false
+
+                var body: some View {
+                    VStack {
+                        Button("Tournament") { }
+                        Label("Settings", systemImage: "gear")
+                        Toggle("Notifications", isOn: $isOn)
+                        NavigationLink("Profile") { Text("Detail") }
+                        Section("Account") {
+                            Text("Content")
+                        }
+                    }
+                }
+            }
+            "#,
+        );
+
+        let l10n_usage_nodes: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|node| {
+                node.metadata
+                    .get("l10n.ref_kind")
+                    .map(|value| value.as_str())
+                    == Some("literal")
+                    && node.metadata.contains_key("l10n.literal")
+            })
+            .collect();
+
+        let literals: Vec<&str> = l10n_usage_nodes
+            .iter()
+            .filter_map(|node| node.metadata.get("l10n.literal").map(|v| v.as_str()))
+            .collect();
+
+        for expected in &["Tournament", "Settings", "Notifications", "Profile", "Account"] {
+            assert!(
+                literals.contains(expected),
+                "expected literal '{}' from built-in SwiftUI view, got: {:?}",
+                expected,
+                literals
+            );
+        }
     }
 }

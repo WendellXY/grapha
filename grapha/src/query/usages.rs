@@ -6,7 +6,7 @@ use grapha_core::graph::{Graph, Node, NodeKind};
 
 use crate::localization::{
     LocalizationCatalogIndex, LocalizationCatalogRecord, LocalizationReference, edges_by_source,
-    localization_usage_nodes, node_index, resolve_usage,
+    localization_usage_nodes, node_index, resolve_usage_with, wrapper_binding_nodes,
 };
 
 use super::SymbolInfo;
@@ -55,19 +55,36 @@ pub fn query_usages(
     let node_index = node_index(graph);
     let edges_by_source = edges_by_source(graph);
     let parents = contains_parents(graph);
+    let wrapper_nodes = wrapper_binding_nodes(&node_index);
+
+    // Resolve all usage nodes once (not per record) to avoid redundant work.
+    let resolved_usages: Vec<_> = localization_usage_nodes(graph)
+        .into_iter()
+        .filter_map(|usage_node| {
+            let resolution = resolve_usage_with(
+                usage_node,
+                &edges_by_source,
+                &node_index,
+                &wrapper_nodes,
+                catalogs,
+            )?;
+            if resolution.matches.is_empty() {
+                return None;
+            }
+            Some((usage_node, resolution.matches))
+        })
+        .collect();
 
     let mut record_groups = Vec::new();
     for record in records {
-        let usages = localization_usage_nodes(graph)
-            .into_iter()
-            .filter_map(|usage_node| {
-                let resolution =
-                    resolve_usage(usage_node, &edges_by_source, &node_index, catalogs)?;
-                let matched_reference = resolution.matches.into_iter().find_map(|item| {
+        let usages = resolved_usages
+            .iter()
+            .filter_map(|(usage_node, matches)| {
+                let matched_reference = matches.iter().find_map(|item| {
                     (item.record.table == record.table
                         && item.record.key == record.key
                         && item.record.catalog_file == record.catalog_file)
-                        .then_some(item.reference)
+                        .then_some(item.reference.clone())
                 })?;
 
                 let owner = owning_symbol(usage_node.id.as_str(), &parents, &node_index)

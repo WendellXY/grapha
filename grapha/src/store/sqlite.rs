@@ -443,6 +443,29 @@ impl Store for SqliteStore {
     }
 
     fn load(&self) -> anyhow::Result<Graph> {
+        self.load_with_edge_filter(None)
+    }
+}
+
+impl SqliteStore {
+    /// Load the graph with optional filters to reduce I/O and deserialization cost.
+    ///
+    /// - `edge_kinds`: restrict which edge kinds are loaded (None = all)
+    /// - `metadata_key_prefix`: when set, only deserialize metadata for nodes whose raw
+    ///   metadata contains this prefix; other nodes get an empty map. Also skips loading
+    ///   signature, doc_comment, and snippet columns.
+    pub fn load_with_edge_filter(
+        &self,
+        edge_kinds: Option<&[EdgeKind]>,
+    ) -> anyhow::Result<Graph> {
+        self.load_filtered(edge_kinds, None)
+    }
+
+    pub fn load_filtered(
+        &self,
+        edge_kinds: Option<&[EdgeKind]>,
+        metadata_key_prefix: Option<&str>,
+    ) -> anyhow::Result<Graph> {
         let conn = self.open()?;
         let schema_version = Self::schema_version(&conn)?;
         Self::create_tables(&conn)?;
@@ -454,12 +477,23 @@ impl Store for SqliteStore {
             .unwrap_or_else(|_| "0.1.0".to_string());
 
         let nodes = {
-            let mut stmt = conn.prepare(
+            let node_sql = if let Some(prefix) = metadata_key_prefix {
+                format!(
+                    "SELECT id, kind, name, file,
+                            span_start_line, span_start_col, span_end_line, span_end_col,
+                            visibility,
+                            CASE WHEN metadata LIKE '%{prefix}%' THEN metadata ELSE '{{}}' END,
+                            role, NULL, NULL, module, NULL
+                     FROM nodes"
+                )
+            } else {
                 "SELECT id, kind, name, file,
                         span_start_line, span_start_col, span_end_line, span_end_col,
                         visibility, metadata, role, signature, doc_comment, module, snippet
-                 FROM nodes",
-            )?;
+                 FROM nodes"
+                    .to_string()
+            };
+            let mut stmt = conn.prepare(&node_sql)?;
             let rows = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -530,15 +564,26 @@ impl Store for SqliteStore {
             nodes
         };
 
+        let edge_where = edge_kinds
+            .filter(|kinds| !kinds.is_empty())
+            .map(|kinds| {
+                let values: Vec<_> = kinds
+                    .iter()
+                    .map(|k| format!("'{}'", edge_kind_str(k)))
+                    .collect();
+                format!(" WHERE kind IN ({})", values.join(", "))
+            })
+            .unwrap_or_default();
+
         let edges = if matches!(
             schema_version.as_deref(),
             Some(STORE_SCHEMA_VERSION) | Some(BINARY_PROVENANCE_SCHEMA_VERSION)
         ) {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare(&format!(
                 "SELECT source, target, kind, confidence,
                         direction, operation, condition, async_boundary, provenance
-                 FROM edges",
-            )?;
+                 FROM edges{edge_where}",
+            ))?;
             let rows = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -588,11 +633,11 @@ impl Store for SqliteStore {
             }
             edges
         } else if schema_version.as_deref() == Some("4") {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare(&format!(
                 "SELECT source, target, kind, confidence,
                         direction, operation, condition, async_boundary, provenance
-                 FROM edges",
-            )?;
+                 FROM edges{edge_where}",
+            ))?;
             let rows = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -642,11 +687,11 @@ impl Store for SqliteStore {
             }
             edges
         } else {
-            let mut stmt = conn.prepare(
+            let mut stmt = conn.prepare(&format!(
                 "SELECT source, target, kind, confidence,
                         direction, operation, condition, async_boundary
-                 FROM edges",
-            )?;
+                 FROM edges{edge_where}",
+            ))?;
             let rows = stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1702,5 +1747,171 @@ mod tests {
 
         let node_b = loaded.nodes.iter().find(|n| n.id == "b").unwrap();
         assert_eq!(node_b.snippet, None);
+    }
+
+    #[test]
+    fn load_with_edge_filter_only_loads_matching_kinds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grapha_filter.db");
+        let store = SqliteStore::new(path);
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![Node {
+                id: "a".to_string(),
+                kind: NodeKind::Struct,
+                name: "A".to_string(),
+                file: "a.swift".into(),
+                span: Span {
+                    start: [0, 0],
+                    end: [1, 0],
+                },
+                visibility: Visibility::Public,
+                metadata: HashMap::new(),
+                role: None,
+                signature: None,
+                doc_comment: None,
+                module: None,
+                snippet: None,
+            }],
+            edges: vec![
+                Edge {
+                    source: "a".to_string(),
+                    target: "b".to_string(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "a".to_string(),
+                    target: "c".to_string(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "b".to_string(),
+                    target: "d".to_string(),
+                    kind: EdgeKind::TypeRef,
+                    confidence: 0.8,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+            ],
+        };
+
+        store.save(&graph).unwrap();
+
+        let full = store.load().unwrap();
+        assert_eq!(full.edges.len(), 3);
+
+        let filtered = store
+            .load_with_edge_filter(Some(&[EdgeKind::Contains, EdgeKind::TypeRef]))
+            .unwrap();
+        assert_eq!(filtered.nodes.len(), 1, "all nodes should still be loaded");
+        assert_eq!(
+            filtered.edges.len(),
+            2,
+            "only Contains and TypeRef edges should be loaded"
+        );
+        assert!(filtered.edges.iter().all(|e| matches!(
+            e.kind,
+            EdgeKind::Contains | EdgeKind::TypeRef
+        )));
+    }
+
+    #[test]
+    fn load_filtered_skips_metadata_for_non_matching_nodes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grapha_slim.db");
+        let store = SqliteStore::new(path);
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                Node {
+                    id: "a".to_string(),
+                    kind: NodeKind::View,
+                    name: "Text".to_string(),
+                    file: "a.swift".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [1, 0],
+                    },
+                    visibility: Visibility::Private,
+                    metadata: HashMap::from([
+                        ("l10n.ref_kind".to_string(), "literal".to_string()),
+                        ("l10n.literal".to_string(), "Hello".to_string()),
+                    ]),
+                    role: None,
+                    signature: Some("func body".to_string()),
+                    doc_comment: Some("A doc comment".to_string()),
+                    module: Some("App".to_string()),
+                    snippet: Some("Text(\"Hello\")".to_string()),
+                },
+                Node {
+                    id: "b".to_string(),
+                    kind: NodeKind::Struct,
+                    name: "ContentView".to_string(),
+                    file: "b.swift".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [10, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::from([("async".to_string(), "false".to_string())]),
+                    role: None,
+                    signature: Some("struct ContentView: View".to_string()),
+                    doc_comment: Some("Main view".to_string()),
+                    module: Some("App".to_string()),
+                    snippet: Some("struct ContentView: View { ... }".to_string()),
+                },
+            ],
+            edges: Vec::new(),
+        };
+
+        store.save(&graph).unwrap();
+
+        let slim = store
+            .load_filtered(None, Some("l10n."))
+            .unwrap();
+        assert_eq!(slim.nodes.len(), 2, "all nodes should be loaded");
+
+        let l10n_node = slim.nodes.iter().find(|n| n.id == "a").unwrap();
+        assert_eq!(
+            l10n_node.metadata.get("l10n.ref_kind").map(|s| s.as_str()),
+            Some("literal"),
+            "l10n node should retain its metadata"
+        );
+        assert!(
+            l10n_node.signature.is_none(),
+            "signature should be skipped in slim mode"
+        );
+        assert!(
+            l10n_node.snippet.is_none(),
+            "snippet should be skipped in slim mode"
+        );
+
+        let other_node = slim.nodes.iter().find(|n| n.id == "b").unwrap();
+        assert!(
+            other_node.metadata.is_empty(),
+            "non-l10n node should have empty metadata, got: {:?}",
+            other_node.metadata
+        );
+        assert!(
+            other_node.signature.is_none(),
+            "signature should be skipped in slim mode"
+        );
     }
 }

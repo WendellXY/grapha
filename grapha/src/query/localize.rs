@@ -5,7 +5,8 @@ use serde::Serialize;
 use grapha_core::graph::{Graph, Node};
 
 use crate::localization::{
-    LocalizationCatalogIndex, LocalizationReference, edges_by_source, node_index, resolve_usage,
+    LocalizationCatalogIndex, LocalizationReference, edges_by_source, node_index,
+    resolve_usage_with, wrapper_binding_nodes,
 };
 
 use super::l10n::{contains_adjacency, contains_parents, to_symbol_info, ui_path};
@@ -47,6 +48,7 @@ pub fn query_localize(
     let edges_by_source = edges_by_source(graph);
     let contains_adj = contains_adjacency(graph);
     let parents = contains_parents(graph);
+    let wrapper_nodes = wrapper_binding_nodes(&node_index);
     let usage_ids = usage_ids_in_subtree(root.id.as_str(), &contains_adj, &node_index);
 
     let mut matches = Vec::new();
@@ -56,8 +58,13 @@ pub fn query_localize(
         let Some(usage_node) = node_index.get(usage_id).copied() else {
             continue;
         };
-        let Some(resolution) = resolve_usage(usage_node, &edges_by_source, &node_index, catalogs)
-        else {
+        let Some(resolution) = resolve_usage_with(
+            usage_node,
+            &edges_by_source,
+            &node_index,
+            &wrapper_nodes,
+            catalogs,
+        ) else {
             continue;
         };
 
