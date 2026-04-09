@@ -515,15 +515,15 @@ fn flow_entries_file_scope_and_limit_returns_focused_subset() {
     std::fs::write(
         dir.path().join("RoomPage.rs"),
         r#"
-        fn room_body() {}
-        fn room_share() {}
+        pub fn room_body() {}
+        pub fn room_share() {}
         "#,
     )
     .unwrap();
     std::fs::write(
         dir.path().join("ChatPage.rs"),
         r#"
-        fn chat_body() {}
+        pub fn chat_body() {}
         "#,
     )
     .unwrap();
@@ -862,6 +862,89 @@ fn localize_and_usages_commands_resolve_swiftui_strings_with_l10n_resource() {
     assert_eq!(
         usage_records[0]["usages"][0]["reference"]["wrapper_base"].as_str(),
         Some("L10nResource")
+    );
+}
+
+#[test]
+fn usages_command_resolves_non_view_constructor_localization_arguments() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+
+    std::fs::write(
+        dir.path().join("ContentView.swift"),
+        r#"
+        import Foundation
+
+        public enum L10n {
+            public static var roomShareDesc: String {
+                L10n.tr("Localizable", "room_share_desc", fallback: "I'm in this room")
+            }
+
+            private static func tr(_ table: String, _ key: String, fallback: String) -> String {
+                fallback
+            }
+        }
+
+        struct ShareWithFriendsEntity {
+            let shareText: String
+            let shareLink: String
+        }
+
+        struct ContentView {
+            func onShare(shareLink: String) {
+                let entity = ShareWithFriendsEntity(
+                    shareText: L10n.roomShareDesc,
+                    shareLink: shareLink
+                )
+                _ = entity
+            }
+        }
+        "#,
+    )
+    .unwrap();
+
+    write_localizable_fixture(
+        &dir.path().join("Localizable.xcstrings"),
+        "room_share_desc",
+        "I'm in this room",
+        "Share prompt",
+    );
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let usages_output = grapha()
+        .args([
+            "l10n",
+            "usages",
+            "room_share_desc",
+            "--table",
+            "Localizable",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let usages: Value = serde_json::from_slice(&usages_output).unwrap();
+    let usage_records = usages["records"].as_array().unwrap();
+    assert_eq!(usage_records.len(), 1);
+    let usage_sites = usage_records[0]["usages"].as_array().unwrap();
+    assert_eq!(usage_sites.len(), 1);
+    assert_eq!(usage_sites[0]["owner"]["name"].as_str(), Some("onShare"));
+    assert_eq!(usage_sites[0]["view"]["name"].as_str(), Some("shareText"));
+    assert_eq!(
+        usage_sites[0]["reference"]["wrapper_name"].as_str(),
+        Some("roomShareDesc")
     );
 }
 
