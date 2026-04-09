@@ -711,7 +711,9 @@ fn load_graph(path: &Path) -> anyhow::Result<grapha_core::graph::Graph> {
     let db_path = store_dir.join("grapha.db");
 
     let graph_cache = cache::GraphCache::new(&store_dir);
-    if graph_cache.is_fresh(&db_path) && let Ok(graph) = graph_cache.load() {
+    if graph_cache.is_fresh(&db_path)
+        && let Ok(graph) = graph_cache.load()
+    {
         return Ok(graph);
     }
 
@@ -1319,8 +1321,7 @@ fn handle_l10n_command(
             let query_cache = cache::QueryCache::new(&store_dir);
             let format_key = format!("{format:?}");
             let fields_key = fields.as_deref().unwrap_or("");
-            let cache_key =
-                query_cache_key(&["l10n", "symbol", &symbol, &format_key, fields_key]);
+            let cache_key = query_cache_key(&["l10n", "symbol", &symbol, &format_key, fields_key]);
 
             if let Some(cached) = query_cache.get(&cache_key, &db_path) {
                 print!("{cached}");

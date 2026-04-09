@@ -138,8 +138,7 @@ impl QueryCache {
         if let Some(parent) = self.cache_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let bytes =
-            bincode::serialize(&entries).context("serialising query cache to bincode")?;
+        let bytes = bincode::serialize(&entries).context("serialising query cache to bincode")?;
         fs::write(&self.cache_path, bytes)
             .with_context(|| format!("writing query cache {}", self.cache_path.display()))?;
         Ok(())
@@ -264,7 +263,10 @@ mod tests {
         fs::write(&db_path, b"db v2").unwrap();
 
         let result = qc.get("key", &db_path);
-        assert!(result.is_none(), "cache should be invalidated after db write");
+        assert!(
+            result.is_none(),
+            "cache should be invalidated after db write"
+        );
     }
 
     #[test]

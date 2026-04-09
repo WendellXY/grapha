@@ -454,10 +454,7 @@ impl SqliteStore {
     /// - `metadata_key_prefix`: when set, only deserialize metadata for nodes whose raw
     ///   metadata contains this prefix; other nodes get an empty map. Also skips loading
     ///   signature, doc_comment, and snippet columns.
-    pub fn load_with_edge_filter(
-        &self,
-        edge_kinds: Option<&[EdgeKind]>,
-    ) -> anyhow::Result<Graph> {
+    pub fn load_with_edge_filter(&self, edge_kinds: Option<&[EdgeKind]>) -> anyhow::Result<Graph> {
         self.load_filtered(edge_kinds, None)
     }
 
@@ -1825,10 +1822,12 @@ mod tests {
             2,
             "only Contains and TypeRef edges should be loaded"
         );
-        assert!(filtered.edges.iter().all(|e| matches!(
-            e.kind,
-            EdgeKind::Contains | EdgeKind::TypeRef
-        )));
+        assert!(
+            filtered
+                .edges
+                .iter()
+                .all(|e| matches!(e.kind, EdgeKind::Contains | EdgeKind::TypeRef))
+        );
     }
 
     #[test]
@@ -1883,9 +1882,7 @@ mod tests {
 
         store.save(&graph).unwrap();
 
-        let slim = store
-            .load_filtered(None, Some("l10n."))
-            .unwrap();
+        let slim = store.load_filtered(None, Some("l10n.")).unwrap();
         assert_eq!(slim.nodes.len(), 2, "all nodes should be loaded");
 
         let l10n_node = slim.nodes.iter().find(|n| n.id == "a").unwrap();

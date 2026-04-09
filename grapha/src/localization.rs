@@ -1523,8 +1523,9 @@ mod tests {
     #[test]
     fn resolve_usage_matches_literal_as_catalog_key() {
         let mut usage = Node {
-            id: "Features/Tournament/TournamentView.swift::TournamentView::body::view:Text@5:8:5:30"
-                .to_string(),
+            id:
+                "Features/Tournament/TournamentView.swift::TournamentView::body::view:Text@5:8:5:30"
+                    .to_string(),
             kind: NodeKind::View,
             name: "Text".to_string(),
             file: PathBuf::from("Features/Tournament/TournamentView.swift"),

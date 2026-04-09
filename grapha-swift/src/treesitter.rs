@@ -4270,8 +4270,7 @@ pub fn enrich_localization_metadata_with_tree(
         }
 
         if builtin_view_accepts_localized_title(&view_node.name) {
-            if let Some(reference) = builtin_view_title_reference(text, &view_node.name, bindings)
-            {
+            if let Some(reference) = builtin_view_title_reference(text, &view_node.name, bindings) {
                 let usage_id = emit_localization_usage_node(
                     &mut context,
                     &view_node.id,
@@ -6328,7 +6327,13 @@ class GameManager {
             .filter_map(|node| node.metadata.get("l10n.literal").map(|v| v.as_str()))
             .collect();
 
-        for expected in &["Tournament", "Settings", "Notifications", "Profile", "Account"] {
+        for expected in &[
+            "Tournament",
+            "Settings",
+            "Notifications",
+            "Profile",
+            "Account",
+        ] {
             assert!(
                 literals.contains(expected),
                 "expected literal '{}' from built-in SwiftUI view, got: {:?}",
