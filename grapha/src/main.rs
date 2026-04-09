@@ -1,4 +1,5 @@
 mod assets;
+mod cache;
 mod changes;
 mod classify;
 mod compress;
@@ -712,6 +713,17 @@ fn load_graph(path: &Path) -> anyhow::Result<grapha_core::graph::Graph> {
         .context("no index found — run `grapha index` first")
 }
 
+fn load_graph_for_l10n(path: &Path) -> anyhow::Result<grapha_core::graph::Graph> {
+    use grapha_core::graph::EdgeKind;
+    let db_path = path.join(".grapha/grapha.db");
+    let s = store::sqlite::SqliteStore::new(db_path);
+    s.load_filtered(
+        Some(&[EdgeKind::Contains, EdgeKind::TypeRef]),
+        Some("l10n."),
+    )
+    .context("no index found — run `grapha index` first")
+}
+
 fn store_file_path(format: &str, store_path: &Path) -> anyhow::Result<PathBuf> {
     match format {
         "json" => Ok(store_path.join("graph.json")),
@@ -1282,7 +1294,7 @@ fn handle_l10n_command(
             fields,
         } => {
             let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
-            let graph = load_graph(&path)?;
+            let graph = load_graph_for_l10n(&path)?;
             let catalogs = localization::load_catalog_index(&path)?;
             let result = resolve_query_result(
                 query::localize::query_localize(&graph, &catalogs, &symbol),
@@ -1303,7 +1315,7 @@ fn handle_l10n_command(
             fields,
         } => {
             let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
-            let graph = load_graph(&path)?;
+            let graph = load_graph_for_l10n(&path)?;
             let catalogs = localization::load_catalog_index(&path)?;
             let result = query::usages::query_usages(&graph, &catalogs, &key, table.as_deref());
             print_query_result(
