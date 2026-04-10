@@ -67,7 +67,6 @@ fn apply_swiftui_dynamic_property_metadata(
 }
 
 /// Collect inheritance/conformance names from a class_declaration node.
-
 fn node_by_id_mut<'a>(result: &'a mut ExtractionResult, node_id: &str) -> Option<&'a mut Node> {
     result.nodes.iter_mut().find(|node| node.id == node_id)
 }

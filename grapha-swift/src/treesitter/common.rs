@@ -548,7 +548,6 @@ pub(super) fn find_enclosing_swift_condition(
 }
 
 /// Check if a Swift call node is at an async boundary.
-
 pub(super) fn sanitize_id_component(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for ch in name.chars() {

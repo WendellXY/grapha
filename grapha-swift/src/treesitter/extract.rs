@@ -524,7 +524,6 @@ fn extract_extension(
 }
 
 /// Find the type name from a `user_type > type_identifier` child.
-
 fn extract_protocol(
     node: tree_sitter::Node,
     source: &[u8],
@@ -782,7 +781,6 @@ fn extract_calls_from_text(
 }
 
 /// Find the name from a `pattern > simple_identifier` child.
-
 fn extract_typealias(
     node: tree_sitter::Node,
     source: &[u8],
@@ -962,7 +960,6 @@ fn collect_doc_comments(
 }
 
 /// Extract doc comments from previous sibling comment nodes.
-
 fn detect_swift_async_boundary(node: tree_sitter::Node, source: &[u8]) -> Option<bool> {
     // Check if parent is await_expression
     if let Some(parent) = node.parent()
