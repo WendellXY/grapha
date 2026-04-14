@@ -213,6 +213,7 @@ mod tests {
         };
         let mut modules = ModuleMap::new();
         modules.modules.insert("core".to_string(), vec![src_dir]);
+        modules = modules.with_fallback(dir.path());
         let file_context = file_context(&project, &modules, &file);
 
         let result = extract_with_registry(&registry, b"fn main() {}", &file_context).unwrap();

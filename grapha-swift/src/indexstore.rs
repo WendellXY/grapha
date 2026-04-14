@@ -138,6 +138,19 @@ fn get_or_open_store(index_store_path: &Path) -> Option<Arc<StoreHandle>> {
     })
 }
 
+pub fn warmup_indexstore(index_store_path: &Path) {
+    let Some(bridge) = bridge::bridge() else {
+        return;
+    };
+    let Some(warmup_fn) = bridge.indexstore_warmup else {
+        return;
+    };
+    let Some(handle) = get_or_open_store(index_store_path) else {
+        return;
+    };
+    unsafe { warmup_fn(handle.ptr) };
+}
+
 pub fn extract_from_indexstore(
     file_path: &Path,
     index_store_path: &Path,

@@ -32,6 +32,7 @@ type IndexStoreOpenFn = unsafe extern "C" fn(*const i8, *mut i32) -> *mut std::f
 type IndexStoreCloseFn = unsafe extern "C" fn(*mut std::ffi::c_void);
 type IndexStoreExtractFn =
     unsafe extern "C" fn(*mut std::ffi::c_void, *const i8, *mut u32, *mut i32) -> *const u8;
+type IndexStoreWarmupFn = unsafe extern "C" fn(*mut std::ffi::c_void);
 type SwiftSyntaxExtractFn = unsafe extern "C" fn(*const i8, usize, *const i8) -> *const i8;
 type FreeStringFn = unsafe extern "C" fn(*mut i8);
 type FreeBufferFn = unsafe extern "C" fn(*mut u8);
@@ -41,6 +42,7 @@ pub struct SwiftBridge {
     pub indexstore_open: IndexStoreOpenFn,
     pub indexstore_close: IndexStoreCloseFn,
     pub indexstore_extract: IndexStoreExtractFn,
+    pub indexstore_warmup: Option<IndexStoreWarmupFn>,
     pub swiftsyntax_extract: SwiftSyntaxExtractFn,
     pub free_string: FreeStringFn,
     pub free_buffer: FreeBufferFn,
@@ -69,6 +71,10 @@ impl SwiftBridge {
             let indexstore_extract = *lib
                 .get::<IndexStoreExtractFn>(b"grapha_indexstore_extract")
                 .ok()?;
+            let indexstore_warmup = lib
+                .get::<IndexStoreWarmupFn>(b"grapha_indexstore_warmup")
+                .ok()
+                .map(|s| *s);
             let swiftsyntax_extract = *lib
                 .get::<SwiftSyntaxExtractFn>(b"grapha_swiftsyntax_extract")
                 .ok()?;
@@ -80,6 +86,7 @@ impl SwiftBridge {
                 indexstore_open,
                 indexstore_close,
                 indexstore_extract,
+                indexstore_warmup,
                 swiftsyntax_extract,
                 free_string,
                 free_buffer,

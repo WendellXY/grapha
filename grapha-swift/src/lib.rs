@@ -165,6 +165,9 @@ pub fn init_index_store(project_root: &Path) {
 
 fn prepare_project_index_store(project_root: &Path) {
     prepare_project_with(&INDEX_STORE_PATHS, project_root, discover_index_store);
+    if let Some(store_path) = index_store_path(project_root) {
+        indexstore::warmup_indexstore(&store_path);
+    }
 }
 
 fn prepare_project_with<F>(

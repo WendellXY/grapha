@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -9,15 +10,23 @@ use grapha_core::graph::{
 
 use super::{ExtractionResult, LanguageExtractor};
 
+thread_local! {
+    static RUST_PARSER: RefCell<Parser> = RefCell::new({
+        let mut p = Parser::new();
+        p.set_language(&tree_sitter_rust::LANGUAGE.into()).expect("failed to load Rust grammar");
+        p
+    });
+}
+
 pub struct RustExtractor;
 
 impl LanguageExtractor for RustExtractor {
     fn extract(&self, source: &[u8], file_path: &Path) -> anyhow::Result<ExtractionResult> {
-        let mut parser = Parser::new();
-        parser.set_language(&tree_sitter_rust::LANGUAGE.into())?;
-        let tree = parser
-            .parse(source, None)
-            .ok_or_else(|| anyhow::anyhow!("tree-sitter failed to parse source"))?;
+        let tree = RUST_PARSER.with_borrow_mut(|parser| {
+            parser
+                .parse(source, None)
+                .ok_or_else(|| anyhow::anyhow!("tree-sitter failed to parse source"))
+        })?;
 
         let mut result = ExtractionResult::new();
         let file_str = file_path.to_string_lossy().to_string();

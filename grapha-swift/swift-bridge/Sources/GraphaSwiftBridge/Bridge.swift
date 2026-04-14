@@ -72,6 +72,14 @@ public func indexstoreExtract(
     return UnsafeRawPointer(ptr)
 }
 
+@c(grapha_indexstore_warmup)
+public func indexstoreWarmup(_ handle: UnsafeMutableRawPointer?) {
+    guard let handle else { return }
+    let key = Int(bitPattern: handle)
+    let reader = _readers.withLock { $0[key] }
+    reader?.warmup()
+}
+
 // MARK: - SwiftSyntax
 
 @c(grapha_swiftsyntax_extract)

@@ -149,12 +149,18 @@ pub(crate) fn run_pipeline(
     let t_read_ns = AtomicU64::new(0);
     let t_extract_ns = AtomicU64::new(0);
     let t_snippet_ns = AtomicU64::new(0);
+    let t_file_context_ns = AtomicU64::new(0);
+    let t_total_per_file_ns = AtomicU64::new(0);
+    let t_max_single_file_ns = AtomicU64::new(0);
     let extraction_cache_entries = Mutex::new(std::collections::HashMap::new());
 
     let results: Vec<_> = all_files
         .par_iter()
         .filter_map(|file| {
+            let t_file_start = Instant::now();
+            let t_fc = Instant::now();
             let file_context = grapha_core::file_context(&project_context, &module_map, file);
+            t_file_context_ns.fetch_add(t_fc.elapsed().as_nanos() as u64, Ordering::Relaxed);
             let cache_key = extraction_cache_key(&file_context.relative_path);
             if let Some(existing_cache) = existing_extraction_cache
                 && let Some(entry) = existing_cache.get(&cache_key)
@@ -169,6 +175,9 @@ pub(crate) fn run_pipeline(
                     .lock()
                     .expect("extraction cache mutex poisoned")
                     .insert(cache_key, entry.clone());
+                let file_ns = t_file_start.elapsed().as_nanos() as u64;
+                t_total_per_file_ns.fetch_add(file_ns, Ordering::Relaxed);
+                t_max_single_file_ns.fetch_max(file_ns, Ordering::Relaxed);
                 return Some(entry.result.clone());
             }
 
@@ -180,6 +189,9 @@ pub(crate) fn run_pipeline(
                     if let Some(ref pb) = pb {
                         pb.inc(1);
                     }
+                    let file_ns = t_file_start.elapsed().as_nanos() as u64;
+                    t_total_per_file_ns.fetch_add(file_ns, Ordering::Relaxed);
+                    t_max_single_file_ns.fetch_max(file_ns, Ordering::Relaxed);
                     return None;
                 }
             };
@@ -225,6 +237,9 @@ pub(crate) fn run_pipeline(
                             .expect("extraction cache mutex poisoned")
                             .insert(key, entry);
                     }
+                    let file_ns = t_file_start.elapsed().as_nanos() as u64;
+                    t_total_per_file_ns.fetch_add(file_ns, Ordering::Relaxed);
+                    t_max_single_file_ns.fetch_max(file_ns, Ordering::Relaxed);
                     Some(result)
                 }
                 Err(e) => {
@@ -234,6 +249,9 @@ pub(crate) fn run_pipeline(
                             eprintln!("  \x1b[33m!\x1b[0m skipping {}: {e}", file.display())
                         });
                     }
+                    let file_ns = t_file_start.elapsed().as_nanos() as u64;
+                    t_total_per_file_ns.fetch_add(file_ns, Ordering::Relaxed);
+                    t_max_single_file_ns.fetch_max(file_ns, Ordering::Relaxed);
                     None
                 }
             }
@@ -279,10 +297,14 @@ pub(crate) fn run_pipeline(
         let ts_fb_ms = grapha_swift::TIMING_TS_FALLBACK_NS
             .load(std::sync::atomic::Ordering::Relaxed) as f64
             / 1_000_000.0;
+        let fc_ms = t_file_context_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        let total_per_file_ms = t_total_per_file_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+        let max_single_file_ms = t_max_single_file_ns.load(Ordering::Relaxed) as f64 / 1_000_000.0;
         eprintln!(
-            "    thread-summed: read {:.0}ms, extract {:.0}ms, snippet {:.0}ms",
-            read_ms, extract_ms, snippet_ms
+            "    thread-summed: read {:.0}ms, extract {:.0}ms, snippet {:.0}ms, file_context {:.0}ms, total_per_file {:.0}ms",
+            read_ms, extract_ms, snippet_ms, fc_ms, total_per_file_ms
         );
+        eprintln!("    max_single_file: {:.0}ms", max_single_file_ms);
         eprintln!(
             "    swift: indexstore {:.0}ms, ts-parse {:.0}ms, doc {:.0}ms, swiftui {:.0}ms, l10n {:.0}ms, asset {:.0}ms, swiftsyntax {:.0}ms, ts-fallback {:.0}ms",
             is_ms, ts_parse_ms, doc_ms, swiftui_ms, l10n_ms, asset_ms, ss_ms, ts_fb_ms

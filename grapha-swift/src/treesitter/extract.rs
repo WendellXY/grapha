@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -9,24 +10,28 @@ use grapha_core::{ExtractionResult, LanguageExtractor};
 use super::common::*;
 use super::swiftui::extract_swiftui_declaration_structure;
 
+thread_local! {
+    static SWIFT_PARSER: RefCell<Parser> = RefCell::new({
+        let mut p = Parser::new();
+        p.set_language(&tree_sitter_swift::LANGUAGE.into()).expect("failed to load Swift grammar");
+        p
+    });
+}
+
 /// Parse Swift source once. Reuse the tree across enrichment passes.
 pub fn parse_swift(source: &[u8]) -> anyhow::Result<Tree> {
-    let mut parser = Parser::new();
-    parser.set_language(&tree_sitter_swift::LANGUAGE.into())?;
-    parser
-        .parse(source, None)
-        .ok_or_else(|| anyhow::anyhow!("tree-sitter failed to parse Swift source"))
+    SWIFT_PARSER.with_borrow_mut(|parser| {
+        parser
+            .parse(source, None)
+            .ok_or_else(|| anyhow::anyhow!("tree-sitter failed to parse Swift source"))
+    })
 }
 
 pub struct SwiftExtractor;
 
 impl LanguageExtractor for SwiftExtractor {
     fn extract(&self, source: &[u8], file_path: &Path) -> anyhow::Result<ExtractionResult> {
-        let mut parser = Parser::new();
-        parser.set_language(&tree_sitter_swift::LANGUAGE.into())?;
-        let tree = parser
-            .parse(source, None)
-            .ok_or_else(|| anyhow::anyhow!("tree-sitter failed to parse Swift source"))?;
+        let tree = parse_swift(source)?;
 
         let mut result = ExtractionResult::new();
         let file_str = file_path.to_string_lossy().to_string();

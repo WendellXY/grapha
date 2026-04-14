@@ -51,6 +51,8 @@ pub struct LineIndex<'a> {
     source: &'a str,
     /// Byte offsets of the start of each line.
     line_starts: Vec<usize>,
+    /// Cached split lines for declaration scanning.
+    lines: Vec<&'a str>,
 }
 
 struct SnippetCandidate {
@@ -66,9 +68,11 @@ impl<'a> LineIndex<'a> {
                 line_starts.push(i + 1);
             }
         }
+        let lines: Vec<&str> = source.lines().collect();
         Self {
             source,
             line_starts,
+            lines,
         }
     }
 
@@ -120,18 +124,13 @@ impl<'a> LineIndex<'a> {
         if symbol.is_empty() {
             return None;
         }
-
-        self.source
-            .lines()
-            .enumerate()
-            .filter_map(|(line_idx, line)| {
-                let trimmed = line.trim_end();
-                declaration_matches_symbol(trimmed, symbol, kind).then(|| SnippetCandidate {
-                    snippet: trimmed.to_string(),
-                    anchor_line: line_idx,
-                })
+        search_outward_from(&self.lines, preferred_line, |idx, line| {
+            let trimmed = line.trim_end();
+            declaration_matches_symbol(trimmed, symbol, kind).then(|| SnippetCandidate {
+                snippet: trimmed.to_string(),
+                anchor_line: idx,
             })
-            .min_by_key(|candidate| candidate.anchor_line.abs_diff(preferred_line))
+        })
     }
 
     fn declaration_block_for_symbol(
@@ -152,20 +151,15 @@ impl<'a> LineIndex<'a> {
             return None;
         }
 
-        let lines: Vec<&str> = self.source.lines().collect();
-        let start_idx = lines
-            .iter()
-            .enumerate()
-            .filter_map(|(line_idx, line)| {
-                declaration_matches_symbol(line.trim_end(), symbol, kind).then_some(line_idx)
-            })
-            .min_by_key(|line_idx| line_idx.abs_diff(preferred_line))?;
+        let start_idx = search_outward_from(&self.lines, preferred_line, |idx, line| {
+            declaration_matches_symbol(line.trim_end(), symbol, kind).then_some(idx)
+        })?;
 
         let mut collected = Vec::new();
         let mut brace_depth = 0usize;
         let mut saw_open_brace = false;
 
-        for line in lines.iter().skip(start_idx) {
+        for line in self.lines.iter().skip(start_idx) {
             let trimmed = line.trim_end();
             collected.push(*line);
 
@@ -367,6 +361,42 @@ impl<'a> LineIndex<'a> {
     fn declaration_block_scan_count() -> usize {
         DECLARATION_BLOCK_SCAN_COUNT.with(Cell::get)
     }
+}
+
+const MAX_DECLARATION_SEARCH_RADIUS: usize = 200;
+
+fn search_outward_from<T>(
+    lines: &[&str],
+    preferred: usize,
+    mut check: impl FnMut(usize, &str) -> Option<T>,
+) -> Option<T> {
+    let len = lines.len();
+    if len == 0 {
+        return None;
+    }
+    let center = preferred.min(len - 1);
+    if let Some(result) = check(center, lines[center]) {
+        return Some(result);
+    }
+    let max_delta = MAX_DECLARATION_SEARCH_RADIUS.min(len);
+    for delta in 1..max_delta {
+        let lo = center.checked_sub(delta);
+        let hi = center + delta;
+        if let Some(lo) = lo
+            && let Some(result) = check(lo, lines[lo])
+        {
+            return Some(result);
+        }
+        if hi < len
+            && let Some(result) = check(hi, lines[hi])
+        {
+            return Some(result);
+        }
+        if lo.is_none() && hi >= len {
+            break;
+        }
+    }
+    None
 }
 
 fn push_unique_candidate(candidates: &mut Vec<SnippetCandidate>, candidate: SnippetCandidate) {

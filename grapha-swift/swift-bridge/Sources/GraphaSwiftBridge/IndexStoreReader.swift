@@ -171,22 +171,12 @@ final class IndexStoreReader: @unchecked Sendable {
 
     // MARK: - Public
 
+    func warmup() {
+        ensureFileIndex()
+    }
+
     func extractFile(_ filePath: String) -> (UnsafeMutableRawPointer, UInt32)? {
-        if fileIndex == nil {
-            if let cached = _sharedFileIndexCache.withLock({ $0[storePath] }) {
-                fileIndex = cached
-            } else {
-                _buildIndexLock.withLock { _ in
-                    if let cached = _sharedFileIndexCache.withLock({ $0[storePath] }) {
-                        fileIndex = cached
-                    } else {
-                        fileIndex = buildFileIndex()
-                        let idx = fileIndex!
-                        _sharedFileIndexCache.withLock { $0[storePath] = idx }
-                    }
-                }
-            }
-        }
+        ensureFileIndex()
 
         let resolved = resolvePath(filePath)
         // Fast last-path-component extraction without Foundation URL
@@ -217,6 +207,24 @@ final class IndexStoreReader: @unchecked Sendable {
     }
 
     // MARK: - File Index (built once)
+
+    private func ensureFileIndex() {
+        if fileIndex == nil {
+            if let cached = _sharedFileIndexCache.withLock({ $0[storePath] }) {
+                fileIndex = cached
+            } else {
+                _buildIndexLock.withLock { _ in
+                    if let cached = _sharedFileIndexCache.withLock({ $0[storePath] }) {
+                        fileIndex = cached
+                    } else {
+                        fileIndex = buildFileIndex()
+                        let idx = fileIndex!
+                        _sharedFileIndexCache.withLock { $0[storePath] = idx }
+                    }
+                }
+            }
+        }
+    }
 
     private func buildFileIndex() -> [String: UnitInfo] {
         _cbStore = store

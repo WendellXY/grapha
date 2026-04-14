@@ -26,7 +26,18 @@ impl ModuleMap {
                 .to_string();
             self.modules.insert(name, vec![root.to_path_buf()]);
         }
+        self.canonicalize_dirs();
         self
+    }
+
+    fn canonicalize_dirs(&mut self) {
+        for dirs in self.modules.values_mut() {
+            for dir in dirs.iter_mut() {
+                if let Ok(canonical) = dir.canonicalize() {
+                    *dir = canonical;
+                }
+            }
+        }
     }
 
     pub fn module_for_file(&self, file: &Path) -> Option<String> {
@@ -35,9 +46,7 @@ impl ModuleMap {
 
         for (name, dirs) in &self.modules {
             for dir in dirs {
-                let canonical_dir = normalize_path(dir);
-
-                if let Ok(suffix) = canonical_file.strip_prefix(&canonical_dir) {
+                if let Ok(suffix) = canonical_file.strip_prefix(dir) {
                     let depth = suffix.components().count();
                     match best_match {
                         Some((_, best_depth)) if depth < best_depth => {
@@ -52,7 +61,7 @@ impl ModuleMap {
 
                 if best_match.is_none()
                     && file.is_relative()
-                    && let Some(dir_name) = canonical_dir.file_name().and_then(|name| name.to_str())
+                    && let Some(dir_name) = dir.file_name().and_then(|name| name.to_str())
                 {
                     let file_str = file.to_string_lossy();
                     if file_str.starts_with(dir_name)
