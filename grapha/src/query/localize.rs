@@ -422,6 +422,7 @@ mod tests {
     use super::*;
     use crate::localization::LocalizationCatalogRecord;
     use grapha_core::graph::{Edge, EdgeKind, NodeKind, Span, Visibility};
+    use std::collections::BTreeMap;
     use std::collections::HashMap as StdHashMap;
     use std::path::PathBuf;
 
@@ -501,6 +502,7 @@ mod tests {
             source_value: "Welcome".to_string(),
             status: "translated".to_string(),
             comment: None,
+            translations: BTreeMap::new(),
         });
 
         let result = query_localize(&graph, &catalogs, "body").unwrap();
@@ -571,6 +573,7 @@ mod tests {
             source_value: "Welcome".to_string(),
             status: "translated".to_string(),
             comment: None,
+            translations: BTreeMap::new(),
         });
 
         let result = query_localize(&graph, &catalogs, "welcomeTitle").unwrap();
@@ -641,6 +644,7 @@ mod tests {
             source_value: "Welcome".to_string(),
             status: "translated".to_string(),
             comment: None,
+            translations: BTreeMap::new(),
         });
 
         let result = query_localize(&graph, &catalogs, "wrapper").unwrap();
@@ -797,6 +801,7 @@ mod tests {
             source_value: "Welcome".to_string(),
             status: "translated".to_string(),
             comment: None,
+            translations: BTreeMap::new(),
         });
 
         let result = query_localize(&graph, &catalogs, "welcomeTitle").unwrap();
@@ -846,6 +851,7 @@ mod tests {
             source_value: "Welcome".to_string(),
             status: "translated".to_string(),
             comment: None,
+            translations: BTreeMap::new(),
         });
 
         let result = query_localize(&graph, &catalogs, "welcomeTitle").unwrap();

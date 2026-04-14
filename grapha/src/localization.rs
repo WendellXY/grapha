@@ -36,6 +36,8 @@ pub struct LocalizationCatalogRecord {
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub translations: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +125,7 @@ pub struct LocalizationCatalogIndex {
     records: Vec<LocalizationCatalogRecord>,
     by_table_key: HashMap<(String, String), Vec<usize>>,
     by_key: HashMap<String, Vec<usize>>,
+    by_value: HashMap<String, Vec<usize>>,
 }
 
 impl LocalizationCatalogIndex {
@@ -136,6 +139,17 @@ impl LocalizationCatalogIndex {
             .entry(record.key.clone())
             .or_default()
             .push(index);
+        if !record.source_value.is_empty() {
+            self.by_value
+                .entry(record.source_value.clone())
+                .or_default()
+                .push(index);
+        }
+        for value in record.translations.values() {
+            if !value.is_empty() {
+                self.by_value.entry(value.clone()).or_default().push(index);
+            }
+        }
         self.records.push(record);
     }
 
@@ -161,6 +175,16 @@ impl LocalizationCatalogIndex {
     pub fn records_for_key(&self, key: &str) -> Vec<LocalizationCatalogRecord> {
         self.by_key
             .get(key)
+            .into_iter()
+            .flatten()
+            .filter_map(|index| self.records.get(*index))
+            .cloned()
+            .collect()
+    }
+
+    pub fn records_for_value(&self, value: &str) -> Vec<LocalizationCatalogRecord> {
+        self.by_value
+            .get(value)
             .into_iter()
             .flatten()
             .filter_map(|index| self.records.get(*index))
@@ -240,6 +264,23 @@ fn build_catalog_snapshot(
         let catalog_file = path_relative_to_root(&root, &catalog.path);
         let catalog_dir = path_to_snapshot_string(&path_relative_to_root(&root, &catalog.base_dir));
 
+        let mut translations_by_key: HashMap<String, BTreeMap<String, String>> = HashMap::new();
+        for resource in &codec.resources {
+            let lang = &resource.metadata.language;
+            if lang == &source_language {
+                continue;
+            }
+            for entry in &resource.entries {
+                let value = translation_plain_string(&entry.value);
+                if !value.is_empty() {
+                    translations_by_key
+                        .entry(entry.id.clone())
+                        .or_default()
+                        .insert(lang.clone(), value);
+                }
+            }
+        }
+
         for entry in &source_resource.entries {
             records.push(LocalizationCatalogRecord {
                 table: table.clone(),
@@ -253,6 +294,9 @@ fn build_catalog_snapshot(
                     .trim_matches('"')
                     .to_string(),
                 comment: entry.comment.clone(),
+                translations: translations_by_key
+                    .remove(&entry.id)
+                    .unwrap_or_default(),
             });
         }
     }
@@ -1054,6 +1098,108 @@ mod tests {
     }
 
     #[test]
+    fn lookup_by_source_value() {
+        let index = LocalizationCatalogIndex::from_records(vec![LocalizationCatalogRecord {
+            table: "Localizable".to_string(),
+            key: "entrance_effect".to_string(),
+            catalog_file: "Localizable.xcstrings".to_string(),
+            catalog_dir: ".".to_string(),
+            source_language: "zh-Hans".to_string(),
+            source_value: "进场特效".to_string(),
+            status: "translated".to_string(),
+            comment: None,
+            translations: BTreeMap::new(),
+        }]);
+
+        assert!(index.records_for_key("进场特效").is_empty());
+
+        let records = index.records_for_value("进场特效");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].key, "entrance_effect");
+    }
+
+    #[test]
+    fn lookup_by_translation_value() {
+        let mut translations = BTreeMap::new();
+        translations.insert("zh-Hans".to_string(), "欢迎".to_string());
+        translations.insert("fr".to_string(), "Bienvenue".to_string());
+
+        let index = LocalizationCatalogIndex::from_records(vec![LocalizationCatalogRecord {
+            table: "Localizable".to_string(),
+            key: "welcome_title".to_string(),
+            catalog_file: "Localizable.xcstrings".to_string(),
+            catalog_dir: ".".to_string(),
+            source_language: "en".to_string(),
+            source_value: "Welcome".to_string(),
+            status: "translated".to_string(),
+            comment: None,
+            translations,
+        }]);
+
+        assert!(index.records_for_key("欢迎").is_empty());
+
+        let records = index.records_for_value("欢迎");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].key, "welcome_title");
+
+        let records = index.records_for_value("Bienvenue");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].key, "welcome_title");
+
+        let records = index.records_for_value("Welcome");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].key, "welcome_title");
+    }
+
+    #[test]
+    fn snapshot_stores_non_source_translations() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_dir = dir.path().join(".grapha");
+        let file = dir.path().join("Localizable.xcstrings");
+        fs::write(
+            &file,
+            r#"{
+              "sourceLanguage" : "en",
+              "strings" : {
+                "welcome_title" : {
+                  "localizations" : {
+                    "en" : {
+                      "stringUnit" : {
+                        "state" : "translated",
+                        "value" : "Welcome"
+                      }
+                    },
+                    "zh-Hans" : {
+                      "stringUnit" : {
+                        "state" : "translated",
+                        "value" : "欢迎"
+                      }
+                    }
+                  }
+                }
+              },
+              "version" : "1.0"
+            }"#,
+        )
+        .unwrap();
+
+        build_and_save_catalog_snapshot(dir.path(), &store_dir).unwrap();
+        let index = load_catalog_index_from_store(&store_dir).unwrap();
+
+        let records = index.records_for_key("welcome_title");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].source_value, "Welcome");
+        assert_eq!(
+            records[0].translations.get("zh-Hans").map(String::as_str),
+            Some("欢迎")
+        );
+
+        let by_value = index.records_for_value("欢迎");
+        assert_eq!(by_value.len(), 1);
+        assert_eq!(by_value[0].key, "welcome_title");
+    }
+
+    #[test]
     fn builds_and_loads_strings_catalogs() {
         let dir = tempfile::tempdir().unwrap();
         let store_dir = dir.path().join(".grapha");
@@ -1223,6 +1369,7 @@ mod tests {
                 source_value: "Auth".to_string(),
                 status: "translated".to_string(),
                 comment: None,
+                translations: BTreeMap::new(),
             },
             LocalizationCatalogRecord {
                 table: "Localizable".to_string(),
@@ -1233,6 +1380,7 @@ mod tests {
                 source_value: "Profile".to_string(),
                 status: "translated".to_string(),
                 comment: None,
+                translations: BTreeMap::new(),
             },
         ];
 
@@ -1256,6 +1404,7 @@ mod tests {
                 source_value: "A".to_string(),
                 status: "translated".to_string(),
                 comment: None,
+                translations: BTreeMap::new(),
             },
             LocalizationCatalogRecord {
                 table: "Localizable".to_string(),
@@ -1266,6 +1415,7 @@ mod tests {
                 source_value: "B".to_string(),
                 status: "translated".to_string(),
                 comment: None,
+                translations: BTreeMap::new(),
             },
         ];
 
@@ -1370,6 +1520,7 @@ mod tests {
             source_value: "Welcome".to_string(),
             status: "translated".to_string(),
             comment: None,
+            translations: BTreeMap::new(),
         }]);
 
         let resolution = resolve_usage(
@@ -1482,6 +1633,7 @@ mod tests {
             source_value: "Share room".to_string(),
             status: "translated".to_string(),
             comment: None,
+            translations: BTreeMap::new(),
         }]);
 
         let resolution = resolve_usage(
@@ -1603,6 +1755,7 @@ mod tests {
                 source_value: "The ID you entered does not exist".to_string(),
                 status: "translated".to_string(),
                 comment: None,
+                translations: BTreeMap::new(),
             },
             LocalizationCatalogRecord {
                 table: "Localizable".to_string(),
@@ -1613,6 +1766,7 @@ mod tests {
                 source_value: "List is empty".to_string(),
                 status: "translated".to_string(),
                 comment: None,
+                translations: BTreeMap::new(),
             },
         ]);
 
@@ -1675,6 +1829,7 @@ mod tests {
             source_value: "Tournament".to_string(),
             status: "translated".to_string(),
             comment: None,
+            translations: BTreeMap::new(),
         }]);
 
         let resolution = resolve_usage(

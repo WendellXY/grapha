@@ -340,9 +340,9 @@ enum L10nCommands {
         #[arg(long)]
         fields: Option<String>,
     },
-    /// Find SwiftUI usage sites for a localization key
+    /// Find SwiftUI usage sites for a localization key or translated value
     Usages {
-        /// Localization key
+        /// Localization key or translated string value
         key: String,
         /// Optional table/catalog name
         #[arg(long)]

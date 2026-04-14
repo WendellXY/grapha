@@ -38,6 +38,23 @@ pub(crate) fn load_graph_for_l10n(path: &Path) -> anyhow::Result<grapha_core::gr
     .context("no index found — run `grapha index` first")
 }
 
+pub(crate) fn load_graph_for_l10n_usages(path: &Path) -> anyhow::Result<grapha_core::graph::Graph> {
+    use grapha_core::graph::EdgeKind;
+    let db_path = path.join(".grapha/grapha.db");
+    let s = store::sqlite::SqliteStore::new(db_path);
+    s.load_filtered(
+        Some(&[
+            EdgeKind::Contains,
+            EdgeKind::TypeRef,
+            EdgeKind::Calls,
+            EdgeKind::Implements,
+            EdgeKind::Uses,
+        ]),
+        Some("l10n."),
+    )
+    .context("no index found — run `grapha index` first")
+}
+
 fn store_file_path(format: &str, store_path: &Path) -> anyhow::Result<PathBuf> {
     match format {
         "json" => Ok(store_path.join("graph.json")),

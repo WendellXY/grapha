@@ -1248,6 +1248,8 @@ pub fn render_impact_with_options(result: &ImpactResult, options: RenderOptions)
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use grapha_core::graph::{NodeKind, Visibility};
 
     use crate::localization::{LocalizationCatalogRecord, LocalizationReference};
@@ -1887,6 +1889,7 @@ mod tests {
                     source_value: "Welcome".into(),
                     status: "translated".into(),
                     comment: None,
+                    translations: BTreeMap::new(),
                 },
                 match_kind: "wrapper".into(),
             }],
@@ -1922,6 +1925,8 @@ mod tests {
             query: UsageQuery {
                 key: "welcome_title".into(),
                 table: Some("Localizable".into()),
+                matched_by: None,
+                resolved_key: None,
             },
             records: vec![RecordUsages {
                 record: LocalizationCatalogRecord {
@@ -1933,6 +1938,7 @@ mod tests {
                     source_value: "Welcome".into(),
                     status: "translated".into(),
                     comment: None,
+                    translations: BTreeMap::new(),
                 },
                 usages: vec![UsageSite {
                     owner: symbol_info("body", NodeKind::Property, "ContentView.swift"),

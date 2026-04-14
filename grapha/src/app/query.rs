@@ -9,7 +9,7 @@ use crate::{
     SymbolCommands, assets, cache, changes, config, fields, localization, query, render, search,
 };
 
-use super::index::{load_graph, load_graph_for_l10n, open_search_index};
+use super::index::{load_graph, load_graph_for_l10n, load_graph_for_l10n_usages, open_search_index};
 
 fn query_cache_key(parts: &[&str]) -> String {
     parts.join("\0")
@@ -427,7 +427,7 @@ pub(crate) fn handle_l10n_command(
             }
 
             let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
-            let graph = load_graph_for_l10n(&path)?;
+            let graph = load_graph_for_l10n_usages(&path)?;
             let catalogs = localization::load_catalog_index(&path)?;
             let result = query::usages::query_usages(&graph, &catalogs, &key, table.as_deref());
 
