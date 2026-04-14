@@ -9,7 +9,9 @@ use crate::{
     SymbolCommands, assets, cache, changes, config, fields, localization, query, render, search,
 };
 
-use super::index::{load_graph, load_graph_for_l10n, load_graph_for_l10n_usages, open_search_index};
+use super::index::{
+    load_graph, load_graph_for_l10n, load_graph_for_l10n_usages, open_search_index,
+};
 
 fn query_cache_key(parts: &[&str]) -> String {
     parts.join("\0")

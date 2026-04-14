@@ -294,9 +294,7 @@ fn build_catalog_snapshot(
                     .trim_matches('"')
                     .to_string(),
                 comment: entry.comment.clone(),
-                translations: translations_by_key
-                    .remove(&entry.id)
-                    .unwrap_or_default(),
+                translations: translations_by_key.remove(&entry.id).unwrap_or_default(),
             });
         }
     }
@@ -538,7 +536,7 @@ fn closest_records(
         .collect()
 }
 
-fn directory_distance(usage_file: &Path, catalog_dir: &str) -> usize {
+pub fn directory_distance(usage_file: &Path, catalog_dir: &str) -> usize {
     let usage_dir = usage_file.parent().unwrap_or_else(|| Path::new("."));
     let usage_components = normalized_components(usage_dir);
     let catalog_components = normalized_components(Path::new(catalog_dir));
