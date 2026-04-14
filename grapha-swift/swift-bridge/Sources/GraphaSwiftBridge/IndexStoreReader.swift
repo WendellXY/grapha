@@ -96,12 +96,17 @@ import Synchronization
 
 // MARK: - Callback State
 
-// buildFileIndex globals — only called once, no concurrency concern.
+// buildFileIndex globals — serialized by _buildIndexLock.
 private let _buildIndexLock = Mutex<Void>(())
 nonisolated(unsafe) private var _cbStore: indexstore_t? = nil
 nonisolated(unsafe) private var _cbFileIndex: [String: UnitInfo] = [:]
 nonisolated(unsafe) private var _cbRecordName: String? = nil
 nonisolated(unsafe) private var _cbImports: [ExtractedImport] = []
+
+/// Shared file index cache keyed by store path. Multiple IndexStoreReader
+/// instances for the same store share a single file index, avoiding
+/// redundant unit scans when threads each open their own handle.
+private let _sharedFileIndexCache = Mutex<[String: [String: UnitInfo]]>([:])
 
 /// Per-extraction context passed through the `ctx` pointer of _apply_f callbacks.
 /// This eliminates global mutable state, allowing concurrent extractions.
@@ -147,6 +152,7 @@ private func _collectRecordName(_ ctx: UnsafeMutableRawPointer?, _ dep: indexsto
 
 final class IndexStoreReader: @unchecked Sendable {
     private let store: indexstore_t
+    private let storePath: String
     /// Lazy file→unit index, built on first access
     private var fileIndex: [String: UnitInfo]?
 
@@ -156,6 +162,7 @@ final class IndexStoreReader: @unchecked Sendable {
             return nil
         }
         self.store = store
+        self.storePath = storePath
     }
 
     deinit {
@@ -165,11 +172,18 @@ final class IndexStoreReader: @unchecked Sendable {
     // MARK: - Public
 
     func extractFile(_ filePath: String) -> (UnsafeMutableRawPointer, UInt32)? {
-        // Build the file index once (thread-safe via lock)
         if fileIndex == nil {
-            _buildIndexLock.withLock { _ in
-                if fileIndex == nil {
-                    fileIndex = buildFileIndex()
+            if let cached = _sharedFileIndexCache.withLock({ $0[storePath] }) {
+                fileIndex = cached
+            } else {
+                _buildIndexLock.withLock { _ in
+                    if let cached = _sharedFileIndexCache.withLock({ $0[storePath] }) {
+                        fileIndex = cached
+                    } else {
+                        fileIndex = buildFileIndex()
+                        let idx = fileIndex!
+                        _sharedFileIndexCache.withLock { $0[storePath] = idx }
+                    }
                 }
             }
         }
