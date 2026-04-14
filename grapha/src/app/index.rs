@@ -153,8 +153,76 @@ pub(crate) fn handle_index(
             .map(|prev| delta::GraphDelta::between(prev, &graph))
     };
 
+    let graph_unchanged = delta.as_ref().is_some_and(|d| d.is_empty());
+
     let search_index_path = store_path.join("search_index");
     let index_root = path.clone();
+
+    if graph_unchanged {
+        let snapshot_result = std::thread::scope(|scope| {
+            let localization_handle = scope.spawn(|| {
+                let t = Instant::now();
+                let stats =
+                    localization::build_and_save_catalog_snapshot(&index_root, &store_path)?;
+                Ok::<_, anyhow::Error>((t.elapsed(), stats))
+            });
+
+            let assets_handle = scope.spawn(|| {
+                let t = Instant::now();
+                let stats = assets::build_and_save_snapshot(&index_root, &store_path)?;
+                Ok::<_, anyhow::Error>((t.elapsed(), stats))
+            });
+
+            let localization = localization_handle
+                .join()
+                .expect("localization thread panicked")?;
+            let assets = assets_handle.join().expect("assets thread panicked")?;
+            Ok::<_, anyhow::Error>((localization, assets))
+        });
+        let ((localize_elapsed, localize_stats), (assets_elapsed, assets_stats)) = snapshot_result?;
+
+        extraction_cache
+            .save_entries(&pipeline.extraction_cache_entries)
+            .with_context(|| "failed to save extraction cache".to_string())?;
+
+        eprintln!("  \x1b[32m✓\x1b[0m no graph changes detected, skipping store and search sync");
+        progress::done_elapsed(
+            &format!(
+                "saved localization snapshot ({} records)",
+                localize_stats.record_count
+            ),
+            localize_elapsed,
+        );
+        for warning in &localize_stats.warnings {
+            eprintln!(
+                "  \x1b[33m!\x1b[0m skipped invalid localization catalog {}: {}",
+                warning.catalog_file, warning.reason
+            );
+        }
+        progress::done_elapsed(
+            &format!(
+                "saved asset snapshot ({} images)",
+                assets_stats.record_count
+            ),
+            assets_elapsed,
+        );
+        for warning in &assets_stats.warnings {
+            eprintln!(
+                "  \x1b[33m!\x1b[0m skipped invalid asset catalog {}: {}",
+                warning.catalog_path, warning.reason
+            );
+        }
+
+        progress::summary(&format!(
+            "\n  {} nodes, {} edges indexed in {:.1}s",
+            graph.nodes.len(),
+            graph.edges.len(),
+            total_start.elapsed().as_secs_f64(),
+        ));
+
+        return Ok(());
+    }
+
     let save_result = std::thread::scope(|scope| {
         let save_handle = scope.spawn(|| {
             let t = Instant::now();

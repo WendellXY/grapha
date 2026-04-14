@@ -132,6 +132,15 @@ impl<'a> GraphDelta<'a> {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.added_nodes.is_empty()
+            && self.updated_nodes.is_empty()
+            && self.deleted_node_ids.is_empty()
+            && self.added_edges.is_empty()
+            && self.updated_edges.is_empty()
+            && self.deleted_edge_ids.is_empty()
+    }
+
     pub fn node_stats(&self) -> EntitySyncStats {
         EntitySyncStats {
             added: self.added_nodes.len(),

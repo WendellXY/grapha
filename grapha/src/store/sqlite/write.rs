@@ -154,14 +154,11 @@ pub(super) fn save_incremental(
     previous: Option<&grapha_core::graph::Graph>,
     graph: &grapha_core::graph::Graph,
 ) -> anyhow::Result<StoreWriteStats> {
-    let current_stats =
-        StoreWriteStats::from_graphs(previous, graph, crate::delta::SyncMode::Incremental);
-    let full_stats =
-        StoreWriteStats::from_graphs(previous, graph, crate::delta::SyncMode::FullRebuild);
-
     let conn = store.open_for_write()?;
     let schema_version = schema::schema_version(&conn)?;
     if previous.is_none() || schema_version.as_deref() != Some(schema::STORE_SCHEMA_VERSION) {
+        let full_stats =
+            StoreWriteStats::from_graphs(previous, graph, crate::delta::SyncMode::FullRebuild);
         drop(conn);
         save_full(store, graph)?;
         return Ok(full_stats);
@@ -169,6 +166,17 @@ pub(super) fn save_incremental(
 
     let previous_graph = previous.expect("checked is_some above");
     let delta = GraphDelta::between(previous_graph, graph);
+
+    let stats = StoreWriteStats {
+        mode: crate::delta::SyncMode::Incremental,
+        nodes: delta.node_stats(),
+        edges: delta.edge_stats(),
+    };
+
+    if delta.is_empty() {
+        return Ok(stats);
+    }
+
     let tx = conn.unchecked_transaction()?;
     schema::write_meta(&tx, graph)?;
 
@@ -209,5 +217,5 @@ pub(super) fn save_incremental(
     tx.commit()?;
     conn.execute_batch("PRAGMA optimize;")?;
 
-    Ok(current_stats)
+    Ok(stats)
 }
