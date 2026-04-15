@@ -9,4 +9,4 @@ enabled = ["claude", "codex"]
 sync_on_startup = true
 [dev-dependencies]
 codex_plugin_cc = { github = "openai/codex-plugin-cc", tag = "v1.0.2", members = ["codex"] }
-superpowers = { github = "obra/superpowers", branch = "main" }
+fuli = { github = "oops-rs/fuli", branch = "main" }
