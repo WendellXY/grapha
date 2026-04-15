@@ -16,8 +16,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-13
-            asset_suffix: macos-x86_64
           - runner: macos-15
             asset_suffix: macos-arm64
     env:
