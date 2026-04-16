@@ -6,6 +6,7 @@ use crate::graph::{EdgeKind, Graph, NodeKind};
 struct NameEntry {
     id: String,
     module: Option<String>,
+    file: String,
 }
 
 struct ResolveContext<'a> {
@@ -105,6 +106,7 @@ pub fn merge(results: Vec<ExtractionResult>) -> Graph {
             .push(NameEntry {
                 id: node.id.clone(),
                 module: node.module.clone(),
+                file: node.file.to_string_lossy().to_string(),
             });
     }
 
@@ -449,6 +451,18 @@ fn resolve_candidates(
             }
         }
 
+        // Cap ambiguous resolution: if too many distinct files contain
+        // candidates after disambiguation, drop the edge entirely. A missing
+        // edge is better than N false positives (e.g., "horizontal", "top").
+        // Count unique files, not raw candidates, so a type with extensions
+        // in the same file isn't penalized.
+        let unique_files: HashSet<&str> = same_module
+            .iter()
+            .map(|c| c.file.as_str())
+            .collect();
+        if unique_files.len() > 3 {
+            return Vec::new();
+        }
         return same_module
             .iter()
             .map(|candidate| (candidate.id.clone(), 0.4))
@@ -469,6 +483,13 @@ fn resolve_candidates(
             return vec![(imported[0].id.clone(), 0.8)];
         }
         if imported.len() > 1 {
+            let unique_files: HashSet<&str> = imported
+                .iter()
+                .map(|c| c.file.as_str())
+                .collect();
+            if unique_files.len() > 3 {
+                return Vec::new();
+            }
             return imported
                 .iter()
                 .map(|candidate| (candidate.id.clone(), 0.3))

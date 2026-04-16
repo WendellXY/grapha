@@ -227,6 +227,12 @@ private final class CallCollector: SyntaxVisitor {
             return (name, operation)
         }
 
+        // Generic specialization: `Type<Generic>(args)` wraps the base in
+        // GenericSpecializationExprSyntax. Unwrap to extract the type name.
+        if let generic = expression.as(GenericSpecializationExprSyntax.self) {
+            return callTarget(from: generic.expression)
+        }
+
         return nil
     }
 }

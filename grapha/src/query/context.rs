@@ -153,6 +153,27 @@ pub fn query_context(graph: &Graph, query: &str) -> Result<ContextResult, QueryR
     let mut type_ref_adj: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut reads_adj: HashMap<&str, Vec<&str>> = HashMap::new();
 
+    // If the queried node is a type, collect its direct member IDs so that
+    // edges targeting any member also count as callers/read_by of the type.
+    let is_type_node = matches!(
+        node.kind,
+        grapha_core::graph::NodeKind::Struct
+            | grapha_core::graph::NodeKind::Class
+            | grapha_core::graph::NodeKind::Enum
+            | grapha_core::graph::NodeKind::Protocol
+            | grapha_core::graph::NodeKind::Trait
+    );
+    let member_ids: HashSet<&str> = if is_type_node {
+        graph
+            .edges
+            .iter()
+            .filter(|e| e.kind == EdgeKind::Contains && e.source == node.id)
+            .map(|e| e.target.as_str())
+            .collect()
+    } else {
+        HashSet::new()
+    };
+
     let mut callers = Vec::new();
     let mut callees = Vec::new();
     let mut reads = Vec::new();
@@ -189,6 +210,25 @@ pub fn query_context(graph: &Graph, query: &str) -> Result<ContextResult, QueryR
                 _ => {}
             }
         }
+        // For type nodes: edges targeting a direct member also count as
+        // callers/read_by of the type itself (changing a type affects its members).
+        if !member_ids.is_empty()
+            && member_ids.contains(edge.target.as_str())
+            && !matches!(edge.kind, EdgeKind::Contains)
+            && edge.source != node.id
+            && let Some(source) = node_index.get(edge.source.as_str())
+        {
+            // Skip if source is also a member (internal edges within the type)
+            if !member_ids.contains(edge.source.as_str()) {
+                let sym_ref = to_symbol_ref(source, &locators);
+                match edge.kind {
+                    EdgeKind::Calls => callers.push(sym_ref),
+                    EdgeKind::Reads => read_by.push(sym_ref),
+                    EdgeKind::Implements => implementors.push(sym_ref),
+                    _ => {}
+                }
+            }
+        }
 
         if edge.kind == EdgeKind::Contains {
             contains_adj
@@ -209,10 +249,13 @@ pub fn query_context(graph: &Graph, query: &str) -> Result<ContextResult, QueryR
     }
 
     sort_refs_by_name(&mut callers);
+    callers.dedup_by(|a, b| a.id == b.id);
     sort_refs_by_name(&mut callees);
     sort_refs_by_name(&mut reads);
     sort_refs_by_name(&mut read_by);
+    read_by.dedup_by(|a, b| a.id == b.id);
     sort_refs_by_name(&mut implementors);
+    implementors.dedup_by(|a, b| a.id == b.id);
     sort_refs_by_name(&mut implements);
     sort_refs_by_name(&mut type_refs);
     let mut invalidation_sources =
@@ -905,5 +948,215 @@ mod tests {
             query_context(&graph, "nonexistent"),
             Err(QueryResolveError::NotFound { .. })
         ));
+    }
+
+    #[test]
+    fn context_type_query_includes_member_callers() {
+        let mk = |id: &str, name: &str, kind: NodeKind| Node {
+            id: id.into(),
+            kind,
+            name: name.into(),
+            file: "m.swift".into(),
+            span: Span {
+                start: [0, 0],
+                end: [1, 0],
+            },
+            visibility: Visibility::Public,
+            metadata: StdHashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+            snippet: None,
+        };
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                mk("m.swift::Mutex", "Mutex", NodeKind::Struct),
+                mk("m.swift::Mutex::withLock", "withLock", NodeKind::Function),
+                mk("m.swift::Mutex::init", "init", NodeKind::Function),
+                mk("caller.swift::useMutex", "useMutex", NodeKind::Function),
+                mk("caller.swift::initMutex", "initMutex", NodeKind::Function),
+                mk(
+                    "m.swift::Mutex::internalHelper",
+                    "internalHelper",
+                    NodeKind::Function,
+                ),
+            ],
+            edges: vec![
+                Edge {
+                    source: "m.swift::Mutex".into(),
+                    target: "m.swift::Mutex::withLock".into(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "m.swift::Mutex".into(),
+                    target: "m.swift::Mutex::init".into(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "m.swift::Mutex".into(),
+                    target: "m.swift::Mutex::internalHelper".into(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                // External caller → member
+                Edge {
+                    source: "caller.swift::useMutex".into(),
+                    target: "m.swift::Mutex::withLock".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "caller.swift::initMutex".into(),
+                    target: "m.swift::Mutex::init".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                // Internal call within the type (should NOT appear as a caller)
+                Edge {
+                    source: "m.swift::Mutex::internalHelper".into(),
+                    target: "m.swift::Mutex::withLock".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+            ],
+        };
+
+        let ctx = query_context(&graph, "Mutex").unwrap();
+        // External callers of members should appear as callers of the type
+        let caller_names: Vec<&str> = ctx.callers.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            caller_names.contains(&"useMutex"),
+            "callers should include external caller of withLock"
+        );
+        assert!(
+            caller_names.contains(&"initMutex"),
+            "callers should include external caller of init"
+        );
+        // Internal member-to-member calls should NOT appear
+        assert!(
+            !caller_names.contains(&"internalHelper"),
+            "internal member calls should not count as type callers"
+        );
+    }
+
+    #[test]
+    fn context_type_query_dedups_callers_that_hit_multiple_members() {
+        let mk = |id: &str, name: &str, kind: NodeKind| Node {
+            id: id.into(),
+            kind,
+            name: name.into(),
+            file: "m.swift".into(),
+            span: Span {
+                start: [0, 0],
+                end: [1, 0],
+            },
+            visibility: Visibility::Public,
+            metadata: StdHashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+            snippet: None,
+        };
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                mk("m.swift::Type", "Type", NodeKind::Struct),
+                mk("m.swift::Type::a", "a", NodeKind::Function),
+                mk("m.swift::Type::b", "b", NodeKind::Function),
+                mk("c.swift::caller", "caller", NodeKind::Function),
+            ],
+            edges: vec![
+                Edge {
+                    source: "m.swift::Type".into(),
+                    target: "m.swift::Type::a".into(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "m.swift::Type".into(),
+                    target: "m.swift::Type::b".into(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                // caller calls BOTH members — should appear only once
+                Edge {
+                    source: "c.swift::caller".into(),
+                    target: "m.swift::Type::a".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "c.swift::caller".into(),
+                    target: "m.swift::Type::b".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+            ],
+        };
+
+        let ctx = query_context(&graph, "Type").unwrap();
+        let caller_ids: Vec<&str> = ctx.callers.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            caller_ids,
+            vec!["c.swift::caller"],
+            "caller should appear only once even if it hits multiple members"
+        );
     }
 }

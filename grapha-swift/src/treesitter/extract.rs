@@ -1199,6 +1199,32 @@ fn extract_calls(
         });
     }
 
+    // Generic constructor calls: `Type<Generic>(args)` produces a
+    // `constructor_expression` node with the type name in `user_type > type_identifier`.
+    if node.kind() == "constructor_expression" {
+        let mut ctor_cursor = node.walk();
+        let type_name = node
+            .named_children(&mut ctor_cursor)
+            .find(|c| c.kind() == "user_type")
+            .and_then(|ut| type_identifier_text(ut, source));
+        if let Some(name) = type_name {
+            let target_id = make_id(file, module_path, &name);
+            let condition = find_enclosing_swift_condition(node, source);
+            let async_boundary = detect_swift_async_boundary(node, source);
+            result.edges.push(Edge {
+                source: caller_id.to_string(),
+                target: target_id,
+                kind: EdgeKind::Calls,
+                confidence: 0.8,
+                direction: None,
+                operation: None,
+                condition,
+                async_boundary,
+                provenance: node_edge_provenance(file, node, caller_id),
+            });
+        }
+    }
+
     // Property access: `foo.bar` generates a navigation_expression.
     // Emit a Reads edge so dependency queries can trace through the access
     // without polluting call lists with field-like symbols.

@@ -119,6 +119,26 @@ pub fn query_impact(
     let mut queue: VecDeque<(&str, usize)> = VecDeque::new();
     queue.push_back((&node.id, 0));
 
+    // If the queried node is a type, also seed BFS with its direct members
+    // at depth 0 so that callers of members appear as depth_1 dependents.
+    let is_type_node = matches!(
+        node.kind,
+        NodeKind::Struct
+            | NodeKind::Class
+            | NodeKind::Enum
+            | NodeKind::Protocol
+            | NodeKind::Trait
+    );
+    if is_type_node {
+        for edge in &graph.edges {
+            if edge.kind == EdgeKind::Contains && edge.source == node.id {
+                if visited.insert(edge.target.as_str()) {
+                    queue.push_back((edge.target.as_str(), 0));
+                }
+            }
+        }
+    }
+
     while let Some((current, depth)) = queue.pop_front() {
         if depth >= max_depth {
             continue;
@@ -445,6 +465,93 @@ mod tests {
         let result = query_impact(&graph, "source", 5).unwrap();
         assert_eq!(result.total_affected, 1);
         assert_eq!(result.depth_1[0].name, "alpha");
+    }
+
+    #[test]
+    fn impact_type_query_traverses_through_members() {
+        let mk = |id: &str, name: &str, kind: NodeKind| Node {
+            id: id.into(),
+            kind,
+            name: name.into(),
+            file: "test.swift".into(),
+            span: Span {
+                start: [0, 0],
+                end: [1, 0],
+            },
+            visibility: Visibility::Public,
+            metadata: StdHashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+            snippet: None,
+        };
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                mk("Mutex", "Mutex", NodeKind::Struct),
+                mk("Mutex::init", "init", NodeKind::Function),
+                mk("Mutex::withLock", "withLock", NodeKind::Function),
+                mk("useMutex", "useMutex", NodeKind::Function),
+                mk("app", "app", NodeKind::Function),
+            ],
+            edges: vec![
+                Edge {
+                    source: "Mutex".into(),
+                    target: "Mutex::init".into(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "Mutex".into(),
+                    target: "Mutex::withLock".into(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "useMutex".into(),
+                    target: "Mutex::init".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "app".into(),
+                    target: "useMutex".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 0.9,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+            ],
+        };
+
+        let result = query_impact(&graph, "Mutex", 3).unwrap();
+        // useMutex calls Mutex::init, so it should be at depth 1
+        assert_eq!(result.depth_1.len(), 1);
+        assert_eq!(result.depth_1[0].name, "useMutex");
+        // app calls useMutex, so it should be at depth 2
+        assert_eq!(result.depth_2.len(), 1);
+        assert_eq!(result.depth_2[0].name, "app");
+        assert_eq!(result.total_affected, 2);
     }
 
     #[test]
