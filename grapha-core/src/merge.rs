@@ -456,10 +456,7 @@ fn resolve_candidates(
         // edge is better than N false positives (e.g., "horizontal", "top").
         // Count unique files, not raw candidates, so a type with extensions
         // in the same file isn't penalized.
-        let unique_files: HashSet<&str> = same_module
-            .iter()
-            .map(|c| c.file.as_str())
-            .collect();
+        let unique_files: HashSet<&str> = same_module.iter().map(|c| c.file.as_str()).collect();
         if unique_files.len() > 3 {
             return Vec::new();
         }
@@ -483,10 +480,7 @@ fn resolve_candidates(
             return vec![(imported[0].id.clone(), 0.8)];
         }
         if imported.len() > 1 {
-            let unique_files: HashSet<&str> = imported
-                .iter()
-                .map(|c| c.file.as_str())
-                .collect();
+            let unique_files: HashSet<&str> = imported.iter().map(|c| c.file.as_str()).collect();
             if unique_files.len() > 3 {
                 return Vec::new();
             }

@@ -123,11 +123,7 @@ pub fn query_impact(
     // at depth 0 so that callers of members appear as depth_1 dependents.
     let is_type_node = matches!(
         node.kind,
-        NodeKind::Struct
-            | NodeKind::Class
-            | NodeKind::Enum
-            | NodeKind::Protocol
-            | NodeKind::Trait
+        NodeKind::Struct | NodeKind::Class | NodeKind::Enum | NodeKind::Protocol | NodeKind::Trait
     );
     if is_type_node {
         for edge in &graph.edges {
