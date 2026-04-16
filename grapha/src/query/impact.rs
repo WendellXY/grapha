@@ -127,10 +127,11 @@ pub fn query_impact(
     );
     if is_type_node {
         for edge in &graph.edges {
-            if edge.kind == EdgeKind::Contains && edge.source == node.id {
-                if visited.insert(edge.target.as_str()) {
-                    queue.push_back((edge.target.as_str(), 0));
-                }
+            if edge.kind == EdgeKind::Contains
+                && edge.source == node.id
+                && visited.insert(edge.target.as_str())
+            {
+                queue.push_back((edge.target.as_str(), 0));
             }
         }
     }
