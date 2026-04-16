@@ -55,6 +55,11 @@ impl LanguagePlugin for SwiftPlugin {
         Ok(())
     }
 
+    fn finish_project(&self, _context: &ProjectContext) -> anyhow::Result<()> {
+        indexstore::release_store_handles();
+        Ok(())
+    }
+
     fn discover_modules(&self, context: &ProjectContext) -> anyhow::Result<ModuleMap> {
         Ok(module_discovery::discover_swift_modules(
             &context.project_root,

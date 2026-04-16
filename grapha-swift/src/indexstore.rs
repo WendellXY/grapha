@@ -106,6 +106,13 @@ impl<T> HandleCache<T> {
             state.insertion_order.retain(|candidate| candidate != path);
         }
     }
+
+    fn clear_all(&self) {
+        if let Ok(mut state) = self.state.write() {
+            state.entries.clear();
+            state.insertion_order.clear();
+        }
+    }
 }
 
 struct StoreHandle {
@@ -136,6 +143,10 @@ fn get_or_open_store(index_store_path: &Path) -> Option<Arc<StoreHandle>> {
             _ => None,
         }
     })
+}
+
+pub fn release_store_handles() {
+    STORE_CACHE.clear_all();
 }
 
 pub fn warmup_indexstore(index_store_path: &Path) {

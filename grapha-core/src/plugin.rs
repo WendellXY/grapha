@@ -53,6 +53,10 @@ pub trait LanguagePlugin: Send + Sync {
         Ok(())
     }
 
+    fn finish_project(&self, _context: &ProjectContext) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     fn discover_modules(&self, _context: &ProjectContext) -> anyhow::Result<ModuleMap> {
         Ok(ModuleMap::new())
     }
@@ -155,6 +159,15 @@ impl LanguageRegistry {
             plugin
                 .prepare_project(context)
                 .with_context(|| format!("failed to prepare plugin '{}'", plugin.id()))?;
+        }
+        Ok(())
+    }
+
+    pub fn finish_plugins(&self, context: &ProjectContext) -> anyhow::Result<()> {
+        for plugin in &self.plugins {
+            plugin
+                .finish_project(context)
+                .with_context(|| format!("failed to finish plugin '{}'", plugin.id()))?;
         }
         Ok(())
     }

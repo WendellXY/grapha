@@ -17,8 +17,8 @@ pub use merge::merge;
 pub use module::ModuleMap;
 pub use normalize::{edge_fingerprint, normalize_graph};
 pub use pipeline::{
-    build_graph, discover_modules, extract_with_registry, file_context, prepare_plugins,
-    project_context, relative_path_for_input,
+    build_graph, discover_modules, extract_with_registry, file_context, finish_plugins,
+    prepare_plugins, project_context, relative_path_for_input,
 };
 pub use plugin::{FileContext, GraphPass, LanguagePlugin, LanguageRegistry, ProjectContext};
 pub use resolve::*;

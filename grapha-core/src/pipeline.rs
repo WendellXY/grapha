@@ -36,6 +36,10 @@ pub fn prepare_plugins(
     registry.prepare_plugins(context)
 }
 
+pub fn finish_plugins(registry: &LanguageRegistry, context: &ProjectContext) -> anyhow::Result<()> {
+    registry.finish_plugins(context)
+}
+
 pub fn discover_modules(
     registry: &LanguageRegistry,
     context: &ProjectContext,

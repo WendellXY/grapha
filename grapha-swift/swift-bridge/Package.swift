@@ -27,7 +27,6 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags([
                     "-L/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib",
-                    "-lIndexStore",
                     "-Xlinker", "-rpath",
                     "-Xlinker", "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib",
                 ]),

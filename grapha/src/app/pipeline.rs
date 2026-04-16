@@ -258,6 +258,8 @@ pub(crate) fn run_pipeline(
         })
         .collect();
 
+    grapha_core::finish_plugins(&registry, &project_context)?;
+
     let skipped = skipped.load(Ordering::Relaxed);
     let extracted = extracted.load(Ordering::Relaxed);
     let reused_cached = reused_cached.load(Ordering::Relaxed);
