@@ -4,7 +4,9 @@ use serde::Serialize;
 
 use grapha_core::graph::{EdgeKind, Graph, Node, NodeKind};
 
-use super::{QueryResolveError, SymbolInfo, SymbolRef, is_swiftui_invalidation_source};
+use super::{
+    QueryResolveError, SymbolInfo, SymbolRef, is_swiftui_invalidation_source, normalize_symbol_name,
+};
 
 #[derive(Debug, Serialize)]
 pub struct ComplexityResult {
@@ -28,10 +30,36 @@ pub struct ComplexityMetrics {
     pub invalidation_sources: Vec<SymbolRef>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub heaviest_dependencies: Vec<SymbolRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub swiftui_body: Option<SwiftUiBodyMetrics>,
 }
+
+#[derive(Debug, Serialize)]
+pub struct SwiftUiBodyMetrics {
+    pub root_count: usize,
+    pub view_count: usize,
+    pub branch_count: usize,
+    pub nesting_depth: usize,
+    pub direct_child_count: usize,
+    pub dependency_count: usize,
+    pub invalidation_source_count: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub invalidation_sources: Vec<SymbolRef>,
+}
+
+pub(crate) const SWIFTUI_BODY_COMPLEXITY_SMELL_THRESHOLD: usize = 3;
 
 fn to_symbol_ref(node: &Node) -> SymbolRef {
     SymbolRef::from_node(node)
+}
+
+fn sort_refs_by_name(symbols: &mut [SymbolRef]) {
+    symbols.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.file.cmp(&right.file))
+            .then_with(|| left.id.cmp(&right.id))
+    });
 }
 
 fn count_init_params(node: &Node) -> usize {
@@ -69,6 +97,288 @@ fn measure_contains_depth<'a>(
     1 + max_child_depth
 }
 
+fn measure_descendant_depth<'a>(
+    node_id: &'a str,
+    contains_adj: &HashMap<&'a str, Vec<&'a str>>,
+    visited: &mut HashSet<&'a str>,
+) -> usize {
+    if !visited.insert(node_id) {
+        return 0;
+    }
+
+    let Some(children) = contains_adj.get(node_id) else {
+        return 0;
+    };
+
+    let max_child_depth = children
+        .iter()
+        .map(|child| measure_descendant_depth(child, contains_adj, visited))
+        .max()
+        .unwrap_or(0);
+    1 + max_child_depth
+}
+
+fn is_type_node(kind: NodeKind) -> bool {
+    matches!(
+        kind,
+        NodeKind::Class
+            | NodeKind::Struct
+            | NodeKind::Enum
+            | NodeKind::Trait
+            | NodeKind::Protocol
+            | NodeKind::Extension
+    )
+}
+
+fn is_swiftui_body_node(node: &Node) -> bool {
+    matches!(node.kind, NodeKind::Property | NodeKind::Function)
+        && normalize_symbol_name(&node.name) == "body"
+}
+
+fn collect_swiftui_body_root_ids<'a>(
+    node: &'a Node,
+    node_index: &HashMap<&'a str, &'a Node>,
+    contains_adj: &HashMap<&'a str, Vec<&'a str>>,
+    type_ref_adj: &HashMap<&'a str, Vec<&'a str>>,
+    implemented_by_adj: &HashMap<&'a str, Vec<&'a str>>,
+) -> Vec<&'a str> {
+    if is_swiftui_body_node(node) {
+        return vec![node.id.as_str()];
+    }
+
+    if !is_type_node(node.kind) {
+        return Vec::new();
+    }
+
+    let mut body_root_ids = Vec::new();
+    let mut seen = HashSet::new();
+
+    for candidate_id in contains_adj
+        .get(node.id.as_str())
+        .into_iter()
+        .flatten()
+        .chain(
+            implemented_by_adj
+                .get(node.id.as_str())
+                .into_iter()
+                .flatten(),
+        )
+        .chain(type_ref_adj.get(node.id.as_str()).into_iter().flatten())
+    {
+        let Some(candidate) = node_index.get(candidate_id).copied() else {
+            continue;
+        };
+        if is_swiftui_body_node(candidate) && seen.insert(candidate.id.as_str()) {
+            body_root_ids.push(candidate.id.as_str());
+        }
+    }
+
+    body_root_ids
+}
+
+fn collect_invalidation_sources_from_roots<'a>(
+    root_ids: &[&'a str],
+    reads_adj: &HashMap<&'a str, Vec<&'a str>>,
+    node_index: &HashMap<&'a str, &'a Node>,
+) -> Vec<SymbolRef> {
+    let mut visited = HashSet::new();
+    let mut invalidation_sources = Vec::new();
+    let mut seen_sources = HashSet::new();
+    let mut stack: Vec<&'a str> = root_ids.to_vec();
+
+    while let Some(node_id) = stack.pop() {
+        if !visited.insert(node_id) {
+            continue;
+        }
+
+        let Some(node) = node_index.get(node_id).copied() else {
+            continue;
+        };
+        if is_swiftui_invalidation_source(node) && seen_sources.insert(node.id.as_str()) {
+            invalidation_sources.push(to_symbol_ref(node));
+        }
+
+        if let Some(next_ids) = reads_adj.get(node_id) {
+            stack.extend(next_ids.iter().copied());
+        }
+    }
+
+    sort_refs_by_name(&mut invalidation_sources);
+    invalidation_sources
+}
+
+fn collect_swiftui_body_metrics<'a>(
+    root_ids: &[&'a str],
+    node_index: &HashMap<&'a str, &'a Node>,
+    contains_adj: &HashMap<&'a str, Vec<&'a str>>,
+    reads_adj: &HashMap<&'a str, Vec<&'a str>>,
+    callee_adj: &HashMap<&'a str, Vec<&'a str>>,
+) -> Option<SwiftUiBodyMetrics> {
+    if root_ids.is_empty() {
+        return None;
+    }
+
+    let mut scoped_ids = HashSet::new();
+    let mut stack: Vec<&'a str> = root_ids.to_vec();
+    while let Some(node_id) = stack.pop() {
+        if !scoped_ids.insert(node_id) {
+            continue;
+        }
+
+        if let Some(children) = contains_adj.get(node_id) {
+            stack.extend(children.iter().copied());
+        }
+    }
+
+    let mut direct_child_ids = HashSet::new();
+    for root_id in root_ids {
+        if let Some(children) = contains_adj.get(root_id) {
+            direct_child_ids.extend(children.iter().copied());
+        }
+    }
+
+    let mut view_count = 0usize;
+    let mut branch_count = 0usize;
+    for node_id in &scoped_ids {
+        let Some(node) = node_index.get(node_id).copied() else {
+            continue;
+        };
+        match node.kind {
+            NodeKind::View => view_count += 1,
+            NodeKind::Branch => branch_count += 1,
+            _ => {}
+        }
+    }
+
+    let nesting_depth = root_ids
+        .iter()
+        .map(|root_id| measure_descendant_depth(root_id, contains_adj, &mut HashSet::new()))
+        .max()
+        .unwrap_or(0);
+
+    let mut dependency_ids = HashSet::new();
+    for node_id in &scoped_ids {
+        if let Some(reads) = reads_adj.get(node_id) {
+            for target_id in reads {
+                if !scoped_ids.contains(target_id) {
+                    dependency_ids.insert(*target_id);
+                }
+            }
+        }
+        if let Some(callees) = callee_adj.get(node_id) {
+            for target_id in callees {
+                if !scoped_ids.contains(target_id) {
+                    dependency_ids.insert(*target_id);
+                }
+            }
+        }
+    }
+
+    let invalidation_sources =
+        collect_invalidation_sources_from_roots(root_ids, reads_adj, node_index);
+    let invalidation_source_count = invalidation_sources.len();
+
+    Some(SwiftUiBodyMetrics {
+        root_count: root_ids.len(),
+        view_count,
+        branch_count,
+        nesting_depth,
+        direct_child_count: direct_child_ids.len(),
+        dependency_count: dependency_ids.len(),
+        invalidation_source_count,
+        invalidation_sources,
+    })
+}
+
+pub(crate) fn swiftui_body_complexity_score(body_metrics: &SwiftUiBodyMetrics) -> usize {
+    let mut score = 0usize;
+
+    if body_metrics.view_count > 20 {
+        score += 2;
+    } else if body_metrics.view_count > 10 {
+        score += 1;
+    }
+    if body_metrics.branch_count > 3 {
+        score += 2;
+    } else if body_metrics.branch_count > 1 {
+        score += 1;
+    }
+    if body_metrics.nesting_depth > 5 {
+        score += 2;
+    } else if body_metrics.nesting_depth > 2 {
+        score += 1;
+    }
+    if body_metrics.dependency_count > 8 {
+        score += 2;
+    } else if body_metrics.dependency_count > 2 {
+        score += 1;
+    }
+
+    score
+}
+
+pub(crate) fn swiftui_body_metrics_for_node(
+    graph: &Graph,
+    node: &Node,
+) -> Option<SwiftUiBodyMetrics> {
+    let node_index: HashMap<&str, &Node> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    let mut implemented_by_adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut contains_adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut type_ref_adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut reads_adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut callee_adj: HashMap<&str, Vec<&str>> = HashMap::new();
+
+    for edge in &graph.edges {
+        match edge.kind {
+            EdgeKind::Implements => {
+                implemented_by_adj
+                    .entry(edge.target.as_str())
+                    .or_default()
+                    .push(edge.source.as_str());
+            }
+            EdgeKind::Contains => {
+                contains_adj
+                    .entry(edge.source.as_str())
+                    .or_default()
+                    .push(edge.target.as_str());
+            }
+            EdgeKind::TypeRef => {
+                type_ref_adj
+                    .entry(edge.source.as_str())
+                    .or_default()
+                    .push(edge.target.as_str());
+            }
+            EdgeKind::Reads => {
+                reads_adj
+                    .entry(edge.source.as_str())
+                    .or_default()
+                    .push(edge.target.as_str());
+            }
+            EdgeKind::Calls => {
+                callee_adj
+                    .entry(edge.source.as_str())
+                    .or_default()
+                    .push(edge.target.as_str());
+            }
+            _ => {}
+        }
+    }
+
+    collect_swiftui_body_metrics(
+        &collect_swiftui_body_root_ids(
+            node,
+            &node_index,
+            &contains_adj,
+            &type_ref_adj,
+            &implemented_by_adj,
+        ),
+        &node_index,
+        &contains_adj,
+        &reads_adj,
+        &callee_adj,
+    )
+}
+
 fn severity_from_score(score: usize) -> &'static str {
     match score {
         0..=2 => "low",
@@ -84,7 +394,7 @@ pub fn query_complexity(graph: &Graph, query: &str) -> Result<ComplexityResult, 
     let node_index: HashMap<&str, &Node> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
 
     // Build adjacency maps
-    let mut implements_adj: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut implemented_by_adj: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut contains_adj: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut type_ref_adj: HashMap<&str, Vec<&str>> = HashMap::new();
     let mut reads_adj: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -94,10 +404,10 @@ pub fn query_complexity(graph: &Graph, query: &str) -> Result<ComplexityResult, 
     for edge in &graph.edges {
         match edge.kind {
             EdgeKind::Implements => {
-                implements_adj
-                    .entry(edge.source.as_str())
+                implemented_by_adj
+                    .entry(edge.target.as_str())
                     .or_default()
-                    .push(edge.target.as_str());
+                    .push(edge.source.as_str());
             }
             EdgeKind::Contains => {
                 contains_adj
@@ -133,16 +443,10 @@ pub fn query_complexity(graph: &Graph, query: &str) -> Result<ComplexityResult, 
     }
 
     // Implementors: symbols that implement this type (properties, methods)
-    let implementors: Vec<&str> = implements_adj
-        .iter()
-        .filter_map(|(source, targets)| {
-            if targets.contains(&node_id.as_str()) {
-                Some(*source)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let implementors: Vec<&str> = implemented_by_adj
+        .get(node_id.as_str())
+        .cloned()
+        .unwrap_or_default();
 
     let property_count = implementors
         .iter()
@@ -236,8 +540,22 @@ pub fn query_complexity(graph: &Graph, query: &str) -> Result<ComplexityResult, 
         .filter(|n| !matches!(n.kind, NodeKind::View | NodeKind::Branch))
         .map(to_symbol_ref)
         .collect();
-    heaviest_dependencies.sort_by(|a, b| a.name.cmp(&b.name));
+    sort_refs_by_name(&mut heaviest_dependencies);
     heaviest_dependencies.truncate(10);
+
+    let swiftui_body = collect_swiftui_body_metrics(
+        &collect_swiftui_body_root_ids(
+            node,
+            &node_index,
+            &contains_adj,
+            &type_ref_adj,
+            &implemented_by_adj,
+        ),
+        &node_index,
+        &contains_adj,
+        &reads_adj,
+        &callee_adj,
+    );
 
     // Severity scoring
     let mut severity_score = 0usize;
@@ -270,6 +588,9 @@ pub fn query_complexity(graph: &Graph, query: &str) -> Result<ComplexityResult, 
     } else if contains_depth > 3 {
         severity_score += 1;
     }
+    if let Some(body_metrics) = &swiftui_body {
+        severity_score += swiftui_body_complexity_score(body_metrics);
+    }
 
     let metrics = ComplexityMetrics {
         property_count,
@@ -283,6 +604,7 @@ pub fn query_complexity(graph: &Graph, query: &str) -> Result<ComplexityResult, 
         blast_radius,
         invalidation_sources,
         heaviest_dependencies,
+        swiftui_body,
     };
 
     Ok(ComplexityResult {
@@ -296,6 +618,7 @@ pub fn query_complexity(graph: &Graph, query: &str) -> Result<ComplexityResult, 
 mod tests {
     use super::*;
     use grapha_core::graph::{Edge, Node, Span, Visibility};
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
     fn make_node(id: &str, name: &str, kind: NodeKind, file: &str) -> Node {
@@ -315,6 +638,19 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+        }
+    }
+
+    fn make_node_with_metadata(
+        id: &str,
+        name: &str,
+        kind: NodeKind,
+        file: &str,
+        metadata: HashMap<String, String>,
+    ) -> Node {
+        Node {
+            metadata,
+            ..make_node(id, name, kind, file)
         }
     }
 
@@ -373,5 +709,189 @@ mod tests {
 
         let result = query_complexity(&graph, "T").unwrap();
         assert_eq!(result.metrics.init_parameter_count, 9);
+    }
+
+    #[test]
+    fn reports_swiftui_body_structure_metrics_for_view_types() {
+        let graph = Graph {
+            version: String::new(),
+            nodes: vec![
+                make_node("view", "ContentView", NodeKind::Struct, "ContentView.swift"),
+                make_node(
+                    "view::body",
+                    "body",
+                    NodeKind::Property,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::view:VStack@1:0",
+                    "VStack",
+                    NodeKind::View,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::branch:if@2:0",
+                    "if isLoading",
+                    NodeKind::Branch,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::view:ProgressView@3:0",
+                    "ProgressView",
+                    NodeKind::View,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::branch:else@4:0",
+                    "else",
+                    NodeKind::Branch,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::view:List@5:0",
+                    "List",
+                    NodeKind::View,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::view:Row@6:0",
+                    "Row",
+                    NodeKind::View,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::title",
+                    "title",
+                    NodeKind::Property,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::items",
+                    "items",
+                    NodeKind::Property,
+                    "ContentView.swift",
+                ),
+                make_node_with_metadata(
+                    "view::isLoading",
+                    "isLoading",
+                    NodeKind::Property,
+                    "ContentView.swift",
+                    HashMap::from([(
+                        "swiftui.invalidation_source".to_string(),
+                        "true".to_string(),
+                    )]),
+                ),
+                make_node(
+                    "view::load",
+                    "load()",
+                    NodeKind::Function,
+                    "ContentView.swift",
+                ),
+            ],
+            edges: vec![
+                make_edge("view", "view::body", EdgeKind::Contains),
+                make_edge(
+                    "view::body",
+                    "view::body::view:VStack@1:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::view:VStack@1:0",
+                    "view::body::branch:if@2:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::branch:if@2:0",
+                    "view::body::view:ProgressView@3:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::view:VStack@1:0",
+                    "view::body::branch:else@4:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::branch:else@4:0",
+                    "view::body::view:List@5:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::view:List@5:0",
+                    "view::body::view:Row@6:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge("view::body", "view::title", EdgeKind::Reads),
+                make_edge("view::body", "view::items", EdgeKind::Reads),
+                make_edge("view::body", "view::load", EdgeKind::Calls),
+                make_edge("view::title", "view::isLoading", EdgeKind::Reads),
+            ],
+        };
+
+        let result = query_complexity(&graph, "ContentView").unwrap();
+        let body = result
+            .metrics
+            .swiftui_body
+            .as_ref()
+            .expect("expected SwiftUI body metrics");
+
+        assert_eq!(body.root_count, 1);
+        assert_eq!(body.view_count, 4);
+        assert_eq!(body.branch_count, 2);
+        assert_eq!(body.nesting_depth, 4);
+        assert_eq!(body.direct_child_count, 1);
+        assert_eq!(body.dependency_count, 3);
+        assert_eq!(body.invalidation_source_count, 1);
+        assert_eq!(body.invalidation_sources[0].name, "isLoading");
+        assert_eq!(result.severity, "medium");
+    }
+
+    #[test]
+    fn reports_swiftui_body_metrics_when_querying_body_directly() {
+        let graph = Graph {
+            version: String::new(),
+            nodes: vec![
+                make_node(
+                    "view::body",
+                    "body",
+                    NodeKind::Property,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::view:VStack@1:0",
+                    "VStack",
+                    NodeKind::View,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::view:Text@2:0",
+                    "Text",
+                    NodeKind::View,
+                    "ContentView.swift",
+                ),
+            ],
+            edges: vec![
+                make_edge(
+                    "view::body",
+                    "view::body::view:VStack@1:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::view:VStack@1:0",
+                    "view::body::view:Text@2:0",
+                    EdgeKind::Contains,
+                ),
+            ],
+        };
+
+        let result = query_complexity(&graph, "view::body").unwrap();
+        let body = result
+            .metrics
+            .swiftui_body
+            .as_ref()
+            .expect("expected direct body metrics");
+
+        assert_eq!(body.view_count, 2);
+        assert_eq!(body.branch_count, 0);
+        assert_eq!(body.nesting_depth, 2);
     }
 }

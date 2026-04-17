@@ -5,7 +5,8 @@ use serde::Serialize;
 use grapha_core::graph::{EdgeKind, Graph, Node, NodeKind};
 
 use super::{
-    SymbolRef, file_matches_query_path, is_swiftui_invalidation_source, normalize_symbol_name,
+    SymbolRef, complexity, file_matches_query_path, is_swiftui_invalidation_source,
+    normalize_symbol_name,
 };
 
 #[derive(Debug, Serialize)]
@@ -114,6 +115,9 @@ fn body_scope_expansion(graph: &Graph, symbol_id: &str) -> (HashSet<String>, Opt
             .edges
             .iter()
             .filter_map(|edge| match edge.kind {
+                EdgeKind::Contains if edge.source == symbol_id => {
+                    node_index.get(edge.target.as_str()).copied()
+                }
                 EdgeKind::Implements if edge.target == symbol_id => {
                     node_index.get(edge.source.as_str()).copied()
                 }
@@ -211,6 +215,8 @@ struct SmellConfig {
     high_fan_out_threshold: usize,
     high_fan_in_threshold: usize,
     many_extensions_threshold: usize,
+    complex_swiftui_body_threshold: usize,
+    critical_swiftui_body_threshold: usize,
 }
 
 impl Default for SmellConfig {
@@ -224,6 +230,8 @@ impl Default for SmellConfig {
             high_fan_out_threshold: 15,
             high_fan_in_threshold: 15,
             many_extensions_threshold: 5,
+            complex_swiftui_body_threshold: complexity::SWIFTUI_BODY_COMPLEXITY_SMELL_THRESHOLD,
+            critical_swiftui_body_threshold: 5,
         }
     }
 }
@@ -440,6 +448,46 @@ pub fn detect_smells(graph: &Graph) -> SmellsResult {
         }
     }
 
+    for node in &graph.nodes {
+        if !matches!(node.kind, NodeKind::Property | NodeKind::Function)
+            || normalize_symbol_name(&node.name) != "body"
+        {
+            continue;
+        }
+
+        let Some(body_metrics) = complexity::swiftui_body_metrics_for_node(graph, node) else {
+            continue;
+        };
+        let body_score = complexity::swiftui_body_complexity_score(&body_metrics);
+        if body_score < config.complex_swiftui_body_threshold {
+            continue;
+        }
+
+        let severity = if body_score >= config.critical_swiftui_body_threshold {
+            "critical"
+        } else {
+            "warning"
+        };
+
+        smells.push(Smell {
+            kind: "complex_swiftui_body".to_string(),
+            severity: severity.to_string(),
+            symbol: to_symbol_ref(node),
+            message: format!(
+                "{} has {} view nodes, {} branches, depth {}, and {} dependencies (score {} threshold: {})",
+                normalize_symbol_name(&node.name),
+                body_metrics.view_count,
+                body_metrics.branch_count,
+                body_metrics.nesting_depth,
+                body_metrics.dependency_count,
+                body_score,
+                config.complex_swiftui_body_threshold,
+            ),
+            metric_value: body_score,
+            threshold: config.complex_swiftui_body_threshold,
+        });
+    }
+
     // Function-level smells: fan-out and fan-in
     for node in &graph.nodes {
         if node.kind != NodeKind::Function {
@@ -560,6 +608,19 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+        }
+    }
+
+    fn make_node_with_metadata(
+        id: &str,
+        name: &str,
+        kind: NodeKind,
+        file: &str,
+        metadata: HashMap<String, String>,
+    ) -> Node {
+        Node {
+            metadata,
+            ..make_node(id, name, kind, file)
         }
     }
 
@@ -705,5 +766,360 @@ mod tests {
         assert_eq!(result.smells[0].symbol.id, "view");
         assert_eq!(result.smells[0].symbol.name, "RoomPageCenterContentView");
         assert!(result.smells[0].message.contains("body"));
+    }
+
+    #[test]
+    fn detects_complex_swiftui_body_smell() {
+        let graph = Graph {
+            version: String::new(),
+            nodes: vec![
+                make_node(
+                    "view::body",
+                    "body",
+                    NodeKind::Property,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::view:VStack@1:0",
+                    "VStack",
+                    NodeKind::View,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::branch:if@2:0",
+                    "if isLoading",
+                    NodeKind::Branch,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::view:ProgressView@3:0",
+                    "ProgressView",
+                    NodeKind::View,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::branch:else@4:0",
+                    "else",
+                    NodeKind::Branch,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::view:List@5:0",
+                    "List",
+                    NodeKind::View,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::view:Row@6:0",
+                    "Row",
+                    NodeKind::View,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::title",
+                    "title",
+                    NodeKind::Property,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::items",
+                    "items",
+                    NodeKind::Property,
+                    "ContentView.swift",
+                ),
+                make_node_with_metadata(
+                    "view::isLoading",
+                    "isLoading",
+                    NodeKind::Property,
+                    "ContentView.swift",
+                    HashMap::from([(
+                        "swiftui.invalidation_source".to_string(),
+                        "true".to_string(),
+                    )]),
+                ),
+                make_node(
+                    "view::load",
+                    "load()",
+                    NodeKind::Function,
+                    "ContentView.swift",
+                ),
+            ],
+            edges: vec![
+                make_edge(
+                    "view::body",
+                    "view::body::view:VStack@1:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::view:VStack@1:0",
+                    "view::body::branch:if@2:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::branch:if@2:0",
+                    "view::body::view:ProgressView@3:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::view:VStack@1:0",
+                    "view::body::branch:else@4:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::branch:else@4:0",
+                    "view::body::view:List@5:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::view:List@5:0",
+                    "view::body::view:Row@6:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge("view::body", "view::title", EdgeKind::Reads),
+                make_edge("view::body", "view::items", EdgeKind::Reads),
+                make_edge("view::body", "view::load", EdgeKind::Calls),
+                make_edge("view::title", "view::isLoading", EdgeKind::Reads),
+            ],
+        };
+
+        let result = detect_smells(&graph);
+        let smell = result
+            .smells
+            .iter()
+            .find(|smell| smell.kind == "complex_swiftui_body")
+            .expect("expected complex SwiftUI body smell");
+
+        assert_eq!(smell.symbol.id, "view::body");
+        assert_eq!(smell.metric_value, 3);
+        assert_eq!(smell.threshold, 3);
+        assert!(smell.message.contains("2 branches"));
+        assert!(smell.message.contains("depth 4"));
+    }
+
+    #[test]
+    fn symbol_scope_on_view_type_lifts_complex_swiftui_body_to_type() {
+        let graph = Graph {
+            version: String::new(),
+            nodes: vec![
+                make_node(
+                    "view",
+                    "RoomPageCenterContentView",
+                    NodeKind::Struct,
+                    "RoomPage+Layout.swift",
+                ),
+                make_node(
+                    "view::body",
+                    "body",
+                    NodeKind::Property,
+                    "RoomPage+Layout.swift",
+                ),
+                make_node(
+                    "view::body::view:VStack@1:0",
+                    "VStack",
+                    NodeKind::View,
+                    "RoomPage+Layout.swift",
+                ),
+                make_node(
+                    "view::body::branch:if@2:0",
+                    "if isLoading",
+                    NodeKind::Branch,
+                    "RoomPage+Layout.swift",
+                ),
+                make_node(
+                    "view::body::view:ProgressView@3:0",
+                    "ProgressView",
+                    NodeKind::View,
+                    "RoomPage+Layout.swift",
+                ),
+                make_node(
+                    "view::body::branch:else@4:0",
+                    "else",
+                    NodeKind::Branch,
+                    "RoomPage+Layout.swift",
+                ),
+                make_node(
+                    "view::body::view:List@5:0",
+                    "List",
+                    NodeKind::View,
+                    "RoomPage+Layout.swift",
+                ),
+                make_node(
+                    "view::body::view:Row@6:0",
+                    "Row",
+                    NodeKind::View,
+                    "RoomPage+Layout.swift",
+                ),
+                make_node(
+                    "view::title",
+                    "title",
+                    NodeKind::Property,
+                    "RoomPage+Layout.swift",
+                ),
+                make_node(
+                    "view::items",
+                    "items",
+                    NodeKind::Property,
+                    "RoomPage+Layout.swift",
+                ),
+                make_node(
+                    "view::load",
+                    "load()",
+                    NodeKind::Function,
+                    "RoomPage+Layout.swift",
+                ),
+            ],
+            edges: vec![
+                make_edge("view::body", "view", EdgeKind::Implements),
+                make_edge(
+                    "view::body",
+                    "view::body::view:VStack@1:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::view:VStack@1:0",
+                    "view::body::branch:if@2:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::branch:if@2:0",
+                    "view::body::view:ProgressView@3:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::view:VStack@1:0",
+                    "view::body::branch:else@4:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::branch:else@4:0",
+                    "view::body::view:List@5:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::view:List@5:0",
+                    "view::body::view:Row@6:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge("view::body", "view::title", EdgeKind::Reads),
+                make_edge("view::body", "view::items", EdgeKind::Reads),
+                make_edge("view::body", "view::load", EdgeKind::Calls),
+            ],
+        };
+
+        let result = detect_smells_for_symbol(&graph, "view");
+        let smell = result
+            .smells
+            .iter()
+            .find(|smell| smell.kind == "complex_swiftui_body")
+            .expect("expected lifted complex SwiftUI body smell");
+
+        assert_eq!(smell.symbol.id, "view");
+        assert_eq!(smell.symbol.name, "RoomPageCenterContentView");
+        assert!(smell.message.starts_with("RoomPageCenterContentView body"));
+    }
+
+    #[test]
+    fn symbol_scope_on_view_type_lifts_complex_body_found_via_contains_edge() {
+        let graph = Graph {
+            version: String::new(),
+            nodes: vec![
+                make_node("view", "ContentView", NodeKind::Struct, "ContentView.swift"),
+                make_node(
+                    "view::body",
+                    "body",
+                    NodeKind::Property,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::view:VStack@1:0",
+                    "VStack",
+                    NodeKind::View,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::branch:if@2:0",
+                    "if isLoading",
+                    NodeKind::Branch,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::view:ProgressView@3:0",
+                    "ProgressView",
+                    NodeKind::View,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::branch:else@4:0",
+                    "else",
+                    NodeKind::Branch,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::body::view:List@5:0",
+                    "List",
+                    NodeKind::View,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::title",
+                    "title",
+                    NodeKind::Property,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::items",
+                    "items",
+                    NodeKind::Property,
+                    "ContentView.swift",
+                ),
+                make_node(
+                    "view::load",
+                    "load()",
+                    NodeKind::Function,
+                    "ContentView.swift",
+                ),
+            ],
+            edges: vec![
+                make_edge("view", "view::body", EdgeKind::Contains),
+                make_edge(
+                    "view::body",
+                    "view::body::view:VStack@1:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::view:VStack@1:0",
+                    "view::body::branch:if@2:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::branch:if@2:0",
+                    "view::body::view:ProgressView@3:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::view:VStack@1:0",
+                    "view::body::branch:else@4:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge(
+                    "view::body::branch:else@4:0",
+                    "view::body::view:List@5:0",
+                    EdgeKind::Contains,
+                ),
+                make_edge("view::body", "view::title", EdgeKind::Reads),
+                make_edge("view::body", "view::items", EdgeKind::Reads),
+                make_edge("view::body", "view::load", EdgeKind::Calls),
+            ],
+        };
+
+        let result = detect_smells_for_symbol(&graph, "view");
+        let smell = result
+            .smells
+            .iter()
+            .find(|smell| smell.kind == "complex_swiftui_body")
+            .expect("expected lifted body smell via contains edge");
+
+        assert_eq!(smell.symbol.id, "view");
+        assert!(smell.message.starts_with("ContentView body"));
     }
 }
