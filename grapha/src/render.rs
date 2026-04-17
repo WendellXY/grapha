@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use grapha_core::graph::{NodeKind, NodeRole, Visibility};
 
+use crate::concepts::{ConceptBindingView, ConceptEvidence, ConceptSearchResult, ConceptShowResult};
 use crate::fields::FieldSet;
 use crate::query::{
     ContextResult, SymbolInfo, SymbolRef, SymbolTreeRef, dataflow::DataflowEdge,
@@ -831,6 +832,168 @@ pub fn render_usages_with_options(result: &UsagesResult, options: RenderOptions)
 
     render_tree(&TreeNode::branch(
         Palette::new(options).section_header(format!("usages for {}", result.query.key)),
+        children,
+    ))
+}
+
+fn concept_evidence_node(evidence: &ConceptEvidence, options: RenderOptions) -> TreeNode {
+    let palette = Palette::new(options);
+    let mut children = vec![TreeNode::leaf(format_key_value(
+        "match_kind",
+        &evidence.match_kind,
+        options,
+    ))];
+    push_detail(&mut children, "table", evidence.table.clone(), options);
+    push_detail(&mut children, "key", evidence.key.clone(), options);
+    push_detail(
+        &mut children,
+        "source_value",
+        evidence.source_value.clone(),
+        options,
+    );
+    if !evidence.ui_path.is_empty() {
+        children.push(TreeNode::leaf(format_key_value(
+            "ui_path",
+            &evidence.ui_path.join(" -> "),
+            options,
+        )));
+    }
+    push_detail(&mut children, "note", evidence.note.clone(), options);
+    TreeNode::branch(
+        format!(
+            "{} {}",
+            palette.tag(format!("[{}]", evidence.kind)),
+            evidence.value
+        ),
+        children,
+    )
+}
+
+fn concept_binding_node(binding: &ConceptBindingView, options: RenderOptions) -> TreeNode {
+    let mut children = vec![
+        TreeNode::leaf(format_key_value("status", &binding.status, options)),
+        TreeNode::leaf(format_key_value(
+            "stale",
+            if binding.stale { "true" } else { "false" },
+            options,
+        )),
+    ];
+    if !binding.evidence.is_empty() {
+        children.push(TreeNode::branch(
+            format_section_count("evidence", binding.evidence.len(), options),
+            binding
+                .evidence
+                .iter()
+                .map(|evidence| concept_evidence_node(evidence, options))
+                .collect(),
+        ));
+    }
+    match &binding.symbol {
+        Some(symbol) => symbol_info_node(symbol, children, options),
+        None => TreeNode::branch(
+            Palette::new(options).symbol_name(&binding.symbol_id),
+            children,
+        ),
+    }
+}
+
+pub fn render_concept_search_with_options(
+    result: &ConceptSearchResult,
+    options: RenderOptions,
+) -> String {
+    let mut children = vec![
+        TreeNode::leaf(format_key_value(
+            "resolved_from",
+            &result.resolved_from,
+            options,
+        )),
+        TreeNode::leaf(format_summary(
+            &[("scopes", result.scopes.len().to_string())],
+            options,
+        )),
+    ];
+    if let Some(concept) = result.matched_concept.as_deref() {
+        children.push(TreeNode::leaf(format_key_value(
+            "matched_concept",
+            concept,
+            options,
+        )));
+    }
+    if !result.scopes.is_empty() {
+        children.push(TreeNode::branch(
+            format_section_count("scopes", result.scopes.len(), options),
+            result
+                .scopes
+                .iter()
+                .map(|scope| {
+                    let mut scope_children = vec![
+                        TreeNode::leaf(format_key_value(
+                            "status",
+                            &scope.status,
+                            options,
+                        )),
+                        TreeNode::leaf(format_key_value(
+                            "score",
+                            &format!("{:.1}", scope.score),
+                            options,
+                        )),
+                    ];
+                    if !scope.evidence.is_empty() {
+                        scope_children.push(TreeNode::branch(
+                            format_section_count("evidence", scope.evidence.len(), options),
+                            scope
+                                .evidence
+                                .iter()
+                                .map(|evidence| concept_evidence_node(evidence, options))
+                                .collect(),
+                        ));
+                    }
+                    symbol_info_node(&scope.symbol, scope_children, options)
+                })
+                .collect(),
+        ));
+    }
+
+    render_tree(&TreeNode::branch(
+        Palette::new(options).section_header(format!("concept search {}", result.query)),
+        children,
+    ))
+}
+
+pub fn render_concept_show_with_options(
+    result: &ConceptShowResult,
+    options: RenderOptions,
+) -> String {
+    let mut children = vec![TreeNode::leaf(format_key_value(
+        "query",
+        &result.query,
+        options,
+    ))];
+    if !result.aliases.is_empty() {
+        children.push(TreeNode::leaf(format_key_value(
+            "aliases",
+            &result.aliases.join(", "),
+            options,
+        )));
+    }
+    push_detail(&mut children, "notes", result.notes.clone(), options);
+    children.push(TreeNode::leaf(format_summary(
+        &[("bindings", result.bindings.len().to_string())],
+        options,
+    )));
+    if !result.bindings.is_empty() {
+        children.push(TreeNode::branch(
+            format_section_count("bindings", result.bindings.len(), options),
+            result
+                .bindings
+                .iter()
+                .map(|binding| concept_binding_node(binding, options))
+                .collect(),
+        ));
+    }
+
+    render_tree(&TreeNode::branch(
+        Palette::new(options).section_header(format!("concept {}", result.concept)),
         children,
     ))
 }

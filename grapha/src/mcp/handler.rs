@@ -9,6 +9,7 @@ use crate::query;
 use crate::recall::{self, Recall};
 use crate::search;
 use crate::store::Store;
+use crate::{assets, concepts, localization};
 
 pub struct McpState {
     pub graph: Graph,
@@ -203,6 +204,91 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
             }),
         },
         ToolDefinition {
+            name: "search_concepts".to_string(),
+            description: "Resolve a business concept or product term to likely code scopes using stored concept bindings first, then localization, asset, and symbol heuristics.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Business concept text"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of scopes to return (default: 10)",
+                        "default": 10
+                    }
+                },
+                "required": ["query"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_concept".to_string(),
+            description: "Show a stored concept mapping, including aliases and bound symbols.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "term": {
+                        "type": "string",
+                        "description": "Concept text or alias"
+                    }
+                },
+                "required": ["term"]
+            }),
+        },
+        ToolDefinition {
+            name: "bind_concept".to_string(),
+            description: "Persist a confirmed concept-to-symbol mapping for future lookups.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "concept": {
+                        "type": "string",
+                        "description": "Canonical business concept text"
+                    },
+                    "symbols": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "One or more symbol queries or IDs to bind"
+                    }
+                },
+                "required": ["concept", "symbols"]
+            }),
+        },
+        ToolDefinition {
+            name: "add_concept_alias".to_string(),
+            description: "Add one or more aliases for a concept in the project concept store.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "concept": {
+                        "type": "string",
+                        "description": "Canonical business concept text"
+                    },
+                    "aliases": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Aliases to add"
+                    }
+                },
+                "required": ["concept", "aliases"]
+            }),
+        },
+        ToolDefinition {
+            name: "remove_concept".to_string(),
+            description: "Remove a concept from the project concept store.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "concept": {
+                        "type": "string",
+                        "description": "Concept text or alias"
+                    }
+                },
+                "required": ["concept"]
+            }),
+        },
+        ToolDefinition {
             name: "reload".to_string(),
             description: "Reload the graph and search index from disk. Use after running `grapha index` from the CLI to pick up changes without restarting the MCP server.".to_string(),
             input_schema: json!({
@@ -274,6 +360,11 @@ pub fn handle_tool_call(state: &mut McpState, tool_name: &str, arguments: &Value
         "analyze_complexity" => handle_analyze_complexity(state, arguments),
         "detect_smells" => handle_detect_smells(state, arguments),
         "get_module_summary" => handle_get_module_summary(state),
+        "search_concepts" => handle_search_concepts(state, arguments),
+        "get_concept" => handle_get_concept(state, arguments),
+        "bind_concept" => handle_bind_concept(state, arguments),
+        "add_concept_alias" => handle_add_concept_alias(state, arguments),
+        "remove_concept" => handle_remove_concept(state, arguments),
         "reload" => handle_reload(state),
         _ => tool_error(format!("unknown tool: {tool_name}")),
     }
@@ -512,6 +603,161 @@ fn handle_get_module_summary(state: &McpState) -> Value {
     serialize_result(&result)
 }
 
+fn handle_search_concepts(state: &McpState, arguments: &Value) -> Value {
+    let query = match arguments.get("query").and_then(|v| v.as_str()) {
+        Some(query) => query,
+        None => return tool_error("missing required parameter: query".to_string()),
+    };
+    let limit = arguments
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(10) as usize;
+
+    let concept_index = match concepts::load_concept_index_from_store(&state.store_path) {
+        Ok(index) => index,
+        Err(error) => return tool_error(format!("failed to load concept store: {error}")),
+    };
+    let catalogs = localization::load_catalog_index_from_store(&state.store_path).unwrap_or_default();
+    let assets_index = assets::load_asset_index_from_store(&state.store_path).unwrap_or_default();
+
+    match concepts::search_concepts(
+        &state.graph,
+        &state.search_index,
+        &concept_index,
+        &catalogs,
+        &assets_index,
+        query,
+        limit,
+    ) {
+        Ok(result) => serialize_result(&result),
+        Err(error) => tool_error(format!("concept search failed: {error}")),
+    }
+}
+
+fn handle_get_concept(state: &McpState, arguments: &Value) -> Value {
+    let term = match arguments.get("term").and_then(|v| v.as_str()) {
+        Some(term) => term,
+        None => return tool_error("missing required parameter: term".to_string()),
+    };
+
+    let concept_index = match concepts::load_concept_index_from_store(&state.store_path) {
+        Ok(index) => index,
+        Err(error) => return tool_error(format!("failed to load concept store: {error}")),
+    };
+
+    match concepts::show_concept(&state.graph, &concept_index, term) {
+        Ok(result) => serialize_result(&result),
+        Err(error) => tool_error(error.to_string()),
+    }
+}
+
+fn handle_bind_concept(state: &mut McpState, arguments: &Value) -> Value {
+    let concept = match arguments.get("concept").and_then(|v| v.as_str()) {
+        Some(concept) => concept,
+        None => return tool_error("missing required parameter: concept".to_string()),
+    };
+    let symbols = match arguments.get("symbols").and_then(|v| v.as_array()) {
+        Some(symbols) => symbols,
+        None => return tool_error("missing required parameter: symbols".to_string()),
+    };
+    if symbols.is_empty() {
+        return tool_error("symbols array is empty".to_string());
+    }
+
+    let mut unique_ids = std::collections::BTreeSet::new();
+    for symbol in symbols {
+        let Some(symbol_query) = symbol.as_str() else {
+            return tool_error("symbols must be an array of strings".to_string());
+        };
+        let node = match query::resolve_node(&state.graph, symbol_query) {
+            Ok(node) => node,
+            Err(error) => return tool_error(format_query_error(&error)),
+        };
+        unique_ids.insert(node.id.clone());
+    }
+
+    let mut concept_index = match concepts::load_concept_index_from_store(&state.store_path) {
+        Ok(index) => index,
+        Err(error) => return tool_error(format!("failed to load concept store: {error}")),
+    };
+    let result = match concept_index.bind_concept(
+        concept,
+        &unique_ids.into_iter().collect::<Vec<_>>(),
+        vec![concepts::ConceptEvidence {
+            kind: "manual".to_string(),
+            value: concept.trim().to_string(),
+            match_kind: "confirmed".to_string(),
+            table: None,
+            key: None,
+            source_value: None,
+            ui_path: Vec::new(),
+            note: Some("manual concept binding".to_string()),
+        }],
+    ) {
+        Ok(result) => result,
+        Err(error) => return tool_error(error.to_string()),
+    };
+
+    match concepts::save_concept_index_to_store(&state.store_path, &concept_index) {
+        Ok(()) => serialize_result(&result),
+        Err(error) => tool_error(format!("failed to save concept store: {error}")),
+    }
+}
+
+fn handle_add_concept_alias(state: &McpState, arguments: &Value) -> Value {
+    let concept = match arguments.get("concept").and_then(|v| v.as_str()) {
+        Some(concept) => concept,
+        None => return tool_error("missing required parameter: concept".to_string()),
+    };
+    let aliases = match arguments.get("aliases").and_then(|v| v.as_array()) {
+        Some(aliases) => aliases,
+        None => return tool_error("missing required parameter: aliases".to_string()),
+    };
+    if aliases.is_empty() {
+        return tool_error("aliases array is empty".to_string());
+    }
+
+    let mut concept_index = match concepts::load_concept_index_from_store(&state.store_path) {
+        Ok(index) => index,
+        Err(error) => return tool_error(format!("failed to load concept store: {error}")),
+    };
+    let alias_values: Vec<String> = aliases
+        .iter()
+        .filter_map(|value| value.as_str().map(ToString::to_string))
+        .collect();
+    if alias_values.len() != aliases.len() {
+        return tool_error("aliases must be an array of strings".to_string());
+    }
+
+    let result = match concept_index.add_aliases(concept, &alias_values) {
+        Ok(result) => result,
+        Err(error) => return tool_error(error.to_string()),
+    };
+
+    match concepts::save_concept_index_to_store(&state.store_path, &concept_index) {
+        Ok(()) => serialize_result(&result),
+        Err(error) => tool_error(format!("failed to save concept store: {error}")),
+    }
+}
+
+fn handle_remove_concept(state: &McpState, arguments: &Value) -> Value {
+    let concept = match arguments.get("concept").and_then(|v| v.as_str()) {
+        Some(concept) => concept,
+        None => return tool_error("missing required parameter: concept".to_string()),
+    };
+
+    let mut concept_index = match concepts::load_concept_index_from_store(&state.store_path) {
+        Ok(index) => index,
+        Err(error) => return tool_error(format!("failed to load concept store: {error}")),
+    };
+    let result = concept_index.remove_concept(concept);
+
+    match concepts::save_concept_index_to_store(&state.store_path, &concept_index) {
+        Ok(()) => serialize_result(&result),
+        Err(error) => tool_error(format!("failed to save concept store: {error}")),
+    }
+}
+
 fn handle_reload(state: &mut McpState) -> Value {
     let db_path = state.store_path.join("grapha.db");
     let search_index_path = state.store_path.join("search_index");
@@ -561,7 +807,7 @@ mod tests {
     #[test]
     fn tool_definitions_count() {
         let tools = tool_definitions();
-        assert_eq!(tools.len(), 11);
+        assert_eq!(tools.len(), 16);
 
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"search_symbols"));
@@ -574,6 +820,11 @@ mod tests {
         assert!(names.contains(&"analyze_complexity"));
         assert!(names.contains(&"detect_smells"));
         assert!(names.contains(&"get_module_summary"));
+        assert!(names.contains(&"search_concepts"));
+        assert!(names.contains(&"get_concept"));
+        assert!(names.contains(&"bind_concept"));
+        assert!(names.contains(&"add_concept_alias"));
+        assert!(names.contains(&"remove_concept"));
         assert!(names.contains(&"reload"));
     }
 

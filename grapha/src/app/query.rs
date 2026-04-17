@@ -5,8 +5,9 @@ use anyhow::{anyhow, bail};
 use serde::Serialize;
 
 use crate::{
-    AssetCommands, ColorMode, FlowCommands, L10nCommands, OriginTerminalFilter, QueryOutputFormat,
-    SymbolCommands, assets, cache, changes, config, fields, localization, query, render, search,
+    AssetCommands, ColorMode, ConceptCommands, FlowCommands, L10nCommands,
+    OriginTerminalFilter, QueryOutputFormat, SymbolCommands, assets, cache, changes, concepts,
+    config, fields, localization, query, render, search,
 };
 
 use super::index::{
@@ -495,6 +496,116 @@ pub(crate) fn handle_asset_command(
                     Ok(())
                 }
             }
+        }
+    }
+}
+
+pub(crate) fn handle_concept_command(
+    command: ConceptCommands,
+    render_options: render::RenderOptions,
+) -> anyhow::Result<()> {
+    match command {
+        ConceptCommands::Search {
+            term,
+            limit,
+            path,
+            format,
+            fields,
+        } => {
+            let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
+            let graph = load_graph(&path)?;
+            let search_index = open_search_index(&path)?;
+            let concept_index = concepts::load_concept_index(&path)?;
+            let catalogs = localization::load_catalog_index(&path).unwrap_or_default();
+            let assets_index = assets::load_asset_index(&path).unwrap_or_default();
+            let result = concepts::search_concepts(
+                &graph,
+                &search_index,
+                &concept_index,
+                &catalogs,
+                &assets_index,
+                &term,
+                limit,
+            )?;
+            print_query_result(
+                &result,
+                format,
+                render_options,
+                render::render_concept_search_with_options,
+            )
+        }
+        ConceptCommands::Show {
+            term,
+            path,
+            format,
+            fields,
+        } => {
+            let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
+            let graph = load_graph(&path)?;
+            let concept_index = concepts::load_concept_index(&path)?;
+            let result = concepts::show_concept(&graph, &concept_index, &term)?;
+            print_query_result(
+                &result,
+                format,
+                render_options,
+                render::render_concept_show_with_options,
+            )
+        }
+        ConceptCommands::Bind {
+            term,
+            symbols,
+            path,
+        } => {
+            let graph = load_graph(&path)?;
+            let mut concept_index = concepts::load_concept_index(&path)?;
+            let mut unique_ids = std::collections::BTreeSet::new();
+
+            for symbol in symbols {
+                let node = resolve_query_result(query::resolve_node(&graph, &symbol), "symbol")?;
+                unique_ids.insert(node.id.clone());
+            }
+
+            let result = concept_index.bind_concept(
+                &term,
+                &unique_ids.into_iter().collect::<Vec<_>>(),
+                vec![concepts::ConceptEvidence {
+                    kind: "manual".to_string(),
+                    value: term.trim().to_string(),
+                    match_kind: "confirmed".to_string(),
+                    table: None,
+                    key: None,
+                    source_value: None,
+                    ui_path: Vec::new(),
+                    note: Some("manual concept binding".to_string()),
+                }],
+            )?;
+            concepts::save_concept_index(&path, &concept_index)?;
+            print_json(&result)
+        }
+        ConceptCommands::Alias {
+            term,
+            aliases,
+            path,
+        } => {
+            let mut concept_index = concepts::load_concept_index(&path)?;
+            let result = concept_index.add_aliases(&term, &aliases)?;
+            concepts::save_concept_index(&path, &concept_index)?;
+            print_json(&result)
+        }
+        ConceptCommands::Remove { term, path } => {
+            let mut concept_index = concepts::load_concept_index(&path)?;
+            let result = concept_index.remove_concept(&term);
+            concepts::save_concept_index(&path, &concept_index)?;
+            print_json(&result)
+        }
+        ConceptCommands::Prune { path } => {
+            let graph = load_graph(&path)?;
+            let mut concept_index = concepts::load_concept_index(&path)?;
+            let valid_ids: std::collections::HashSet<&str> =
+                graph.nodes.iter().map(|node| node.id.as_str()).collect();
+            let result = concept_index.prune(&valid_ids);
+            concepts::save_concept_index(&path, &concept_index)?;
+            print_json(&result)
         }
     }
 }

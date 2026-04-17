@@ -169,6 +169,16 @@ grapha asset list [--unused]               # image assets from xcassets catalogs
 grapha asset usages <name>                 # find Image()/UIImage() references
 ```
 
+### Concepts
+
+```bash
+grapha concept search "送礼横幅"             # business concept → candidate code scopes
+grapha concept show "送礼横幅"               # inspect stored aliases and bindings
+grapha concept bind "送礼横幅" --symbol GiftBannerPage
+grapha concept alias "送礼横幅" --add "礼物 banner"
+grapha concept prune                       # drop bindings to missing symbols
+```
+
 ## Configuration
 
 Optional `grapha.toml` at project root:

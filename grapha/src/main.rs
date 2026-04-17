@@ -4,6 +4,7 @@ mod cache;
 mod changes;
 mod classify;
 mod compress;
+mod concepts;
 mod config;
 mod delta;
 mod extract;
@@ -151,6 +152,11 @@ enum Commands {
     Asset {
         #[command(subcommand)]
         command: AssetCommands,
+    },
+    /// Resolve business concepts to likely code scopes and manage concept bindings
+    Concept {
+        #[command(subcommand)]
+        command: ConceptCommands,
     },
     /// Run repository-scoped analysis over the indexed graph
     Repo {
@@ -387,6 +393,77 @@ enum AssetCommands {
 }
 
 #[derive(Subcommand)]
+enum ConceptCommands {
+    /// Search for likely scopes related to a business concept
+    Search {
+        /// Business concept text
+        term: String,
+        /// Max results
+        #[arg(long, default_value = "10")]
+        limit: usize,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
+        format: QueryOutputFormat,
+        /// Fields to display in tree output (comma-separated: file,id,locator,module,span,snippet,visibility,signature,role; or "full"/"all"/"none")
+        #[arg(long)]
+        fields: Option<String>,
+    },
+    /// Show a stored concept mapping and its bound symbols
+    Show {
+        /// Business concept text
+        term: String,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
+        format: QueryOutputFormat,
+        /// Fields to display in tree output (comma-separated: file,id,locator,module,span,snippet,visibility,signature,role; or "full"/"all"/"none")
+        #[arg(long)]
+        fields: Option<String>,
+    },
+    /// Bind a business concept to one or more symbols
+    Bind {
+        /// Business concept text
+        term: String,
+        /// One or more symbols to bind
+        #[arg(long = "symbol", required = true)]
+        symbols: Vec<String>,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Add aliases for an existing or new concept
+    Alias {
+        /// Business concept text
+        term: String,
+        /// One or more aliases to add
+        #[arg(long = "add", required = true)]
+        aliases: Vec<String>,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Remove a concept from the project concept store
+    Remove {
+        /// Business concept text
+        term: String,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Remove bindings whose symbols no longer exist in the graph
+    Prune {
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
 enum RepoCommands {
     /// Detect code changes and analyze their impact
     Changes {
@@ -457,6 +534,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Flow { command } => app::query::handle_flow_command(command, render_options)?,
         Commands::L10n { command } => app::query::handle_l10n_command(command, render_options)?,
         Commands::Asset { command } => app::query::handle_asset_command(command, render_options)?,
+        Commands::Concept { command } => {
+            app::query::handle_concept_command(command, render_options)?
+        }
         Commands::Repo { command } => app::query::handle_repo_command(command)?,
     }
 

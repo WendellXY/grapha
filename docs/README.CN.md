@@ -162,6 +162,16 @@ grapha asset list [--unused]               # xcassets 目录中的图片资源
 grapha asset usages <name>                 # 查找 Image()/UIImage() 引用
 ```
 
+### 业务概念
+
+```bash
+grapha concept search "送礼横幅"             # 业务概念 → 候选代码作用域
+grapha concept show "送礼横幅"               # 查看已存别名和绑定
+grapha concept bind "送礼横幅" --symbol GiftBannerPage
+grapha concept alias "送礼横幅" --add "礼物 banner"
+grapha concept prune                       # 清理指向失效 symbol 的绑定
+```
+
 ## 配置
 
 项目根目录可选 `grapha.toml`：

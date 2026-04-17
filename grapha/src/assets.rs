@@ -73,7 +73,7 @@ impl AssetCatalogIndex {
         self.records.push(record);
     }
 
-    fn from_records(mut records: Vec<AssetRecord>) -> Self {
+    pub(crate) fn from_records(mut records: Vec<AssetRecord>) -> Self {
         sort_records(&mut records);
         let mut index = Self::default();
         for record in records {

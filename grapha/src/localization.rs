@@ -191,6 +191,10 @@ impl LocalizationCatalogIndex {
             .cloned()
             .collect()
     }
+
+    pub fn all_records(&self) -> &[LocalizationCatalogRecord] {
+        &self.records
+    }
 }
 
 pub fn build_and_save_catalog_snapshot(
