@@ -5,7 +5,7 @@ use anyhow::{Context, bail};
 use serde::{Deserialize, Serialize};
 use tantivy::Index;
 
-use grapha_core::graph::{EdgeKind, Graph, Node, NodeKind};
+use grapha_core::graph::{Edge, EdgeKind, Graph, Node, NodeKind};
 
 use crate::assets::{self, AssetCatalogIndex, AssetRecord};
 use crate::localization::{LocalizationCatalogIndex, LocalizationCatalogRecord};
@@ -26,6 +26,8 @@ const SCORE_L10N_KEY_EXACT: f32 = 840.0;
 const SCORE_L10N_KEY_CONTAINS: f32 = 800.0;
 const SCORE_ASSET_EXACT: f32 = 760.0;
 const SCORE_ASSET_CONTAINS: f32 = 720.0;
+const SCORE_FALLBACK_CALLER_BONUS: f32 = 15.0;
+const SCORE_FALLBACK_SEED_PENALTY: f32 = 25.0;
 const SCORE_SYMBOL_EXACT: f32 = 660.0;
 const SCORE_SYMBOL_PREFIX: f32 = 620.0;
 const SCORE_SYMBOL_BM25: f32 = 560.0;
@@ -517,6 +519,7 @@ pub fn search_concepts(
     let locators = SymbolLocatorIndex::new(graph);
     let node_index = graph_node_index(graph);
     let parents = contains_parents(graph);
+    let edges_by_target = graph_edges_by_target(graph);
 
     if let Some((record, lookup)) = concepts.record_for_term(query) {
         let scopes = direct_concept_scopes(record, &lookup, &node_index, &locators, limit);
@@ -531,13 +534,16 @@ pub fn search_concepts(
     }
 
     let mut scopes = HashMap::<String, ScopeAccumulator>::new();
-    let normalized_query = normalize_text(query);
+    let normalized_query = normalize_match_text(query);
 
     add_localization_value_scopes(
         &mut scopes,
         graph,
         &node_index,
         &locators,
+        &parents,
+        &edges_by_target,
+        search_index,
         catalogs,
         &normalized_query,
         query,
@@ -548,6 +554,9 @@ pub fn search_concepts(
         graph,
         &node_index,
         &locators,
+        &parents,
+        &edges_by_target,
+        search_index,
         catalogs,
         &normalized_query,
         query,
@@ -558,6 +567,9 @@ pub fn search_concepts(
         graph,
         &node_index,
         &locators,
+        &parents,
+        &edges_by_target,
+        search_index,
         catalogs,
         &normalized_query,
         query,
@@ -568,6 +580,9 @@ pub fn search_concepts(
         graph,
         &node_index,
         &locators,
+        &parents,
+        &edges_by_target,
+        search_index,
         catalogs,
         &normalized_query,
         query,
@@ -578,7 +593,9 @@ pub fn search_concepts(
         graph,
         &node_index,
         &parents,
+        &edges_by_target,
         &locators,
+        search_index,
         assets_index,
         &normalized_query,
         TextMatch::Exact,
@@ -588,7 +605,9 @@ pub fn search_concepts(
         graph,
         &node_index,
         &parents,
+        &edges_by_target,
         &locators,
+        search_index,
         assets_index,
         &normalized_query,
         TextMatch::Contains,
@@ -678,6 +697,9 @@ fn add_localization_value_scopes(
     graph: &Graph,
     node_index: &HashMap<&str, &Node>,
     locators: &SymbolLocatorIndex,
+    parents: &HashMap<&str, &str>,
+    edges_by_target: &HashMap<&str, Vec<&Edge>>,
+    search_index: &Index,
     catalogs: &LocalizationCatalogIndex,
     normalized_query: &str,
     raw_query: &str,
@@ -698,6 +720,9 @@ fn add_localization_value_scopes(
             graph,
             node_index,
             locators,
+            parents,
+            edges_by_target,
+            search_index,
             catalogs,
             record,
             if match_type == TextMatch::Exact {
@@ -724,6 +749,9 @@ fn add_localization_key_scopes(
     graph: &Graph,
     node_index: &HashMap<&str, &Node>,
     locators: &SymbolLocatorIndex,
+    parents: &HashMap<&str, &str>,
+    edges_by_target: &HashMap<&str, Vec<&Edge>>,
+    search_index: &Index,
     catalogs: &LocalizationCatalogIndex,
     normalized_query: &str,
     raw_query: &str,
@@ -744,6 +772,9 @@ fn add_localization_key_scopes(
             graph,
             node_index,
             locators,
+            parents,
+            edges_by_target,
+            search_index,
             catalogs,
             record,
             if match_type == TextMatch::Exact {
@@ -770,17 +801,22 @@ fn add_record_usage_scopes(
     graph: &Graph,
     node_index: &HashMap<&str, &Node>,
     locators: &SymbolLocatorIndex,
+    parents: &HashMap<&str, &str>,
+    edges_by_target: &HashMap<&str, Vec<&Edge>>,
+    search_index: &Index,
     catalogs: &LocalizationCatalogIndex,
     record: &LocalizationCatalogRecord,
     score: f32,
     base_evidence: ConceptEvidence,
 ) {
     let result = query::usages::query_usages(graph, catalogs, &record.key, Some(&record.table));
+    let mut usage_count = 0;
     for record_group in result.records {
         if record_group.record.table != record.table || record_group.record.key != record.key {
             continue;
         }
         for usage in record_group.usages {
+            usage_count += 1;
             let Some(scope_node) = node_index.get(usage.owner.id.as_str()).copied() else {
                 continue;
             };
@@ -789,6 +825,20 @@ fn add_record_usage_scopes(
             add_scope(scopes, scope_node, locators, score, STATUS_CANDIDATE, evidence);
         }
     }
+
+    if usage_count == 0 {
+        add_l10n_fallback_scopes(
+            scopes,
+            node_index,
+            parents,
+            edges_by_target,
+            locators,
+            search_index,
+            record,
+            score,
+            &base_evidence,
+        );
+    }
 }
 
 fn add_asset_scopes(
@@ -796,7 +846,9 @@ fn add_asset_scopes(
     graph: &Graph,
     node_index: &HashMap<&str, &Node>,
     parents: &HashMap<&str, &str>,
+    edges_by_target: &HashMap<&str, Vec<&Edge>>,
     locators: &SymbolLocatorIndex,
+    search_index: &Index,
     assets_index: &AssetCatalogIndex,
     normalized_query: &str,
     match_type: TextMatch,
@@ -811,7 +863,9 @@ fn add_asset_scopes(
             continue;
         }
 
+        let mut usage_count = 0;
         for usage in assets::find_usages(graph, &record.name) {
+            usage_count += 1;
             let Some(node) = node_index.get(usage.node_id.as_str()).copied() else {
                 continue;
             };
@@ -838,6 +892,23 @@ fn add_asset_scopes(
                 },
             );
         }
+
+        if usage_count == 0 {
+            add_asset_fallback_scopes(
+                scopes,
+                node_index,
+                parents,
+                edges_by_target,
+                locators,
+                search_index,
+                record,
+                if match_type == TextMatch::Exact {
+                    SCORE_ASSET_EXACT
+                } else {
+                    SCORE_ASSET_CONTAINS
+                },
+            );
+        }
     }
 }
 
@@ -856,14 +927,14 @@ fn add_symbol_scopes(
         limit.saturating_mul(4).max(8),
         &SearchOptions::default(),
     )?;
-    let normalized_query = normalize_text(query);
+    let normalized_query = normalize_match_text(query);
 
     for (rank, result) in results.iter().enumerate() {
         let Some(node) = node_index.get(result.id.as_str()).copied() else {
             continue;
         };
         let scope = scope_for_node(node, parents, node_index);
-        let normalized_name = normalize_text(query::normalize_symbol_name(&node.name));
+        let normalized_name = normalize_match_text(query::normalize_symbol_name(&node.name));
         let (match_kind, base_score) = if normalized_name == normalized_query {
             ("exact", SCORE_SYMBOL_EXACT)
         } else if normalized_name.starts_with(&normalized_query) {
@@ -890,6 +961,156 @@ fn add_symbol_scopes(
         );
     }
     Ok(())
+}
+
+fn add_l10n_fallback_scopes(
+    scopes: &mut HashMap<String, ScopeAccumulator>,
+    node_index: &HashMap<&str, &Node>,
+    parents: &HashMap<&str, &str>,
+    edges_by_target: &HashMap<&str, Vec<&Edge>>,
+    locators: &SymbolLocatorIndex,
+    search_index: &Index,
+    record: &LocalizationCatalogRecord,
+    score: f32,
+    base_evidence: &ConceptEvidence,
+) {
+    let queries = l10n_symbol_queries(record);
+    add_seed_symbol_scopes(
+        scopes,
+        node_index,
+        parents,
+        edges_by_target,
+        locators,
+        search_index,
+        &queries,
+        score,
+        |candidate, node_name, is_caller| ConceptEvidence {
+            kind: "l10n_wrapper".to_string(),
+            value: candidate.to_string(),
+            match_kind: if is_caller {
+                "wrapper_caller".to_string()
+            } else {
+                "wrapper_symbol".to_string()
+            },
+            table: base_evidence.table.clone(),
+            key: base_evidence.key.clone(),
+            source_value: base_evidence.source_value.clone(),
+            ui_path: Vec::new(),
+            note: Some(node_name.to_string()),
+        },
+    );
+}
+
+fn add_asset_fallback_scopes(
+    scopes: &mut HashMap<String, ScopeAccumulator>,
+    node_index: &HashMap<&str, &Node>,
+    parents: &HashMap<&str, &str>,
+    edges_by_target: &HashMap<&str, Vec<&Edge>>,
+    locators: &SymbolLocatorIndex,
+    search_index: &Index,
+    record: &AssetRecord,
+    score: f32,
+) {
+    let queries = asset_symbol_queries(record);
+    add_seed_symbol_scopes(
+        scopes,
+        node_index,
+        parents,
+        edges_by_target,
+        locators,
+        search_index,
+        &queries,
+        score,
+        |candidate, node_name, is_caller| ConceptEvidence {
+            kind: "asset_wrapper".to_string(),
+            value: candidate.to_string(),
+            match_kind: if is_caller {
+                "wrapper_caller".to_string()
+            } else {
+                "wrapper_symbol".to_string()
+            },
+            table: None,
+            key: None,
+            source_value: None,
+            ui_path: Vec::new(),
+            note: Some(node_name.to_string()),
+        },
+    );
+}
+
+fn add_seed_symbol_scopes<F>(
+    scopes: &mut HashMap<String, ScopeAccumulator>,
+    node_index: &HashMap<&str, &Node>,
+    parents: &HashMap<&str, &str>,
+    edges_by_target: &HashMap<&str, Vec<&Edge>>,
+    locators: &SymbolLocatorIndex,
+    search_index: &Index,
+    queries: &[String],
+    score: f32,
+    evidence_builder: F,
+) where
+    F: Fn(&str, &str, bool) -> ConceptEvidence,
+{
+    let mut seen_seed_ids = HashSet::new();
+    for query in queries {
+        let normalized_query = normalize_match_text(query);
+        if normalized_query.is_empty() {
+            continue;
+        }
+
+        let Ok(results) = search::search_filtered(search_index, query, 8, &SearchOptions::default())
+        else {
+            continue;
+        };
+        let matching_seeds: Vec<&Node> = results
+            .into_iter()
+            .filter_map(|result| node_index.get(result.id.as_str()).copied())
+            .filter(|seed| seed_matches_query(seed, query, &normalized_query))
+            .collect();
+        let preferred_non_accessor_bases: HashSet<String> = matching_seeds
+            .iter()
+            .copied()
+            .filter(|seed| !is_accessor_symbol(seed))
+            .map(|seed| normalize_match_text(query::normalize_symbol_name(&seed.name)))
+            .collect();
+
+        for seed in matching_seeds {
+            if is_accessor_symbol(seed)
+                && preferred_non_accessor_bases
+                    .contains(&normalize_match_text(query::normalize_symbol_name(&seed.name)))
+            {
+                continue;
+            }
+            if !seen_seed_ids.insert(seed.id.clone()) {
+                continue;
+            }
+
+            let seed_scope = seed_scope_for_node(seed, parents, node_index);
+            add_scope(
+                scopes,
+                seed_scope,
+                locators,
+                (score - SCORE_FALLBACK_SEED_PENALTY).max(0.0),
+                STATUS_CANDIDATE,
+                evidence_builder(query, &seed.name, false),
+            );
+
+            for caller in related_caller_nodes(seed.id.as_str(), edges_by_target, node_index) {
+                let caller_scope = scope_for_node(caller, parents, node_index);
+                if should_skip_generated_container_scope(seed, caller_scope) {
+                    continue;
+                }
+                add_scope(
+                    scopes,
+                    caller_scope,
+                    locators,
+                    score + SCORE_FALLBACK_CALLER_BONUS,
+                    STATUS_CANDIDATE,
+                    evidence_builder(query, &caller.name, true),
+                );
+            }
+        }
+    }
 }
 
 fn add_scope(
@@ -964,6 +1185,23 @@ fn scope_for_node<'a>(
     }
 }
 
+fn seed_scope_for_node<'a>(
+    node: &'a Node,
+    parents: &HashMap<&'a str, &'a str>,
+    node_index: &HashMap<&'a str, &'a Node>,
+) -> &'a Node {
+    let file_name = node
+        .file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if file_name.ends_with("Strings.generated.swift") || file_name.ends_with("Assets.generated.swift")
+    {
+        return node;
+    }
+    scope_for_node(node, parents, node_index)
+}
+
 fn first_non_branch_ancestor<'a>(
     node_id: &'a str,
     parents: &HashMap<&'a str, &'a str>,
@@ -1029,6 +1267,14 @@ fn contains_parents(graph: &Graph) -> HashMap<&str, &str> {
     map
 }
 
+fn graph_edges_by_target(graph: &Graph) -> HashMap<&str, Vec<&Edge>> {
+    let mut map: HashMap<&str, Vec<&Edge>> = HashMap::new();
+    for edge in &graph.edges {
+        map.entry(edge.target.as_str()).or_default().push(edge);
+    }
+    map
+}
+
 fn graph_node_index(graph: &Graph) -> HashMap<&str, &Node> {
     graph
         .nodes
@@ -1046,7 +1292,7 @@ fn matches_localization_value(
         return false;
     }
     localization_values(record).into_iter().any(|value| {
-        let normalized_value = normalize_text(value);
+        let normalized_value = normalize_match_text(value);
         match match_type {
             TextMatch::Exact => normalized_value == normalized_query,
             TextMatch::Contains => {
@@ -1072,7 +1318,7 @@ fn matches_text(value: &str, normalized_query: &str, match_type: TextMatch) -> b
     if normalized_query.is_empty() {
         return false;
     }
-    let normalized_value = normalize_text(value);
+    let normalized_value = normalize_match_text(value);
     match match_type {
         TextMatch::Exact => normalized_value == normalized_query,
         TextMatch::Contains => {
@@ -1096,17 +1342,188 @@ fn localization_values(record: &LocalizationCatalogRecord) -> Vec<&str> {
     values
 }
 
-fn normalize_text(value: &str) -> String {
-    value.trim().to_lowercase()
+fn seed_matches_query(node: &Node, raw_query: &str, normalized_query: &str) -> bool {
+    let normalized_name = normalize_match_text(query::normalize_symbol_name(&node.name));
+    if normalized_name == normalized_query || normalized_name.contains(normalized_query) {
+        return true;
+    }
+
+    let snippet = node.snippet.as_deref().unwrap_or_default();
+    snippet.contains(raw_query)
+}
+
+fn related_caller_nodes<'a>(
+    seed_id: &'a str,
+    edges_by_target: &HashMap<&'a str, Vec<&'a Edge>>,
+    node_index: &HashMap<&'a str, &'a Node>,
+) -> Vec<&'a Node> {
+    let mut related = Vec::new();
+    let mut related_ids = HashSet::<String>::new();
+    let mut frontier = vec![seed_id];
+    let mut visited = HashSet::<String>::new();
+
+    while let Some(current_target) = frontier.pop() {
+        if !visited.insert(current_target.to_string()) {
+            continue;
+        }
+        let Some(edges) = edges_by_target.get(current_target) else {
+            continue;
+        };
+        for edge in edges {
+            match edge.kind {
+                EdgeKind::Implements => frontier.push(edge.source.as_str()),
+                EdgeKind::Calls | EdgeKind::Uses | EdgeKind::Reads | EdgeKind::TypeRef => {
+                    let Some(node) = node_index.get(edge.source.as_str()).copied() else {
+                        continue;
+                    };
+                    if related_ids.insert(node.id.clone()) {
+                        related.push(node);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    related
+}
+
+fn is_accessor_symbol(node: &Node) -> bool {
+    node.kind == NodeKind::Function
+        && (node.name.starts_with("getter:") || node.name.starts_with("setter:"))
+}
+
+fn should_skip_generated_container_scope(seed: &Node, scope: &Node) -> bool {
+    if seed.file != scope.file {
+        return false;
+    }
+    let file_name = seed
+        .file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if !(file_name.ends_with("Strings.generated.swift") || file_name.ends_with("Assets.generated.swift"))
+    {
+        return false;
+    }
+
+    matches!(
+        scope.kind,
+        NodeKind::Enum | NodeKind::Struct | NodeKind::Class | NodeKind::Extension | NodeKind::Module
+    )
+}
+
+fn l10n_symbol_queries(record: &LocalizationCatalogRecord) -> Vec<String> {
+    dedup_preserve_order(vec![
+        record.key.clone(),
+        snake_or_path_to_camel(&record.key),
+        snake_or_path_to_pascal(&record.key),
+    ])
+}
+
+fn asset_symbol_queries(record: &AssetRecord) -> Vec<String> {
+    dedup_preserve_order(vec![
+        record.name.clone(),
+        snake_or_path_to_camel(&record.name),
+        snake_or_path_to_pascal(&record.name),
+        record
+            .name
+            .rsplit('/')
+            .next()
+            .map(snake_or_path_to_camel)
+            .unwrap_or_default(),
+    ])
+}
+
+fn dedup_preserve_order(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::new();
+    for value in values {
+        let normalized = normalize_match_text(&value);
+        if normalized.is_empty() || !seen.insert(normalized) {
+            continue;
+        }
+        deduped.push(value);
+    }
+    deduped
+}
+
+fn snake_or_path_to_camel(value: &str) -> String {
+    let mut output = String::new();
+    let mut upper_next = false;
+    for ch in value.chars() {
+        if !ch.is_alphanumeric() {
+            upper_next = true;
+            continue;
+        }
+        if output.is_empty() {
+            output.extend(ch.to_lowercase());
+            upper_next = false;
+            continue;
+        }
+        if upper_next {
+            output.extend(ch.to_uppercase());
+            upper_next = false;
+        } else {
+            output.extend(ch.to_lowercase());
+        }
+    }
+    output
+}
+
+fn snake_or_path_to_pascal(value: &str) -> String {
+    let camel = snake_or_path_to_camel(value);
+    let mut chars = camel.chars();
+    let Some(first) = chars.next() else {
+        return String::new();
+    };
+    let mut output = String::new();
+    output.extend(first.to_uppercase());
+    output.extend(chars);
+    output
+}
+
+fn normalize_match_text(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let mut normalized = String::new();
+    let mut previous: Option<char> = None;
+    let mut last_was_space = false;
+
+    for ch in trimmed.chars() {
+        if !ch.is_alphanumeric() {
+            if !last_was_space && !normalized.is_empty() {
+                normalized.push(' ');
+                last_was_space = true;
+            }
+            previous = None;
+            continue;
+        }
+
+        let starts_new_token = previous.is_some_and(|prev| {
+            (prev.is_ascii_lowercase() && ch.is_ascii_uppercase())
+                || (prev.is_ascii_alphabetic() && ch.is_ascii_digit())
+                || (prev.is_ascii_digit() && ch.is_ascii_alphabetic())
+        });
+        if starts_new_token && !last_was_space && !normalized.is_empty() {
+            normalized.push(' ');
+        }
+
+        for lower in ch.to_lowercase() {
+            normalized.push(lower);
+        }
+        last_was_space = false;
+        previous = Some(ch);
+    }
+
+    normalized.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn normalize_concept(value: &str) -> String {
-    value.split_whitespace()
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-        .trim()
-        .to_lowercase()
+    normalize_match_text(value)
 }
 
 fn match_kind_label(match_type: TextMatch) -> &'static str {
@@ -1398,6 +1815,132 @@ mod tests {
                 .evidence
                 .iter()
                 .any(|evidence| evidence.kind == "asset_name")
+        );
+    }
+
+    #[test]
+    fn search_concepts_falls_back_to_l10n_wrapper_when_record_has_no_usage_sites() {
+        let wrapper = make_node(
+            "l10n-gift-record",
+            "taskHelpTabGiftRecord",
+            NodeKind::Property,
+            "Strings.generated.swift",
+        );
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![wrapper.clone()],
+            edges: Vec::new(),
+        };
+        let (_dir, search_index) = build_search_index(&graph);
+        let catalogs = LocalizationCatalogIndex::from_records(vec![LocalizationCatalogRecord {
+            table: "Localizable".to_string(),
+            key: "task_help_tab_gift_record".to_string(),
+            catalog_file: "Resources/Localizable.xcstrings".to_string(),
+            catalog_dir: "Resources".to_string(),
+            source_language: "zh-Hans".to_string(),
+            source_value: "Gift records".to_string(),
+            status: "translated".to_string(),
+            comment: None,
+            translations: BTreeMap::from([(String::from("zh-Hans"), String::from("送礼记录"))]),
+        }]);
+
+        let result = search_concepts(
+            &graph,
+            &search_index,
+            &ConceptIndex::default(),
+            &catalogs,
+            &AssetCatalogIndex::default(),
+            "送礼记录",
+            5,
+        )
+        .unwrap();
+
+        assert_eq!(result.resolved_from, "heuristics");
+        assert_eq!(result.scopes[0].symbol.id, wrapper.id);
+        assert!(
+            result.scopes[0]
+                .evidence
+                .iter()
+                .any(|evidence| evidence.kind == "l10n_wrapper")
+        );
+    }
+
+    #[test]
+    fn search_concepts_matches_asset_tokens_and_lifts_to_caller_scope() {
+        let owner = make_node(
+            "gift-banner-view",
+            "GiftNotifyBannerView",
+            NodeKind::Struct,
+            "GiftNotifyBannerView.swift",
+        );
+        let caller = make_node(
+            "gift-banner-image",
+            "bannerImage",
+            NodeKind::Property,
+            "GiftNotifyBannerView.swift",
+        );
+        let asset = make_node(
+            "room-gift-banner-1",
+            "roomGiftBanner1",
+            NodeKind::Property,
+            "Assets.generated.swift",
+        );
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![owner.clone(), caller.clone(), asset],
+            edges: vec![
+                Edge {
+                    source: owner.id.clone(),
+                    target: caller.id.clone(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: caller.id.clone(),
+                    target: "room-gift-banner-1".to_string(),
+                    kind: EdgeKind::Calls,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+            ],
+        };
+        let (_dir, search_index) = build_search_index(&graph);
+        let assets_index = AssetCatalogIndex::from_records(vec![AssetRecord {
+            name: "room_gift_banner_1".to_string(),
+            group_path: "Room".to_string(),
+            catalog: "Assets".to_string(),
+            catalog_dir: "Resources".to_string(),
+            template_intent: None,
+            provides_namespace: None,
+        }]);
+
+        let result = search_concepts(
+            &graph,
+            &search_index,
+            &ConceptIndex::default(),
+            &LocalizationCatalogIndex::default(),
+            &assets_index,
+            "gift banner",
+            5,
+        )
+        .unwrap();
+
+        assert_eq!(result.scopes[0].symbol.id, owner.id);
+        assert!(
+            result.scopes[0]
+                .evidence
+                .iter()
+                .any(|evidence| evidence.kind == "asset_wrapper")
         );
     }
 
