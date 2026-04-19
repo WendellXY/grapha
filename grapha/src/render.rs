@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use grapha_core::graph::{NodeKind, NodeRole, Visibility};
 
-use crate::concepts::{ConceptBindingView, ConceptEvidence, ConceptSearchResult, ConceptShowResult};
+use crate::concepts::{
+    ConceptBindingView, ConceptEvidence, ConceptSearchResult, ConceptShowResult,
+};
 use crate::fields::FieldSet;
 use crate::query::{
     ContextResult, SymbolInfo, SymbolRef, SymbolTreeRef, dataflow::DataflowEdge,
@@ -927,11 +929,7 @@ pub fn render_concept_search_with_options(
                 .iter()
                 .map(|scope| {
                     let mut scope_children = vec![
-                        TreeNode::leaf(format_key_value(
-                            "status",
-                            &scope.status,
-                            options,
-                        )),
+                        TreeNode::leaf(format_key_value("status", &scope.status, options)),
                         TreeNode::leaf(format_key_value(
                             "score",
                             &format!("{:.1}", scope.score),

@@ -5,9 +5,9 @@ use anyhow::{anyhow, bail};
 use serde::Serialize;
 
 use crate::{
-    AssetCommands, ColorMode, ConceptCommands, FlowCommands, L10nCommands,
-    OriginTerminalFilter, QueryOutputFormat, SymbolCommands, assets, cache, changes, concepts,
-    config, fields, localization, query, render, search,
+    AssetCommands, ColorMode, ConceptCommands, FlowCommands, L10nCommands, OriginTerminalFilter,
+    QueryOutputFormat, SymbolCommands, assets, cache, changes, concepts, config, fields,
+    localization, query, render, search,
 };
 
 use super::index::{

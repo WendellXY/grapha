@@ -175,6 +175,15 @@ struct ScopeAccumulator {
     evidence_set: HashSet<ConceptEvidence>,
 }
 
+struct ScopeSearchContext<'a> {
+    graph: &'a Graph,
+    node_index: &'a HashMap<&'a str, &'a Node>,
+    parents: &'a HashMap<&'a str, &'a str>,
+    edges_by_target: &'a HashMap<&'a str, Vec<&'a Edge>>,
+    locators: &'a SymbolLocatorIndex,
+    search_index: &'a Index,
+}
+
 fn default_binding_status() -> String {
     STATUS_CONFIRMED.to_string()
 }
@@ -272,7 +281,11 @@ impl ConceptIndex {
         })
     }
 
-    pub fn add_aliases(&mut self, term: &str, aliases: &[String]) -> anyhow::Result<ConceptAliasResult> {
+    pub fn add_aliases(
+        &mut self,
+        term: &str,
+        aliases: &[String],
+    ) -> anyhow::Result<ConceptAliasResult> {
         let record_index = self.ensure_record(term)?;
         let canonical = self
             .records
@@ -336,13 +349,13 @@ impl ConceptIndex {
             };
         };
         let normalized = normalize_concept(&lookup.concept);
-        let removed = if let Some(index) = self.lookup.get(&normalized).map(|entry| entry.record_index)
-        {
-            self.records.remove(index);
-            true
-        } else {
-            false
-        };
+        let removed =
+            if let Some(index) = self.lookup.get(&normalized).map(|entry| entry.record_index) {
+                self.records.remove(index);
+                true
+            } else {
+                false
+            };
         self.sort_and_rebuild();
         ConceptRemoveResult {
             concept: lookup.concept,
@@ -458,7 +471,10 @@ pub fn save_concept_index(project_root: &Path, index: &ConceptIndex) -> anyhow::
     save_concept_index_to_store(&project_root.join(".grapha"), index)
 }
 
-pub(crate) fn save_concept_index_to_store(store_dir: &Path, index: &ConceptIndex) -> anyhow::Result<()> {
+pub(crate) fn save_concept_index_to_store(
+    store_dir: &Path,
+    index: &ConceptIndex,
+) -> anyhow::Result<()> {
     std::fs::create_dir_all(store_dir)
         .with_context(|| format!("failed to create store dir {}", store_dir.display()))?;
     let path = snapshot_path(store_dir);
@@ -469,7 +485,11 @@ pub(crate) fn save_concept_index_to_store(store_dir: &Path, index: &ConceptIndex
     Ok(())
 }
 
-pub fn show_concept(graph: &Graph, concepts: &ConceptIndex, term: &str) -> anyhow::Result<ConceptShowResult> {
+pub fn show_concept(
+    graph: &Graph,
+    concepts: &ConceptIndex,
+    term: &str,
+) -> anyhow::Result<ConceptShowResult> {
     let Some((record, _)) = concepts.record_for_term(term) else {
         bail!("concept not found: {}", term.trim());
     };
@@ -520,6 +540,14 @@ pub fn search_concepts(
     let node_index = graph_node_index(graph);
     let parents = contains_parents(graph);
     let edges_by_target = graph_edges_by_target(graph);
+    let scope_context = ScopeSearchContext {
+        graph,
+        node_index: &node_index,
+        parents: &parents,
+        edges_by_target: &edges_by_target,
+        locators: &locators,
+        search_index,
+    };
 
     if let Some((record, lookup)) = concepts.record_for_term(query) {
         let scopes = direct_concept_scopes(record, &lookup, &node_index, &locators, limit);
@@ -538,12 +566,7 @@ pub fn search_concepts(
 
     add_localization_value_scopes(
         &mut scopes,
-        graph,
-        &node_index,
-        &locators,
-        &parents,
-        &edges_by_target,
-        search_index,
+        &scope_context,
         catalogs,
         &normalized_query,
         query,
@@ -551,12 +574,7 @@ pub fn search_concepts(
     );
     add_localization_value_scopes(
         &mut scopes,
-        graph,
-        &node_index,
-        &locators,
-        &parents,
-        &edges_by_target,
-        search_index,
+        &scope_context,
         catalogs,
         &normalized_query,
         query,
@@ -564,12 +582,7 @@ pub fn search_concepts(
     );
     add_localization_key_scopes(
         &mut scopes,
-        graph,
-        &node_index,
-        &locators,
-        &parents,
-        &edges_by_target,
-        search_index,
+        &scope_context,
         catalogs,
         &normalized_query,
         query,
@@ -577,12 +590,7 @@ pub fn search_concepts(
     );
     add_localization_key_scopes(
         &mut scopes,
-        graph,
-        &node_index,
-        &locators,
-        &parents,
-        &edges_by_target,
-        search_index,
+        &scope_context,
         catalogs,
         &normalized_query,
         query,
@@ -590,37 +598,19 @@ pub fn search_concepts(
     );
     add_asset_scopes(
         &mut scopes,
-        graph,
-        &node_index,
-        &parents,
-        &edges_by_target,
-        &locators,
-        search_index,
+        &scope_context,
         assets_index,
         &normalized_query,
         TextMatch::Exact,
     );
     add_asset_scopes(
         &mut scopes,
-        graph,
-        &node_index,
-        &parents,
-        &edges_by_target,
-        &locators,
-        search_index,
+        &scope_context,
         assets_index,
         &normalized_query,
         TextMatch::Contains,
     );
-    add_symbol_scopes(
-        &mut scopes,
-        &node_index,
-        &parents,
-        &locators,
-        search_index,
-        query,
-        limit,
-    )?;
+    add_symbol_scopes(&mut scopes, &scope_context, query, limit)?;
 
     let mut matches: Vec<_> = scopes
         .into_values()
@@ -694,12 +684,7 @@ fn direct_concept_scopes(
 
 fn add_localization_value_scopes(
     scopes: &mut HashMap<String, ScopeAccumulator>,
-    graph: &Graph,
-    node_index: &HashMap<&str, &Node>,
-    locators: &SymbolLocatorIndex,
-    parents: &HashMap<&str, &str>,
-    edges_by_target: &HashMap<&str, Vec<&Edge>>,
-    search_index: &Index,
+    context: &ScopeSearchContext<'_>,
     catalogs: &LocalizationCatalogIndex,
     normalized_query: &str,
     raw_query: &str,
@@ -710,19 +695,18 @@ fn add_localization_value_scopes(
         if !matches_localization_value(record, normalized_query, match_type) {
             continue;
         }
-        let record_key = (record.table.clone(), record.key.clone(), record.catalog_file.clone());
+        let record_key = (
+            record.table.clone(),
+            record.key.clone(),
+            record.catalog_file.clone(),
+        );
         if !seen_records.insert(record_key) {
             continue;
         }
 
         add_record_usage_scopes(
             scopes,
-            graph,
-            node_index,
-            locators,
-            parents,
-            edges_by_target,
-            search_index,
+            context,
             catalogs,
             record,
             if match_type == TextMatch::Exact {
@@ -746,12 +730,7 @@ fn add_localization_value_scopes(
 
 fn add_localization_key_scopes(
     scopes: &mut HashMap<String, ScopeAccumulator>,
-    graph: &Graph,
-    node_index: &HashMap<&str, &Node>,
-    locators: &SymbolLocatorIndex,
-    parents: &HashMap<&str, &str>,
-    edges_by_target: &HashMap<&str, Vec<&Edge>>,
-    search_index: &Index,
+    context: &ScopeSearchContext<'_>,
     catalogs: &LocalizationCatalogIndex,
     normalized_query: &str,
     raw_query: &str,
@@ -762,19 +741,18 @@ fn add_localization_key_scopes(
         if !matches_localization_key(record, normalized_query, match_type) {
             continue;
         }
-        let record_key = (record.table.clone(), record.key.clone(), record.catalog_file.clone());
+        let record_key = (
+            record.table.clone(),
+            record.key.clone(),
+            record.catalog_file.clone(),
+        );
         if !seen_records.insert(record_key) {
             continue;
         }
 
         add_record_usage_scopes(
             scopes,
-            graph,
-            node_index,
-            locators,
-            parents,
-            edges_by_target,
-            search_index,
+            context,
             catalogs,
             record,
             if match_type == TextMatch::Exact {
@@ -798,18 +776,14 @@ fn add_localization_key_scopes(
 
 fn add_record_usage_scopes(
     scopes: &mut HashMap<String, ScopeAccumulator>,
-    graph: &Graph,
-    node_index: &HashMap<&str, &Node>,
-    locators: &SymbolLocatorIndex,
-    parents: &HashMap<&str, &str>,
-    edges_by_target: &HashMap<&str, Vec<&Edge>>,
-    search_index: &Index,
+    context: &ScopeSearchContext<'_>,
     catalogs: &LocalizationCatalogIndex,
     record: &LocalizationCatalogRecord,
     score: f32,
     base_evidence: ConceptEvidence,
 ) {
-    let result = query::usages::query_usages(graph, catalogs, &record.key, Some(&record.table));
+    let result =
+        query::usages::query_usages(context.graph, catalogs, &record.key, Some(&record.table));
     let mut usage_count = 0;
     for record_group in result.records {
         if record_group.record.table != record.table || record_group.record.key != record.key {
@@ -817,38 +791,30 @@ fn add_record_usage_scopes(
         }
         for usage in record_group.usages {
             usage_count += 1;
-            let Some(scope_node) = node_index.get(usage.owner.id.as_str()).copied() else {
+            let Some(scope_node) = context.node_index.get(usage.owner.id.as_str()).copied() else {
                 continue;
             };
             let mut evidence = base_evidence.clone();
             evidence.ui_path = usage.ui_path.clone();
-            add_scope(scopes, scope_node, locators, score, STATUS_CANDIDATE, evidence);
+            add_scope(
+                scopes,
+                scope_node,
+                context.locators,
+                score,
+                STATUS_CANDIDATE,
+                evidence,
+            );
         }
     }
 
     if usage_count == 0 {
-        add_l10n_fallback_scopes(
-            scopes,
-            node_index,
-            parents,
-            edges_by_target,
-            locators,
-            search_index,
-            record,
-            score,
-            &base_evidence,
-        );
+        add_l10n_fallback_scopes(scopes, context, record, score, &base_evidence);
     }
 }
 
 fn add_asset_scopes(
     scopes: &mut HashMap<String, ScopeAccumulator>,
-    graph: &Graph,
-    node_index: &HashMap<&str, &Node>,
-    parents: &HashMap<&str, &str>,
-    edges_by_target: &HashMap<&str, Vec<&Edge>>,
-    locators: &SymbolLocatorIndex,
-    search_index: &Index,
+    context: &ScopeSearchContext<'_>,
     assets_index: &AssetCatalogIndex,
     normalized_query: &str,
     match_type: TextMatch,
@@ -858,22 +824,26 @@ fn add_asset_scopes(
         if !matches_asset_name(record, normalized_query, match_type) {
             continue;
         }
-        let record_key = (record.catalog.clone(), record.catalog_dir.clone(), record.name.clone());
+        let record_key = (
+            record.catalog.clone(),
+            record.catalog_dir.clone(),
+            record.name.clone(),
+        );
         if !seen_records.insert(record_key) {
             continue;
         }
 
         let mut usage_count = 0;
-        for usage in assets::find_usages(graph, &record.name) {
+        for usage in assets::find_usages(context.graph, &record.name) {
             usage_count += 1;
-            let Some(node) = node_index.get(usage.node_id.as_str()).copied() else {
+            let Some(node) = context.node_index.get(usage.node_id.as_str()).copied() else {
                 continue;
             };
-            let scope = scope_for_node(node, parents, node_index);
+            let scope = scope_for_node(node, context.parents, context.node_index);
             add_scope(
                 scopes,
                 scope,
-                locators,
+                context.locators,
                 if match_type == TextMatch::Exact {
                     SCORE_ASSET_EXACT
                 } else {
@@ -896,11 +866,7 @@ fn add_asset_scopes(
         if usage_count == 0 {
             add_asset_fallback_scopes(
                 scopes,
-                node_index,
-                parents,
-                edges_by_target,
-                locators,
-                search_index,
+                context,
                 record,
                 if match_type == TextMatch::Exact {
                     SCORE_ASSET_EXACT
@@ -914,15 +880,12 @@ fn add_asset_scopes(
 
 fn add_symbol_scopes(
     scopes: &mut HashMap<String, ScopeAccumulator>,
-    node_index: &HashMap<&str, &Node>,
-    parents: &HashMap<&str, &str>,
-    locators: &SymbolLocatorIndex,
-    search_index: &Index,
+    context: &ScopeSearchContext<'_>,
     query: &str,
     limit: usize,
 ) -> anyhow::Result<()> {
     let results = search::search_filtered(
-        search_index,
+        context.search_index,
         query,
         limit.saturating_mul(4).max(8),
         &SearchOptions::default(),
@@ -930,10 +893,10 @@ fn add_symbol_scopes(
     let normalized_query = normalize_match_text(query);
 
     for (rank, result) in results.iter().enumerate() {
-        let Some(node) = node_index.get(result.id.as_str()).copied() else {
+        let Some(node) = context.node_index.get(result.id.as_str()).copied() else {
             continue;
         };
-        let scope = scope_for_node(node, parents, node_index);
+        let scope = scope_for_node(node, context.parents, context.node_index);
         let normalized_name = normalize_match_text(query::normalize_symbol_name(&node.name));
         let (match_kind, base_score) = if normalized_name == normalized_query {
             ("exact", SCORE_SYMBOL_EXACT)
@@ -945,7 +908,7 @@ fn add_symbol_scopes(
         add_scope(
             scopes,
             scope,
-            locators,
+            context.locators,
             (base_score - rank as f32).max(0.0),
             STATUS_CANDIDATE,
             ConceptEvidence {
@@ -965,11 +928,7 @@ fn add_symbol_scopes(
 
 fn add_l10n_fallback_scopes(
     scopes: &mut HashMap<String, ScopeAccumulator>,
-    node_index: &HashMap<&str, &Node>,
-    parents: &HashMap<&str, &str>,
-    edges_by_target: &HashMap<&str, Vec<&Edge>>,
-    locators: &SymbolLocatorIndex,
-    search_index: &Index,
+    context: &ScopeSearchContext<'_>,
     record: &LocalizationCatalogRecord,
     score: f32,
     base_evidence: &ConceptEvidence,
@@ -977,11 +936,7 @@ fn add_l10n_fallback_scopes(
     let queries = l10n_symbol_queries(record);
     add_seed_symbol_scopes(
         scopes,
-        node_index,
-        parents,
-        edges_by_target,
-        locators,
-        search_index,
+        context,
         &queries,
         score,
         |candidate, node_name, is_caller| ConceptEvidence {
@@ -1003,22 +958,14 @@ fn add_l10n_fallback_scopes(
 
 fn add_asset_fallback_scopes(
     scopes: &mut HashMap<String, ScopeAccumulator>,
-    node_index: &HashMap<&str, &Node>,
-    parents: &HashMap<&str, &str>,
-    edges_by_target: &HashMap<&str, Vec<&Edge>>,
-    locators: &SymbolLocatorIndex,
-    search_index: &Index,
+    context: &ScopeSearchContext<'_>,
     record: &AssetRecord,
     score: f32,
 ) {
     let queries = asset_symbol_queries(record);
     add_seed_symbol_scopes(
         scopes,
-        node_index,
-        parents,
-        edges_by_target,
-        locators,
-        search_index,
+        context,
         &queries,
         score,
         |candidate, node_name, is_caller| ConceptEvidence {
@@ -1040,11 +987,7 @@ fn add_asset_fallback_scopes(
 
 fn add_seed_symbol_scopes<F>(
     scopes: &mut HashMap<String, ScopeAccumulator>,
-    node_index: &HashMap<&str, &Node>,
-    parents: &HashMap<&str, &str>,
-    edges_by_target: &HashMap<&str, Vec<&Edge>>,
-    locators: &SymbolLocatorIndex,
-    search_index: &Index,
+    context: &ScopeSearchContext<'_>,
     queries: &[String],
     score: f32,
     evidence_builder: F,
@@ -1058,13 +1001,14 @@ fn add_seed_symbol_scopes<F>(
             continue;
         }
 
-        let Ok(results) = search::search_filtered(search_index, query, 8, &SearchOptions::default())
+        let Ok(results) =
+            search::search_filtered(context.search_index, query, 8, &SearchOptions::default())
         else {
             continue;
         };
         let matching_seeds: Vec<&Node> = results
             .into_iter()
-            .filter_map(|result| node_index.get(result.id.as_str()).copied())
+            .filter_map(|result| context.node_index.get(result.id.as_str()).copied())
             .filter(|seed| seed_matches_query(seed, query, &normalized_query))
             .collect();
         let preferred_non_accessor_bases: HashSet<String> = matching_seeds
@@ -1076,8 +1020,9 @@ fn add_seed_symbol_scopes<F>(
 
         for seed in matching_seeds {
             if is_accessor_symbol(seed)
-                && preferred_non_accessor_bases
-                    .contains(&normalize_match_text(query::normalize_symbol_name(&seed.name)))
+                && preferred_non_accessor_bases.contains(&normalize_match_text(
+                    query::normalize_symbol_name(&seed.name),
+                ))
             {
                 continue;
             }
@@ -1085,25 +1030,29 @@ fn add_seed_symbol_scopes<F>(
                 continue;
             }
 
-            let seed_scope = seed_scope_for_node(seed, parents, node_index);
+            let seed_scope = seed_scope_for_node(seed, context.parents, context.node_index);
             add_scope(
                 scopes,
                 seed_scope,
-                locators,
+                context.locators,
                 (score - SCORE_FALLBACK_SEED_PENALTY).max(0.0),
                 STATUS_CANDIDATE,
                 evidence_builder(query, &seed.name, false),
             );
 
-            for caller in related_caller_nodes(seed.id.as_str(), edges_by_target, node_index) {
-                let caller_scope = scope_for_node(caller, parents, node_index);
+            for caller in related_caller_nodes(
+                seed.id.as_str(),
+                context.edges_by_target,
+                context.node_index,
+            ) {
+                let caller_scope = scope_for_node(caller, context.parents, context.node_index);
                 if should_skip_generated_container_scope(seed, caller_scope) {
                     continue;
                 }
                 add_scope(
                     scopes,
                     caller_scope,
-                    locators,
+                    context.locators,
                     score + SCORE_FALLBACK_CALLER_BONUS,
                     STATUS_CANDIDATE,
                     evidence_builder(query, &caller.name, true),
@@ -1157,12 +1106,15 @@ fn scope_for_node<'a>(
     node_index: &HashMap<&'a str, &'a Node>,
 ) -> &'a Node {
     match node.kind {
-        NodeKind::Branch => first_non_branch_ancestor(node.id.as_str(), parents, node_index).unwrap_or(node),
+        NodeKind::Branch => {
+            first_non_branch_ancestor(node.id.as_str(), parents, node_index).unwrap_or(node)
+        }
         NodeKind::Property | NodeKind::Field | NodeKind::Variant => {
             first_scope_ancestor(node.id.as_str(), parents, node_index).unwrap_or(node)
         }
         NodeKind::Function => {
-            let Some(parent) = first_non_branch_ancestor(node.id.as_str(), parents, node_index) else {
+            let Some(parent) = first_non_branch_ancestor(node.id.as_str(), parents, node_index)
+            else {
                 return node;
             };
             if matches!(
@@ -1195,7 +1147,8 @@ fn seed_scope_for_node<'a>(
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    if file_name.ends_with("Strings.generated.swift") || file_name.ends_with("Assets.generated.swift")
+    if file_name.ends_with("Strings.generated.swift")
+        || file_name.ends_with("Assets.generated.swift")
     {
         return node;
     }
@@ -1402,14 +1355,19 @@ fn should_skip_generated_container_scope(seed: &Node, scope: &Node) -> bool {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    if !(file_name.ends_with("Strings.generated.swift") || file_name.ends_with("Assets.generated.swift"))
+    if !(file_name.ends_with("Strings.generated.swift")
+        || file_name.ends_with("Assets.generated.swift"))
     {
         return false;
     }
 
     matches!(
         scope.kind,
-        NodeKind::Enum | NodeKind::Struct | NodeKind::Class | NodeKind::Extension | NodeKind::Module
+        NodeKind::Enum
+            | NodeKind::Struct
+            | NodeKind::Class
+            | NodeKind::Extension
+            | NodeKind::Module
     )
 }
 
@@ -1545,8 +1503,12 @@ fn merge_evidence(target: &mut Vec<ConceptEvidence>, incoming: &[ConceptEvidence
 fn sort_concepts(records: &mut [ConceptRecord]) {
     for record in records.iter_mut() {
         record.aliases.sort();
-        record.aliases.dedup_by(|left, right| normalize_concept(left) == normalize_concept(right));
-        record.bindings.sort_by(|left, right| left.symbol_id.cmp(&right.symbol_id));
+        record
+            .aliases
+            .dedup_by(|left, right| normalize_concept(left) == normalize_concept(right));
+        record
+            .bindings
+            .sort_by(|left, right| left.symbol_id.cmp(&right.symbol_id));
         record
             .bindings
             .dedup_by(|left, right| left.symbol_id == right.symbol_id);

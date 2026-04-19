@@ -617,7 +617,8 @@ fn handle_search_concepts(state: &McpState, arguments: &Value) -> Value {
         Ok(index) => index,
         Err(error) => return tool_error(format!("failed to load concept store: {error}")),
     };
-    let catalogs = localization::load_catalog_index_from_store(&state.store_path).unwrap_or_default();
+    let catalogs =
+        localization::load_catalog_index_from_store(&state.store_path).unwrap_or_default();
     let assets_index = assets::load_asset_index_from_store(&state.store_path).unwrap_or_default();
 
     match concepts::search_concepts(
