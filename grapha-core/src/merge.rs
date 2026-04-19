@@ -774,7 +774,11 @@ mod tests {
         let struct_node = make_node("sqlite.rs::SqliteStore", "SqliteStore", NodeKind::Struct);
         let field_node = make_node("sqlite.rs::SqliteStore.path", "path", NodeKind::Field);
         let impl_node = make_node("sqlite.rs::impl_SqliteStore", "SqliteStore", NodeKind::Impl);
-        let fn_node = make_node("sqlite.rs::open", "open", NodeKind::Function);
+        let fn_node = make_node(
+            "sqlite.rs::impl_SqliteStore::open",
+            "open",
+            NodeKind::Function,
+        );
 
         let graph = merge(vec![ExtractionResult {
             nodes: vec![struct_node, field_node, impl_node, fn_node],
@@ -792,7 +796,7 @@ mod tests {
                 },
                 Edge {
                     source: "sqlite.rs::impl_SqliteStore".to_string(),
-                    target: "sqlite.rs::open".to_string(),
+                    target: "sqlite.rs::impl_SqliteStore::open".to_string(),
                     kind: EdgeKind::Contains,
                     confidence: 1.0,
                     direction: None,
@@ -802,7 +806,7 @@ mod tests {
                     provenance: Vec::new(),
                 },
                 Edge {
-                    source: "sqlite.rs::open".to_string(),
+                    source: "sqlite.rs::impl_SqliteStore::open".to_string(),
                     target: "self.path".to_string(),
                     kind: EdgeKind::Reads,
                     confidence: 0.8,

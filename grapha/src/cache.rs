@@ -63,6 +63,7 @@ impl GraphCache {
 const QUERY_CACHE_FILENAME: &str = "query_cache.bin";
 const MAX_QUERY_CACHE_ENTRIES: usize = 64;
 const EXTRACTION_CACHE_FILENAME: &str = "extraction_cache.bin";
+const EXTRACTION_CACHE_FORMAT_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 struct QueryCacheEntry {
@@ -96,6 +97,20 @@ pub struct ExtractionCacheEntry {
     pub result: ExtractionResult,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ExtractionCacheFile {
+    format_version: u32,
+    binary_stamp: Option<FileStamp>,
+    entries: HashMap<String, ExtractionCacheEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ExtractionCacheDiskFormat {
+    Current(ExtractionCacheFile),
+    Legacy(#[allow(dead_code)] HashMap<String, ExtractionCacheEntry>),
+}
+
 pub struct ExtractionCache {
     cache_path: PathBuf,
 }
@@ -117,11 +132,28 @@ impl ExtractionCache {
         let Ok(contents) = fs::read_to_string(&self.cache_path) else {
             return Ok(HashMap::new());
         };
-        serde_json::from_str(&contents).with_context(|| {
-            format!(
-                "deserialising extraction cache {}",
-                self.cache_path.display()
-            )
+        let cache_file: ExtractionCacheDiskFormat =
+            serde_json::from_str(&contents).with_context(|| {
+                format!(
+                    "deserialising extraction cache {}",
+                    self.cache_path.display()
+                )
+            })?;
+
+        let Some(current_binary_stamp) = current_binary_stamp() else {
+            return Ok(HashMap::new());
+        };
+
+        Ok(match cache_file {
+            ExtractionCacheDiskFormat::Current(cache)
+                if cache.format_version == EXTRACTION_CACHE_FORMAT_VERSION
+                    && cache.binary_stamp == Some(current_binary_stamp) =>
+            {
+                cache.entries
+            }
+            ExtractionCacheDiskFormat::Current(_) | ExtractionCacheDiskFormat::Legacy(_) => {
+                HashMap::new()
+            }
         })
     }
 
@@ -132,13 +164,21 @@ impl ExtractionCache {
         if let Some(parent) = self.cache_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let contents = serde_json::to_string(entries).with_context(|| {
-            format!("serialising extraction cache {}", self.cache_path.display())
-        })?;
+        let contents = serde_json::to_string(&ExtractionCacheFile {
+            format_version: EXTRACTION_CACHE_FORMAT_VERSION,
+            binary_stamp: current_binary_stamp(),
+            entries: entries.clone(),
+        })
+        .with_context(|| format!("serialising extraction cache {}", self.cache_path.display()))?;
         fs::write(&self.cache_path, contents)
             .with_context(|| format!("writing extraction cache {}", self.cache_path.display()))?;
         Ok(())
     }
+}
+
+fn current_binary_stamp() -> Option<FileStamp> {
+    let executable = std::env::current_exe().ok()?;
+    FileStamp::from_path(&executable)
 }
 
 fn mtime_secs(path: &Path) -> Option<u64> {
@@ -415,5 +455,74 @@ mod tests {
         let entry = loaded.get("main.rs").unwrap();
         assert_eq!(entry.module_name.as_deref(), Some("sample"));
         assert_eq!(entry.result.nodes[0].name, "main");
+    }
+
+    #[test]
+    fn extraction_cache_ignores_legacy_disk_format() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ExtractionCache::new(dir.path());
+        let file = dir.path().join("main.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+
+        let mut legacy_entries = HashMap::new();
+        legacy_entries.insert(
+            "main.rs".to_string(),
+            ExtractionCacheEntry {
+                stamp: FileStamp::from_path(&file).unwrap(),
+                module_name: Some("sample".to_string()),
+                result: sample_extraction_result("main.rs"),
+            },
+        );
+
+        fs::write(
+            &cache.cache_path,
+            serde_json::to_string(&legacy_entries).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = cache.load_entries().unwrap();
+        assert!(loaded.is_empty(), "legacy caches should be invalidated");
+    }
+
+    #[test]
+    fn extraction_cache_ignores_mismatched_binary_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = ExtractionCache::new(dir.path());
+        let file = dir.path().join("main.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+
+        let mut entries = HashMap::new();
+        entries.insert(
+            "main.rs".to_string(),
+            ExtractionCacheEntry {
+                stamp: FileStamp::from_path(&file).unwrap(),
+                module_name: Some("sample".to_string()),
+                result: sample_extraction_result("main.rs"),
+            },
+        );
+
+        let current_stamp = current_binary_stamp().expect("current test binary should be readable");
+        let mismatched_stamp = FileStamp {
+            len: current_stamp.len.saturating_add(1),
+            modified_secs: current_stamp.modified_secs,
+            modified_nanos: current_stamp.modified_nanos,
+        };
+
+        fs::write(
+            &cache.cache_path,
+            serde_json::to_string(&ExtractionCacheFile {
+                format_version: EXTRACTION_CACHE_FORMAT_VERSION,
+                binary_stamp: Some(mismatched_stamp),
+                entries,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let loaded = cache.load_entries().unwrap();
+        assert!(
+            loaded.is_empty(),
+            "caches from another binary should be invalidated"
+        );
     }
 }

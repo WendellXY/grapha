@@ -64,7 +64,9 @@ fn walk_node(
 ) {
     match node.kind() {
         "function_item" | "function_signature_item" => {
-            if let Some(graph_node) = extract_function(node, source, file, module_path) {
+            if let Some(graph_node) =
+                extract_function(node, source, file, module_path, parent_id, result)
+            {
                 if let Some(pid) = parent_id {
                     result.edges.push(Edge {
                         source: pid.to_string(),
@@ -85,22 +87,15 @@ fn walk_node(
                 if let Some(return_type_node) = node.child_by_field_name("return_type")
                     && let Ok(return_text) = return_type_node.utf8_text(source)
                 {
-                    // Strip leading "->" and whitespace
                     let type_name = return_text.trim_start_matches("->").trim();
-                    if !type_name.is_empty() && !is_primitive(type_name) && type_name != "Self" {
-                        let target_id = make_id(file, module_path, type_name);
-                        result.edges.push(Edge {
-                            source: node_id.clone(),
-                            target: target_id,
-                            kind: EdgeKind::TypeRef,
-                            confidence: 0.85,
-                            direction: None,
-                            operation: None,
-                            condition: None,
-                            async_boundary: None,
-                            provenance: edge_provenance(file, return_type_node, &node_id),
-                        });
-                    }
+                    push_type_ref_edges(
+                        result,
+                        file,
+                        return_type_node,
+                        &node_id,
+                        module_path,
+                        type_name,
+                    );
                 }
 
                 // Walk function body for nested items and call expressions
@@ -112,7 +107,9 @@ fn walk_node(
             }
         }
         "const_item" | "static_item" => {
-            if let Some(graph_node) = extract_constant(node, source, file, module_path) {
+            if let Some(graph_node) =
+                extract_constant(node, source, file, module_path, parent_id, result)
+            {
                 if let Some(pid) = parent_id {
                     result.edges.push(Edge {
                         source: pid.to_string(),
@@ -132,12 +129,14 @@ fn walk_node(
                 if let Some(type_node) = node.child_by_field_name("type")
                     && let Ok(type_name) = type_node.utf8_text(source)
                 {
-                    push_type_ref_edge(result, file, type_node, &node_id, module_path, type_name);
+                    push_type_ref_edges(result, file, type_node, &node_id, module_path, type_name);
                 }
             }
         }
         "type_item" => {
-            if let Some(graph_node) = extract_type_alias(node, source, file, module_path) {
+            if let Some(graph_node) =
+                extract_type_alias(node, source, file, module_path, parent_id, result)
+            {
                 if let Some(pid) = parent_id {
                     result.edges.push(Edge {
                         source: pid.to_string(),
@@ -157,14 +156,20 @@ fn walk_node(
                 if let Some(type_node) = node.child_by_field_name("type")
                     && let Ok(type_name) = type_node.utf8_text(source)
                 {
-                    push_type_ref_edge(result, file, type_node, &node_id, module_path, type_name);
+                    push_type_ref_edges(result, file, type_node, &node_id, module_path, type_name);
                 }
             }
         }
         "struct_item" => {
-            if let Some(graph_node) =
-                extract_named_item(node, source, file, module_path, NodeKind::Struct)
-            {
+            if let Some(graph_node) = extract_named_item(
+                node,
+                source,
+                file,
+                module_path,
+                parent_id,
+                NodeKind::Struct,
+                result,
+            ) {
                 if let Some(pid) = parent_id {
                     result.edges.push(Edge {
                         source: pid.to_string(),
@@ -197,9 +202,15 @@ fn walk_node(
             }
         }
         "enum_item" => {
-            if let Some(graph_node) =
-                extract_named_item(node, source, file, module_path, NodeKind::Enum)
-            {
+            if let Some(graph_node) = extract_named_item(
+                node,
+                source,
+                file,
+                module_path,
+                parent_id,
+                NodeKind::Enum,
+                result,
+            ) {
                 if let Some(pid) = parent_id {
                     result.edges.push(Edge {
                         source: pid.to_string(),
@@ -232,9 +243,15 @@ fn walk_node(
             }
         }
         "trait_item" => {
-            if let Some(graph_node) =
-                extract_named_item(node, source, file, module_path, NodeKind::Trait)
-            {
+            if let Some(graph_node) = extract_named_item(
+                node,
+                source,
+                file,
+                module_path,
+                parent_id,
+                NodeKind::Trait,
+                result,
+            ) {
                 if let Some(pid) = parent_id {
                     result.edges.push(Edge {
                         source: pid.to_string(),
@@ -252,25 +269,21 @@ fn walk_node(
                 result.nodes.push(graph_node);
 
                 // Emit Inherits edges for supertrait bounds (e.g. `trait Child: Base`)
-                if let Some(bounds) = node.child_by_field_name("bounds") {
-                    let mut cursor = bounds.walk();
-                    for child in bounds.named_children(&mut cursor) {
-                        if child.kind() == "type_identifier"
-                            && let Ok(bound_name) = child.utf8_text(source)
-                        {
-                            let target_id = make_id(file, module_path, bound_name);
-                            result.edges.push(Edge {
-                                source: node_id.clone(),
-                                target: target_id,
-                                kind: EdgeKind::Inherits,
-                                confidence: 0.9,
-                                direction: None,
-                                operation: None,
-                                condition: None,
-                                async_boundary: None,
-                                provenance: edge_provenance(file, child, &node_id),
-                            });
-                        }
+                if let Some(bounds) = node.child_by_field_name("bounds")
+                    && let Ok(bounds_text) = bounds.utf8_text(source)
+                {
+                    for bound_name in collect_symbol_paths(bounds_text) {
+                        result.edges.push(Edge {
+                            source: node_id.clone(),
+                            target: qualify_reference_target(file, module_path, &bound_name),
+                            kind: EdgeKind::Inherits,
+                            confidence: 0.9,
+                            direction: None,
+                            operation: None,
+                            condition: None,
+                            async_boundary: None,
+                            provenance: edge_provenance(file, bounds, &node_id),
+                        });
                     }
                 }
 
@@ -280,7 +293,9 @@ fn walk_node(
             }
         }
         "impl_item" => {
-            if let Some(graph_node) = extract_impl_item(node, source, file, module_path) {
+            if let Some(graph_node) =
+                extract_impl_item(node, source, file, module_path, parent_id, result)
+            {
                 if let Some(pid) = parent_id {
                     result.edges.push(Edge {
                         source: pid.to_string(),
@@ -302,8 +317,10 @@ fn walk_node(
                     && let Ok(trait_name) = trait_node.utf8_text(source)
                 {
                     let type_name = &graph_node.name;
-                    let type_id = make_id(file, module_path, type_name);
-                    let trait_id = make_id(file, module_path, trait_name);
+                    let type_id = qualify_reference_target(file, module_path, type_name);
+                    let trait_id = primary_symbol_path(trait_name)
+                        .map(|path| qualify_reference_target(file, module_path, &path))
+                        .unwrap_or_else(|| qualify_reference_target(file, module_path, trait_name));
                     result.edges.push(Edge {
                         source: type_id,
                         target: trait_id,
@@ -325,9 +342,15 @@ fn walk_node(
             }
         }
         "mod_item" => {
-            if let Some(graph_node) =
-                extract_named_item(node, source, file, module_path, NodeKind::Module)
-            {
+            if let Some(graph_node) = extract_named_item(
+                node,
+                source,
+                file,
+                module_path,
+                parent_id,
+                NodeKind::Module,
+                result,
+            ) {
                 if let Some(pid) = parent_id {
                     result.edges.push(Edge {
                         source: pid.to_string(),
@@ -433,6 +456,189 @@ fn make_id(file: &str, module_path: &[String], name: &str) -> String {
     }
 }
 
+fn make_decl_id(file: &str, module_path: &[String], parent_id: Option<&str>, name: &str) -> String {
+    parent_id
+        .map(|pid| format!("{pid}::{name}"))
+        .unwrap_or_else(|| make_id(file, module_path, name))
+}
+
+fn unique_decl_id(
+    result: &ExtractionResult,
+    proposed_id: String,
+    node: tree_sitter::Node,
+) -> String {
+    if result
+        .nodes
+        .iter()
+        .all(|existing| existing.id != proposed_id)
+    {
+        return proposed_id;
+    }
+
+    let start = node.start_position();
+    let end = node.end_position();
+    format!(
+        "{proposed_id}@{}:{}:{}:{}",
+        start.row, start.column, end.row, end.column
+    )
+}
+
+fn qualify_reference_target(file: &str, module_path: &[String], target: &str) -> String {
+    if target.contains("::") || target.contains('.') {
+        target.to_string()
+    } else {
+        make_id(file, module_path, target)
+    }
+}
+
+fn normalize_call_target(raw: &str) -> Option<String> {
+    let normalized = erase_generic_arguments(raw)
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
+        .trim_end_matches('?')
+        .trim_end_matches("::")
+        .to_string();
+    (!normalized.is_empty() && !normalized.ends_with('!')).then_some(normalized)
+}
+
+fn erase_generic_arguments(raw: &str) -> String {
+    let mut result = String::with_capacity(raw.len());
+    let mut depth = 0usize;
+    for ch in raw.chars() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => result.push(ch),
+            _ => {}
+        }
+    }
+    result
+}
+
+fn collect_symbol_paths(raw: &str) -> Vec<String> {
+    let bytes = raw.as_bytes();
+    let mut index = 0usize;
+    let mut symbols = Vec::new();
+
+    while index < bytes.len() {
+        if bytes[index] == b'\'' {
+            index += 1;
+            while index < bytes.len() && is_ident_char(bytes[index]) {
+                index += 1;
+            }
+            continue;
+        }
+
+        let Some((path, next_index)) = parse_symbol_path(raw, index) else {
+            index += 1;
+            continue;
+        };
+        index = next_index;
+
+        if should_keep_symbol_path(&path) && !symbols.contains(&path) {
+            symbols.push(path);
+        }
+    }
+
+    symbols
+}
+
+fn parse_symbol_path(raw: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = raw.as_bytes();
+    let (mut path, mut index) = parse_ident(raw, start)?;
+
+    loop {
+        let mut next = index;
+        while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+            next += 1;
+        }
+        if next + 1 >= bytes.len() || bytes[next] != b':' || bytes[next + 1] != b':' {
+            break;
+        }
+        next += 2;
+        while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+            next += 1;
+        }
+        let Some((segment, after_segment)) = parse_ident(raw, next) else {
+            break;
+        };
+        path.push_str("::");
+        path.push_str(&segment);
+        index = after_segment;
+    }
+
+    Some((path, index))
+}
+
+fn parse_ident(raw: &str, start: usize) -> Option<(String, usize)> {
+    let bytes = raw.as_bytes();
+    if start >= bytes.len() {
+        return None;
+    }
+
+    let mut index = start;
+    if bytes.get(index) == Some(&b'r') && bytes.get(index + 1) == Some(&b'#') {
+        index += 2;
+    }
+
+    let first = *bytes.get(index)?;
+    if !is_ident_start(first) {
+        return None;
+    }
+
+    let ident_start = index;
+    index += 1;
+    while index < bytes.len() && is_ident_char(bytes[index]) {
+        index += 1;
+    }
+
+    Some((raw[ident_start..index].to_string(), index))
+}
+
+fn is_ident_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_'
+}
+
+fn is_ident_char(byte: u8) -> bool {
+    is_ident_start(byte) || byte.is_ascii_digit()
+}
+
+fn should_keep_symbol_path(path: &str) -> bool {
+    if path == "Self" || path == "self" {
+        return false;
+    }
+    if path.contains("::") {
+        return true;
+    }
+    if is_primitive(path) {
+        return false;
+    }
+
+    !matches!(
+        path,
+        "dyn"
+            | "impl"
+            | "mut"
+            | "const"
+            | "async"
+            | "unsafe"
+            | "extern"
+            | "fn"
+            | "for"
+            | "where"
+            | "move"
+    )
+}
+
+fn primary_symbol_path(raw: &str) -> Option<String> {
+    collect_symbol_paths(raw).into_iter().next()
+}
+
+fn terminal_symbol_name(path: &str) -> &str {
+    path.rsplit("::").next().unwrap_or(path)
+}
+
 /// Extract the text of a named child field.
 fn field_text<'a>(node: tree_sitter::Node<'a>, field: &str, source: &'a [u8]) -> Option<String> {
     node.child_by_field_name(field)
@@ -491,9 +697,15 @@ fn extract_function(
     source: &[u8],
     file: &str,
     module_path: &[String],
+    parent_id: Option<&str>,
+    result: &ExtractionResult,
 ) -> Option<Node> {
     let name = field_text(node, "name", source)?;
-    let id = make_id(file, module_path, &name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &name),
+        node,
+    );
     let visibility = extract_visibility(node, source);
     let metadata = extract_function_metadata(node, source);
     let start = node.start_position();
@@ -709,7 +921,7 @@ fn detect_async_boundary(node: tree_sitter::Node, source: &[u8]) -> Option<bool>
     None
 }
 
-fn push_type_ref_edge(
+fn push_type_ref_edges(
     result: &mut ExtractionResult,
     file: &str,
     type_node: tree_sitter::Node,
@@ -717,22 +929,19 @@ fn push_type_ref_edge(
     module_path: &[String],
     raw_type_name: &str,
 ) {
-    let type_name = raw_type_name.trim();
-    if type_name.is_empty() || is_primitive(type_name) || type_name == "Self" {
-        return;
+    for type_name in collect_symbol_paths(raw_type_name.trim()) {
+        result.edges.push(Edge {
+            source: source_id.to_string(),
+            target: qualify_reference_target(file, module_path, &type_name),
+            kind: EdgeKind::TypeRef,
+            confidence: 0.85,
+            direction: None,
+            operation: None,
+            condition: None,
+            async_boundary: None,
+            provenance: edge_provenance(file, type_node, source_id),
+        });
     }
-
-    result.edges.push(Edge {
-        source: source_id.to_string(),
-        target: make_id(file, module_path, type_name),
-        kind: EdgeKind::TypeRef,
-        confidence: 0.85,
-        direction: None,
-        operation: None,
-        condition: None,
-        async_boundary: None,
-        provenance: edge_provenance(file, type_node, source_id),
-    });
 }
 
 /// Extract a named symbol (struct, enum, trait, module) into a Node.
@@ -741,10 +950,16 @@ fn extract_named_item(
     source: &[u8],
     file: &str,
     module_path: &[String],
+    parent_id: Option<&str>,
     kind: NodeKind,
+    result: &ExtractionResult,
 ) -> Option<Node> {
     let name = field_text(node, "name", source)?;
-    let id = make_id(file, module_path, &name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &name),
+        node,
+    );
     let visibility = extract_visibility(node, source);
     let start = node.start_position();
     let end = node.end_position();
@@ -776,10 +991,19 @@ fn extract_impl_item(
     source: &[u8],
     file: &str,
     module_path: &[String],
+    parent_id: Option<&str>,
+    result: &ExtractionResult,
 ) -> Option<Node> {
-    let type_name = field_text(node, "type", source)?;
+    let raw_type_name = field_text(node, "type", source)?;
+    let type_name = primary_symbol_path(&raw_type_name)
+        .map(|path| terminal_symbol_name(&path).to_string())
+        .unwrap_or(raw_type_name);
     let impl_name = format!("impl_{}", type_name);
-    let id = make_id(file, module_path, &impl_name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &impl_name),
+        node,
+    );
     let start = node.start_position();
     let end = node.end_position();
 
@@ -807,9 +1031,15 @@ fn extract_constant(
     source: &[u8],
     file: &str,
     module_path: &[String],
+    parent_id: Option<&str>,
+    result: &ExtractionResult,
 ) -> Option<Node> {
     let name = field_text(node, "name", source)?;
-    let id = make_id(file, module_path, &name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &name),
+        node,
+    );
     let visibility = extract_visibility(node, source);
     let start = node.start_position();
     let end = node.end_position();
@@ -850,9 +1080,15 @@ fn extract_type_alias(
     source: &[u8],
     file: &str,
     module_path: &[String],
+    parent_id: Option<&str>,
+    result: &ExtractionResult,
 ) -> Option<Node> {
     let name = field_text(node, "name", source)?;
-    let id = make_id(file, module_path, &name);
+    let id = unique_decl_id(
+        result,
+        make_decl_id(file, module_path, parent_id, &name),
+        node,
+    );
     let visibility = extract_visibility(node, source);
     let start = node.start_position();
     let end = node.end_position();
@@ -967,31 +1203,26 @@ fn extract_calls(
     if node.kind() == "call_expression"
         && let Some(function_node) = node.child_by_field_name("function")
         && let Ok(fn_text) = function_node.utf8_text(source)
+        && let Some(callee_name) = normalize_call_target(fn_text)
     {
-        // Skip macro calls (names ending with '!')
-        if !fn_text.ends_with('!') {
-            let callee_name = fn_text.trim();
-            if !callee_name.is_empty() {
-                let target_id = if is_unqualified_call_target(callee_name) {
-                    make_id(file, module_path, callee_name)
-                } else {
-                    callee_name.to_string()
-                };
-                let condition = find_enclosing_condition(node, source);
-                let async_boundary = detect_async_boundary(node, source);
-                result.edges.push(Edge {
-                    source: caller_id.to_string(),
-                    target: target_id,
-                    kind: EdgeKind::Calls,
-                    confidence: 0.8,
-                    direction: None,
-                    operation: None,
-                    condition,
-                    async_boundary,
-                    provenance: edge_provenance(file, node, caller_id),
-                });
-            }
-        }
+        let target_id = if is_unqualified_call_target(&callee_name) {
+            make_id(file, module_path, &callee_name)
+        } else {
+            callee_name
+        };
+        let condition = find_enclosing_condition(node, source);
+        let async_boundary = detect_async_boundary(node, source);
+        result.edges.push(Edge {
+            source: caller_id.to_string(),
+            target: target_id,
+            kind: EdgeKind::Calls,
+            confidence: 0.8,
+            direction: None,
+            operation: None,
+            condition,
+            async_boundary,
+            provenance: edge_provenance(file, node, caller_id),
+        });
     }
 
     // Recurse into all children
@@ -1232,6 +1463,7 @@ fn extract_enum_variants(
 mod tests {
     use super::*;
     use grapha_core::graph::{EdgeKind, NodeKind, Visibility};
+    use grapha_core::merge as merge_results;
 
     fn extract(source: &str) -> ExtractionResult {
         let extractor = RustExtractor;
@@ -1450,6 +1682,34 @@ mod tests {
     }
 
     #[test]
+    fn extracts_inner_generic_type_refs() {
+        let result = extract(
+            r#"
+            struct Config;
+            struct AppError;
+
+            fn load() -> Result<Config, AppError> {
+                unimplemented!()
+            }
+            "#,
+        );
+        let load = find_node(&result, "load");
+
+        assert!(has_edge(
+            &result,
+            &load.id,
+            "test.rs::Config",
+            EdgeKind::TypeRef
+        ));
+        assert!(has_edge(
+            &result,
+            &load.id,
+            "test.rs::AppError",
+            EdgeKind::TypeRef
+        ));
+    }
+
+    #[test]
     fn extracts_constants_and_type_aliases() {
         let result = extract(
             r#"
@@ -1506,19 +1766,19 @@ mod tests {
             }
             "#,
         );
+        let open = find_node(&result, "open");
+        let set_path = find_node(&result, "set_path");
 
         assert!(result.edges.iter().any(|edge| {
-            edge.source == "test.rs::open"
-                && edge.target == "self.path"
-                && edge.kind == EdgeKind::Reads
+            edge.source == open.id && edge.target == "self.path" && edge.kind == EdgeKind::Reads
         }));
         assert!(result.edges.iter().any(|edge| {
-            edge.source == "test.rs::open"
+            edge.source == open.id
                 && edge.target == "STORE_SCHEMA_VERSION"
                 && edge.kind == EdgeKind::Reads
         }));
         assert!(result.edges.iter().any(|edge| {
-            edge.source == "test.rs::set_path"
+            edge.source == set_path.id
                 && edge.target == "self.path"
                 && edge.kind == EdgeKind::Writes
         }));
@@ -1734,6 +1994,134 @@ mod tests {
         assert!(
             cond.starts_with("match"),
             "match arm condition should start with 'match'"
+        );
+    }
+
+    #[test]
+    fn normalizes_generic_qualified_call_targets_before_merge() {
+        let result = extract(
+            r#"
+            struct Repo;
+
+            impl Repo {
+                fn new() -> Self { Repo }
+            }
+
+            fn build() {
+                Repo::new::<usize>();
+            }
+            "#,
+        );
+
+        let build_id = find_node(&result, "build").id.clone();
+        let raw_call = result
+            .edges
+            .iter()
+            .find(|edge| edge.source == build_id && edge.kind == EdgeKind::Calls)
+            .expect("expected a call edge from build");
+        assert_eq!(raw_call.target, "Repo::new");
+
+        let graph = merge_results(vec![result]);
+        let merged_call = graph
+            .edges
+            .iter()
+            .find(|edge| edge.source == build_id && edge.kind == EdgeKind::Calls)
+            .expect("expected merged call edge from build");
+        assert_eq!(merged_call.target, "test.rs::impl_Repo::new");
+    }
+
+    #[test]
+    fn scopes_same_named_methods_by_owner() {
+        let result = extract(
+            r#"
+            struct A;
+            struct B;
+
+            impl A {
+                fn new() -> Self { A }
+            }
+
+            impl B {
+                fn new() -> Self { B }
+            }
+            "#,
+        );
+
+        let new_nodes: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|node| node.name == "new")
+            .collect();
+        assert_eq!(new_nodes.len(), 2, "expected a distinct node per owner");
+        assert!(
+            new_nodes
+                .iter()
+                .any(|node| node.id == "test.rs::impl_A::new"),
+            "A::new should be scoped under its impl id"
+        );
+        assert!(
+            new_nodes
+                .iter()
+                .any(|node| node.id == "test.rs::impl_B::new"),
+            "B::new should be scoped under its impl id"
+        );
+
+        assert!(has_edge(
+            &result,
+            "test.rs::impl_A",
+            "test.rs::impl_A::new",
+            EdgeKind::Contains
+        ));
+        assert!(has_edge(
+            &result,
+            "test.rs::impl_B",
+            "test.rs::impl_B::new",
+            EdgeKind::Contains
+        ));
+    }
+
+    #[test]
+    fn uniquifies_duplicate_impl_blocks_for_same_type() {
+        let result = extract(
+            r#"
+            struct A;
+
+            impl A {
+                fn first(&self) {}
+            }
+
+            impl A {
+                fn second(&self) {}
+            }
+            "#,
+        );
+
+        let impl_nodes: Vec<_> = result
+            .nodes
+            .iter()
+            .filter(|node| node.kind == NodeKind::Impl && node.name == "A")
+            .collect();
+        assert_eq!(impl_nodes.len(), 2, "expected one node per impl block");
+        assert_ne!(
+            impl_nodes[0].id, impl_nodes[1].id,
+            "impl ids must stay unique"
+        );
+
+        let first = find_node(&result, "first");
+        let second = find_node(&result, "second");
+        assert!(
+            first.id.starts_with(&format!("{}::", impl_nodes[0].id))
+                || first.id.starts_with(&format!("{}::", impl_nodes[1].id)),
+            "method ids should be scoped by their containing impl"
+        );
+        assert!(
+            second.id.starts_with(&format!("{}::", impl_nodes[0].id))
+                || second.id.starts_with(&format!("{}::", impl_nodes[1].id)),
+            "method ids should be scoped by their containing impl"
+        );
+        assert_ne!(
+            first.id, second.id,
+            "distinct methods should remain distinct"
         );
     }
 }
