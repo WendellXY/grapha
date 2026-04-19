@@ -1,9 +1,12 @@
 use grapha_core::classify::{Classification, Classifier, ClassifyContext};
 use grapha_core::graph::{FlowDirection, TerminalKind};
+use grapha_core::semantic::TerminalEffect;
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct SwiftClassifier;
 
 impl SwiftClassifier {
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new() -> Self {
         Self
     }
@@ -13,6 +16,14 @@ impl Classifier for SwiftClassifier {
     fn classify(&self, call_target: &str, _context: &ClassifyContext) -> Option<Classification> {
         classify_swift(call_target)
     }
+}
+
+pub(crate) fn terminal_effect_for_target(target: &str) -> Option<TerminalEffect> {
+    classify_swift(target).map(|classification| TerminalEffect {
+        terminal_kind: classification.terminal_kind,
+        direction: classification.direction,
+        operation: classification.operation,
+    })
 }
 
 fn classify_swift(target: &str) -> Option<Classification> {

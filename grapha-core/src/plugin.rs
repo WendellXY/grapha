@@ -8,6 +8,7 @@ use crate::classify::Classifier;
 use crate::extract::ExtractionResult;
 use crate::graph::Graph;
 use crate::module::ModuleMap;
+use crate::semantic::SemanticDocument;
 
 #[derive(Debug, Clone)]
 pub struct ProjectContext {
@@ -63,12 +64,30 @@ pub trait LanguagePlugin: Send + Sync {
 
     fn extract(&self, source: &[u8], context: &FileContext) -> anyhow::Result<ExtractionResult>;
 
+    fn extract_semantics(
+        &self,
+        source: &[u8],
+        context: &FileContext,
+    ) -> anyhow::Result<SemanticDocument> {
+        Ok(SemanticDocument::from_extraction_result(
+            self.extract(source, context)?,
+        ))
+    }
+
     fn stamp_module(
         &self,
         result: ExtractionResult,
         module_name: Option<&str>,
     ) -> ExtractionResult {
         crate::pipeline::stamp_module(result, module_name)
+    }
+
+    fn stamp_semantic_module(
+        &self,
+        document: SemanticDocument,
+        module_name: Option<&str>,
+    ) -> SemanticDocument {
+        crate::pipeline::stamp_semantic_module(document, module_name)
     }
 
     fn classifiers(&self) -> Vec<Box<dyn Classifier>> {

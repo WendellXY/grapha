@@ -10,6 +10,7 @@ use crate::merge;
 use crate::module::ModuleMap;
 use crate::normalize::normalize_graph;
 use crate::plugin::{FileContext, GraphPass, LanguageRegistry, ProjectContext};
+use crate::semantic::SemanticDocument;
 
 pub fn project_context(path: &Path) -> ProjectContext {
     ProjectContext::new(path)
@@ -82,9 +83,19 @@ pub fn extract_with_registry(
     source: &[u8],
     context: &FileContext,
 ) -> anyhow::Result<ExtractionResult> {
+    Ok(lower_semantics(extract_semantics_with_registry(
+        registry, source, context,
+    )?))
+}
+
+pub fn extract_semantics_with_registry(
+    registry: &LanguageRegistry,
+    source: &[u8],
+    context: &FileContext,
+) -> anyhow::Result<SemanticDocument> {
     let plugin = registry.plugin_for_path(&context.relative_path)?;
-    let result = plugin.extract(source, context)?;
-    Ok(plugin.stamp_module(result, context.module_name.as_deref()))
+    let document = plugin.extract_semantics(source, context)?;
+    Ok(plugin.stamp_semantic_module(document, context.module_name.as_deref()))
 }
 
 pub fn stamp_module(result: ExtractionResult, module_name: Option<&str>) -> ExtractionResult {
@@ -106,6 +117,17 @@ pub fn stamp_module(result: ExtractionResult, module_name: Option<&str>) -> Extr
         edges: result.edges,
         imports: result.imports,
     }
+}
+
+pub fn stamp_semantic_module(
+    document: SemanticDocument,
+    module_name: Option<&str>,
+) -> SemanticDocument {
+    document.stamp_module(module_name)
+}
+
+pub fn lower_semantics(document: SemanticDocument) -> ExtractionResult {
+    document.into_extraction_result()
 }
 
 pub fn build_graph(

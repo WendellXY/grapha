@@ -1,12 +1,11 @@
 use std::path::Path;
 
-use grapha_core::Classifier;
 use grapha_core::{
-    ExtractionResult, FileContext, GraphPass, LanguagePlugin, LanguageRegistry, ModuleMap,
-    ProjectContext,
+    ExtractionResult, FileContext, LanguagePlugin, LanguageRegistry, ModuleMap, ProjectContext,
+    SemanticDocument,
 };
 
-use crate::classify::rust::RustClassifier;
+use crate::classify::rust::terminal_effect_for_target;
 use crate::extract::rust::RustExtractor;
 
 pub struct RustPlugin;
@@ -30,12 +29,16 @@ impl LanguagePlugin for RustPlugin {
         extractor.extract(source, &context.relative_path)
     }
 
-    fn classifiers(&self) -> Vec<Box<dyn Classifier>> {
-        vec![Box::new(RustClassifier::new())]
-    }
-
-    fn graph_passes(&self) -> Vec<Box<dyn GraphPass>> {
-        Vec::new()
+    fn extract_semantics(
+        &self,
+        source: &[u8],
+        context: &FileContext,
+    ) -> anyhow::Result<SemanticDocument> {
+        let mut document = SemanticDocument::from_extraction_result(self.extract(source, context)?);
+        document.annotate_call_relations(|relation, _source| {
+            terminal_effect_for_target(relation.target.as_raw())
+        });
+        Ok(document)
     }
 }
 

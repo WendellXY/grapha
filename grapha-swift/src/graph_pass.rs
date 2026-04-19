@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use grapha_core::GraphPass;
 use grapha_core::graph::{EdgeKind, FlowDirection, Graph, NodeRole, TerminalKind};
+use grapha_core::semantic::TerminalEffect;
 
+#[allow(dead_code)]
 pub struct SwiftGraphPass;
 
 impl GraphPass for SwiftGraphPass {
@@ -11,21 +13,17 @@ impl GraphPass for SwiftGraphPass {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn classify_swift_usr_targets(graph: Graph) -> Graph {
     let node_ids: HashSet<&str> = graph.nodes.iter().map(|node| node.id.as_str()).collect();
     let mut terminal_nodes: HashMap<String, TerminalKind> = HashMap::new();
-    let entry_patterns: &[&str] = &["SwiftUI", "ObservableObjectP", "10ObservableP"];
     let mut entry_point_nodes = HashSet::new();
 
     let edges = graph
         .edges
         .iter()
         .map(|edge| {
-            if edge.kind == EdgeKind::Implements
-                && entry_patterns
-                    .iter()
-                    .any(|pattern| edge.target.contains(pattern))
-            {
+            if edge.kind == EdgeKind::Implements && is_entry_point_target(&edge.target) {
                 entry_point_nodes.insert(edge.source.clone());
             }
 
@@ -33,7 +31,7 @@ fn classify_swift_usr_targets(graph: Graph) -> Graph {
                 return edge.clone();
             }
 
-            let Some((kind, direction, operation)) = classify_by_module(&edge.target) else {
+            let Some(effect) = terminal_effect_for_usr_target(&edge.target) else {
                 return edge.clone();
             };
 
@@ -42,11 +40,13 @@ fn classify_swift_usr_targets(graph: Graph) -> Graph {
             } else {
                 edge.target.clone()
             };
-            terminal_nodes.entry(terminal_node_id).or_insert(kind);
+            terminal_nodes
+                .entry(terminal_node_id)
+                .or_insert(effect.terminal_kind);
 
             let mut enriched = edge.clone();
-            enriched.direction = Some(direction);
-            enriched.operation = Some(operation);
+            enriched.direction = Some(effect.direction);
+            enriched.operation = Some(effect.operation);
             enriched
         })
         .collect();
@@ -74,6 +74,12 @@ fn classify_swift_usr_targets(graph: Graph) -> Graph {
     }
 }
 
+pub(crate) fn is_entry_point_target(target: &str) -> bool {
+    ["SwiftUI", "ObservableObjectP", "10ObservableP"]
+        .iter()
+        .any(|pattern| target.contains(pattern))
+}
+
 fn module_from_usr(usr: &str) -> Option<&str> {
     let rest = usr.strip_prefix("s:")?;
     let len_end = rest.find(|ch: char| !ch.is_ascii_digit())?;
@@ -86,56 +92,56 @@ fn module_from_usr(usr: &str) -> Option<&str> {
     }
 }
 
-fn classify_by_module(target_usr: &str) -> Option<(TerminalKind, FlowDirection, String)> {
+pub(crate) fn terminal_effect_for_usr_target(target_usr: &str) -> Option<TerminalEffect> {
     let module = module_from_usr(target_usr)?;
     match module {
-        "FrameNetwork" | "FrameNetworkCore" | "Moya" | "Alamofire" => Some((
-            TerminalKind::Network,
-            FlowDirection::ReadWrite,
-            "request".to_string(),
-        )),
+        "FrameNetwork" | "FrameNetworkCore" | "Moya" | "Alamofire" => Some(TerminalEffect {
+            terminal_kind: TerminalKind::Network,
+            direction: FlowDirection::ReadWrite,
+            operation: "request".to_string(),
+        }),
         "FrameStorage"
         | "FrameStorageCore"
         | "FrameStorageDatabase"
         | "GRDB"
         | "CoreData"
-        | "RealmSwift" => Some((
-            TerminalKind::Persistence,
-            FlowDirection::ReadWrite,
-            "db".to_string(),
-        )),
-        "FrameDownload" | "Tiercel" => Some((
-            TerminalKind::Persistence,
-            FlowDirection::Write,
-            "download".to_string(),
-        )),
+        | "RealmSwift" => Some(TerminalEffect {
+            terminal_kind: TerminalKind::Persistence,
+            direction: FlowDirection::ReadWrite,
+            operation: "db".to_string(),
+        }),
+        "FrameDownload" | "Tiercel" => Some(TerminalEffect {
+            terminal_kind: TerminalKind::Persistence,
+            direction: FlowDirection::Write,
+            operation: "download".to_string(),
+        }),
         "FrameResources" | "AppResource" | "Kingfisher" | "SDWebImageSwiftUI" | "FrameImage" => {
-            Some((
-                TerminalKind::Cache,
-                FlowDirection::Read,
-                "resource".to_string(),
-            ))
+            Some(TerminalEffect {
+                terminal_kind: TerminalKind::Cache,
+                direction: FlowDirection::Read,
+                operation: "resource".to_string(),
+            })
         }
-        "FrameWebView" | "WEKit" => Some((
-            TerminalKind::Event,
-            FlowDirection::ReadWrite,
-            "webview".to_string(),
-        )),
-        "FrameStat" => Some((
-            TerminalKind::Event,
-            FlowDirection::Write,
-            "stat".to_string(),
-        )),
-        "FrameMedia" | "FrameMediaShared" => Some((
-            TerminalKind::Cache,
-            FlowDirection::ReadWrite,
-            "media".to_string(),
-        )),
-        "FrameRouter" => Some((
-            TerminalKind::Event,
-            FlowDirection::Write,
-            "navigate".to_string(),
-        )),
+        "FrameWebView" | "WEKit" => Some(TerminalEffect {
+            terminal_kind: TerminalKind::Event,
+            direction: FlowDirection::ReadWrite,
+            operation: "webview".to_string(),
+        }),
+        "FrameStat" => Some(TerminalEffect {
+            terminal_kind: TerminalKind::Event,
+            direction: FlowDirection::Write,
+            operation: "stat".to_string(),
+        }),
+        "FrameMedia" | "FrameMediaShared" => Some(TerminalEffect {
+            terminal_kind: TerminalKind::Cache,
+            direction: FlowDirection::ReadWrite,
+            operation: "media".to_string(),
+        }),
+        "FrameRouter" => Some(TerminalEffect {
+            terminal_kind: TerminalKind::Event,
+            direction: FlowDirection::Write,
+            operation: "navigate".to_string(),
+        }),
         _ => None,
     }
 }

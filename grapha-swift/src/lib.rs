@@ -29,7 +29,7 @@ pub use treesitter::SwiftExtractor;
 
 use grapha_core::{
     Classifier, ExtractionResult, FileContext, GraphPass, LanguageExtractor, LanguagePlugin,
-    LanguageRegistry, ModuleMap, ProjectContext,
+    LanguageRegistry, ModuleMap, ProjectContext, SemanticAnnotation, SemanticDocument,
 };
 
 static INDEX_STORE_PATHS: LazyLock<RwLock<HashMap<PathBuf, Option<PathBuf>>>> =
@@ -84,12 +84,43 @@ impl LanguagePlugin for SwiftPlugin {
         stamp_swift_module(result, module_name)
     }
 
+    fn extract_semantics(
+        &self,
+        source: &[u8],
+        context: &FileContext,
+    ) -> anyhow::Result<SemanticDocument> {
+        let mut document = SemanticDocument::from_extraction_result(self.extract(source, context)?);
+
+        document.annotate_call_relations(|relation, _source| {
+            classifier::terminal_effect_for_target(relation.target.as_raw())
+                .or_else(|| graph_pass::terminal_effect_for_usr_target(relation.target.as_raw()))
+        });
+
+        let mut entry_points = Vec::new();
+        for relation in &document.relations {
+            if relation.kind == grapha_core::graph::EdgeKind::Implements
+                && graph_pass::is_entry_point_target(relation.target.as_raw())
+            {
+                entry_points.push(relation.source.clone());
+            }
+        }
+        for symbol in &mut document.symbols {
+            if entry_points.iter().any(|symbol_id| symbol_id == &symbol.id)
+                && !symbol.annotations.contains(&SemanticAnnotation::EntryPoint)
+            {
+                symbol.annotations.push(SemanticAnnotation::EntryPoint);
+            }
+        }
+
+        Ok(document)
+    }
+
     fn classifiers(&self) -> Vec<Box<dyn Classifier>> {
-        vec![Box::new(classifier::SwiftClassifier::new())]
+        Vec::new()
     }
 
     fn graph_passes(&self) -> Vec<Box<dyn GraphPass>> {
-        vec![Box::new(graph_pass::SwiftGraphPass)]
+        Vec::new()
     }
 }
 

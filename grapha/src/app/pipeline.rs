@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Context;
+use grapha_core::Classifier;
 
 use crate::{cache, classify, compress, config, filter, progress, rust_plugin, snippet};
 
@@ -36,6 +37,31 @@ fn make_extraction_cache_entry(
             result: result.clone(),
         },
     ))
+}
+
+fn apply_config_classifier_semantics(
+    document: &mut grapha_core::SemanticDocument,
+    rules: &[config::ClassifierRule],
+) {
+    if rules.is_empty() {
+        return;
+    }
+
+    let classifier = classify::toml_rules::TomlRulesClassifier::new(rules);
+    document.annotate_call_relations(|relation, source| {
+        let context = grapha_core::ClassifyContext {
+            source_node: relation.source.clone(),
+            file: source.map(|symbol| symbol.file.clone()).unwrap_or_default(),
+            arguments: Vec::new(),
+        };
+        classifier
+            .classify(relation.target.as_raw(), &context)
+            .map(|classification| grapha_core::TerminalEffect {
+                terminal_kind: classification.terminal_kind,
+                direction: classification.direction,
+                operation: classification.operation,
+            })
+    });
 }
 
 /// Run the extraction pipeline on a path, returning a merged graph.
@@ -198,17 +224,19 @@ pub(crate) fn run_pipeline(
             t_read_ns.fetch_add(t0.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             let t1 = Instant::now();
-            let extraction_result =
-                grapha_core::extract_with_registry(&registry, &source, &file_context);
+            let semantic_result =
+                grapha_core::extract_semantics_with_registry(&registry, &source, &file_context);
             t_extract_ns.fetch_add(t1.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
             if let Some(ref pb) = pb {
                 pb.inc(1);
             }
 
-            match extraction_result {
-                Ok(mut result) => {
+            match semantic_result {
+                Ok(mut document) => {
                     extracted.fetch_add(1, Ordering::Relaxed);
+                    apply_config_classifier_semantics(&mut document, &cfg.classifiers);
+                    let mut result = grapha_core::lower_semantics(document);
                     let t2 = Instant::now();
                     if result
                         .nodes
@@ -331,21 +359,8 @@ pub(crate) fn run_pipeline(
         progress::done(&msg, t);
     }
 
-    let mut classifiers = registry.collect_classifiers();
-    classifiers.insert(
-        0,
-        Box::new(classify::toml_rules::TomlRulesClassifier::new(
-            &cfg.classifiers,
-        )),
-    );
-    let composite = grapha_core::CompositeClassifier::new(classifiers);
-    let preclassified_results: Vec<_> = results
-        .into_iter()
-        .map(|result| grapha_core::classify_extraction_result(result, &composite))
-        .collect();
-
     let t = Instant::now();
-    let merged = grapha_core::merge(preclassified_results);
+    let merged = grapha_core::merge(results);
     if verbose {
         progress::done(
             &format!(
@@ -358,11 +373,7 @@ pub(crate) fn run_pipeline(
     }
 
     let t = Instant::now();
-    let mut graph = grapha_core::classify_graph(&merged, &composite);
-    for pass in registry.collect_graph_passes() {
-        graph = pass.apply(graph);
-    }
-    let graph = grapha_core::normalize_graph(graph);
+    let graph = grapha_core::normalize_graph(merged);
     if verbose {
         let terminal_count = graph
             .nodes
