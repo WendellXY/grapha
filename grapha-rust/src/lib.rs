@@ -3,7 +3,7 @@ use std::path::Path;
 use grapha_core::Classifier;
 use grapha_core::{
     ExtractionResult, FileContext, GraphPass, LanguageExtractor, LanguagePlugin, LanguageRegistry,
-    ModuleMap, ProjectContext,
+    ModuleMap, ProjectContext, SemanticDocument,
 };
 
 pub mod classify {
@@ -26,6 +26,7 @@ mod extract_impl {
 
 pub use classifier::RustClassifier;
 pub use extract_impl::RustExtractor;
+use classifier::terminal_effect_for_target;
 
 pub struct RustPlugin;
 
@@ -46,6 +47,18 @@ impl LanguagePlugin for RustPlugin {
         let extractor = RustExtractor;
         use grapha_core::LanguageExtractor;
         extractor.extract(source, &context.relative_path)
+    }
+
+    fn extract_semantics(
+        &self,
+        source: &[u8],
+        context: &FileContext,
+    ) -> anyhow::Result<SemanticDocument> {
+        let mut document = SemanticDocument::from_extraction_result(self.extract(source, context)?);
+        document.annotate_call_relations(|relation, _source| {
+            terminal_effect_for_target(relation.target.as_raw())
+        });
+        Ok(document)
     }
 
     fn classifiers(&self) -> Vec<Box<dyn Classifier>> {
