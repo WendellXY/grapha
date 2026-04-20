@@ -25,8 +25,8 @@ mod extract_impl {
 }
 
 pub use classifier::RustClassifier;
-pub use extract_impl::RustExtractor;
 use classifier::terminal_effect_for_target;
+pub use extract_impl::RustExtractor;
 
 pub struct RustPlugin;
 
