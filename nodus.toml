@@ -5,14 +5,7 @@ args = ["serve", "--mcp", "--watch", "-p", "."]
 
 [adapters]
 enabled = ["claude", "codex"]
-[[hooks]]
-id = "nodus.sync_on_startup"
-event = "session_start"
-[hooks.matcher]
-sources = ["startup", "resume"]
-[hooks.handler]
-type = "command"
-command = "nodus sync"
-
+[launch_hooks]
+sync_on_startup = true
 [dev-dependencies]
 fuli = { github = "oops-rs/fuli", branch = "main" }
