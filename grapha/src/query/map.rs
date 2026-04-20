@@ -53,7 +53,7 @@ pub fn file_map(
                     symbol_count,
                 })
                 .collect();
-            groups.sort_by(|a, b| b.symbol_count.cmp(&a.symbol_count));
+            groups.sort_by_key(|group| std::cmp::Reverse(group.symbol_count));
             (module, groups)
         })
         .collect()

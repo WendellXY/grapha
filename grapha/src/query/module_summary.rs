@@ -100,7 +100,7 @@ pub fn query_module_summary(graph: &Graph) -> ModuleSummaryResult {
         })
         .collect();
 
-    modules.sort_by(|a, b| b.symbol_count.cmp(&a.symbol_count));
+    modules.sort_by_key(|module| std::cmp::Reverse(module.symbol_count));
     let total_modules = modules.len();
 
     ModuleSummaryResult {
