@@ -579,7 +579,7 @@ fn handle_detect_smells(state: &McpState, arguments: &Value) -> Value {
         return tool_error("choose only one of module, file, or symbol".to_string());
     }
 
-    let mut result = if let Some(file) = file_filter {
+    let result = if let Some(file) = file_filter {
         query::smells::detect_smells_for_file(&state.graph, file)
     } else if let Some(symbol_query) = symbol_filter {
         let node = match query::resolve_node(&state.graph, symbol_query) {
@@ -587,13 +587,11 @@ fn handle_detect_smells(state: &McpState, arguments: &Value) -> Value {
             Err(e) => return tool_error(format_query_error(&e)),
         };
         query::smells::detect_smells_for_symbol(&state.graph, &node.id)
+    } else if let Some(module) = module_filter {
+        query::smells::detect_smells_for_module(&state.graph, module)
     } else {
         query::smells::detect_smells(&state.graph)
     };
-
-    if let Some(module) = module_filter {
-        query::smells::filter_smells_to_module(&state.graph, &mut result, module);
-    }
 
     serialize_result(&result)
 }

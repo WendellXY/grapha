@@ -195,18 +195,56 @@ fn extract_string_literal(node: tree_sitter::Node, source: &[u8]) -> Option<Stri
 }
 
 fn extract_dot_expression_asset_name(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
-    // Dot expressions like .Room.voiceWave are navigation_expression nodes
-    // We collect all member segments
     let text = node.utf8_text(source).ok()?;
     if !text.starts_with('.') {
         return None;
     }
-    // .Room.voiceWave → "Room/voiceWave"
-    let trimmed = text.trim_start_matches('.');
-    if trimmed.is_empty() {
-        return None;
+
+    let segments: Vec<&str> = text
+        .trim_start_matches('.')
+        .split('.')
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let last_segment = segments.last().copied()?;
+
+    Some(normalize_asset_wrapper_name(last_segment))
+}
+
+fn normalize_asset_wrapper_name(name: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous: Option<char> = None;
+
+    for ch in name.chars() {
+        if ch == '_' || ch == '-' {
+            if !normalized.ends_with('_') && !normalized.is_empty() {
+                normalized.push('_');
+            }
+            previous = Some(ch);
+            continue;
+        }
+
+        let insert_separator = previous.is_some_and(|prev| {
+            (prev.is_ascii_lowercase() && ch.is_ascii_uppercase())
+                || (prev.is_ascii_alphabetic() && ch.is_ascii_digit())
+                || (prev.is_ascii_digit() && ch.is_ascii_alphabetic())
+                || (prev.is_ascii_uppercase()
+                    && ch.is_ascii_uppercase()
+                    && normalized
+                        .chars()
+                        .last()
+                        .is_some_and(|last| last.is_ascii_lowercase()))
+        });
+
+        if insert_separator && !normalized.ends_with('_') && !normalized.is_empty() {
+            normalized.push('_');
+        }
+
+        normalized.push(ch.to_ascii_lowercase());
+        previous = Some(ch);
     }
-    Some(trimmed.replace('.', "/"))
+
+    normalized.trim_matches('_').to_string()
 }
 
 /// Find the graph node whose span contains the given 0-based line number,
@@ -227,4 +265,26 @@ fn find_enclosing_node_index(result: &ExtractionResult, line: usize) -> Option<u
     }
 
     best.map(|(idx, _)| idx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_asset_wrapper_name;
+
+    #[test]
+    fn normalizes_generated_asset_wrapper_names_to_catalog_names() {
+        assert_eq!(
+            normalize_asset_wrapper_name("storeLudoBuySuccess"),
+            "store_ludo_buy_success"
+        );
+        assert_eq!(normalize_asset_wrapper_name("tagNewUser"), "tag_new_user");
+        assert_eq!(
+            normalize_asset_wrapper_name("youtubeSliderThumb"),
+            "youtube_slider_thumb"
+        );
+        assert_eq!(
+            normalize_asset_wrapper_name("commonCloseIc"),
+            "common_close_ic"
+        );
+    }
 }

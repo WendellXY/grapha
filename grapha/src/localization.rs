@@ -803,6 +803,32 @@ pub fn resolve_usage_with(
         }
     }
 
+    if matches.is_empty()
+        && let Some(wrapper_name) = base_reference.wrapper_name.as_deref()
+    {
+        for record in closest_records(
+            &usage_node.file,
+            records_for_wrapper_name(catalogs, wrapper_name, base_reference.table.as_deref()),
+        ) {
+            let mut reference = base_reference.clone();
+            reference.table = Some(record.table.clone());
+            reference.key = Some(record.key.clone());
+            let dedupe_key = (
+                format!("wrapper_name_key:{wrapper_name}"),
+                record.catalog_file.clone(),
+                record.table.clone(),
+                record.key.clone(),
+            );
+            if seen.insert(dedupe_key) {
+                matches.push(ResolvedLocalizationMatch {
+                    reference,
+                    record,
+                    match_kind: "wrapper_name_key".to_string(),
+                });
+            }
+        }
+    }
+
     let unmatched = if matches.is_empty() {
         Some(UnmatchedLocalizationReference {
             reference: base_reference.clone(),
@@ -869,6 +895,40 @@ fn wrapper_names_token_equivalent(left: &str, right: &str) -> bool {
     let left_tokens = localization_name_tokens(left);
     let right_tokens = localization_name_tokens(right);
     !left_tokens.is_empty() && left_tokens == right_tokens
+}
+
+pub(crate) fn normalize_wrapper_name_to_key(name: &str) -> String {
+    let mut normalized = String::new();
+    let mut previous: Option<char> = None;
+
+    for ch in name.chars() {
+        if ch == '_' || ch == '-' {
+            if !normalized.ends_with('_') && !normalized.is_empty() {
+                normalized.push('_');
+            }
+            previous = Some(ch);
+            continue;
+        }
+
+        let starts_new_token = previous.is_some_and(|prev| {
+            (prev.is_ascii_lowercase() && ch.is_ascii_uppercase())
+                || (prev.is_ascii_alphabetic() && ch.is_ascii_digit())
+                || (prev.is_ascii_digit() && ch.is_ascii_alphabetic())
+        });
+        if starts_new_token && !normalized.ends_with('_') && !normalized.is_empty() {
+            normalized.push('_');
+        }
+
+        normalized.push(ch.to_ascii_lowercase());
+        previous = Some(ch);
+    }
+
+    normalized.trim_matches('_').to_string()
+}
+
+pub(crate) fn wrapper_name_matches_catalog_key(wrapper_name: &str, key: &str) -> bool {
+    normalize_wrapper_name_to_key(wrapper_name) == key.to_ascii_lowercase()
+        || wrapper_names_token_equivalent(wrapper_name, key)
 }
 
 fn localization_name_tokens(name: &str) -> Vec<String> {
@@ -986,6 +1046,30 @@ fn approximate_wrapper_score(
         common_prefix,
         edit_distance,
     })
+}
+
+fn records_for_wrapper_name(
+    catalogs: &LocalizationCatalogIndex,
+    wrapper_name: &str,
+    table: Option<&str>,
+) -> Vec<LocalizationCatalogRecord> {
+    let normalized_key = normalize_wrapper_name_to_key(wrapper_name);
+    let direct = if let Some(table) = table {
+        catalogs.records_for(table, &normalized_key)
+    } else {
+        catalogs.records_for_key(&normalized_key)
+    };
+    if !direct.is_empty() {
+        return direct;
+    }
+
+    catalogs
+        .all_records()
+        .iter()
+        .filter(|record| table.is_none_or(|table| record.table == table))
+        .filter(|record| wrapper_name_matches_catalog_key(wrapper_name, &record.key))
+        .cloned()
+        .collect()
 }
 
 fn common_prefix_len(left: &str, right: &str) -> usize {
@@ -1849,6 +1933,70 @@ mod tests {
         assert_eq!(
             resolution.matches[0].reference.key.as_deref(),
             Some("Tournament")
+        );
+        assert!(resolution.unmatched.is_none());
+    }
+
+    #[test]
+    fn resolve_usage_matches_wrapper_name_against_catalog_key_without_wrapper_symbol() {
+        let mut usage = Node {
+            id: "Store/BuySuccessView.swift::body::view:Text@10:8:10:30".to_string(),
+            kind: NodeKind::View,
+            name: "Text".to_string(),
+            file: PathBuf::from("Modules/Store/Sources/Store/View/Dailog/BuySuccessView.swift"),
+            span: Span {
+                start: [10, 8],
+                end: [10, 30],
+            },
+            visibility: Visibility::Private,
+            metadata: HashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: Some("Store".to_string()),
+            snippet: None,
+        };
+        usage
+            .metadata
+            .insert(META_REF_KIND.to_string(), "wrapper".to_string());
+        usage
+            .metadata
+            .insert(META_WRAPPER_NAME.to_string(), "storeUseNow".to_string());
+        usage
+            .metadata
+            .insert(META_WRAPPER_BASE.to_string(), "L10nResource".to_string());
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![usage.clone()],
+            edges: Vec::new(),
+        };
+        let catalogs = LocalizationCatalogIndex::from_records(vec![LocalizationCatalogRecord {
+            table: "Localizable".to_string(),
+            key: "store_use_now".to_string(),
+            catalog_file: "AppUI/Sources/AppResource/Resources/Localizable.xcstrings".to_string(),
+            catalog_dir: "AppUI/Sources/AppResource/Resources".to_string(),
+            source_language: "en".to_string(),
+            source_value: "Use now".to_string(),
+            status: "translated".to_string(),
+            comment: None,
+            translations: BTreeMap::new(),
+        }]);
+
+        let resolution = resolve_usage(
+            &usage,
+            &edges_by_source(&graph),
+            &node_index(&graph),
+            &catalogs,
+        )
+        .expect("usage should resolve");
+
+        assert_eq!(resolution.matches.len(), 1);
+        assert_eq!(resolution.matches[0].record.key, "store_use_now");
+        assert_eq!(resolution.matches[0].match_kind, "wrapper_name_key");
+        assert_eq!(
+            resolution.matches[0].reference.key.as_deref(),
+            Some("store_use_now")
         );
         assert!(resolution.unmatched.is_none());
     }

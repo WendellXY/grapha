@@ -636,19 +636,17 @@ pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Resul
                 bail!("choose only one of --module, --file, or --symbol");
             }
 
-            let mut result = if let Some(ref file_query) = file {
+            let result = if let Some(ref file_query) = file {
                 query::smells::detect_smells_for_file(&graph, file_query)
             } else if let Some(ref symbol_query) = symbol {
                 let node =
                     resolve_query_result(query::resolve_node(&graph, symbol_query), "symbol")?;
                 query::smells::detect_smells_for_symbol(&graph, &node.id)
+            } else if let Some(ref module_name) = module {
+                query::smells::detect_smells_for_module(&graph, module_name)
             } else {
                 query::smells::detect_smells(&graph)
             };
-
-            if let Some(ref module_name) = module {
-                query::smells::filter_smells_to_module(&graph, &mut result, module_name);
-            }
 
             print_json(&result)
         }

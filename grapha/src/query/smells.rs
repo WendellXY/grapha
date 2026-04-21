@@ -30,6 +30,12 @@ fn file_matches_query(node: &Node, file_query: &str) -> bool {
     file_matches_query_path(&node.file, file_query)
 }
 
+fn module_matches_query(node: &Node, module_query_lower: &str) -> bool {
+    node.module
+        .as_ref()
+        .is_some_and(|module| module.to_lowercase() == module_query_lower)
+}
+
 fn collect_contains_descendants(graph: &Graph, root_ids: &HashSet<String>) -> HashSet<String> {
     let contains_adj: HashMap<&str, Vec<&str>> = graph
         .edges
@@ -564,17 +570,15 @@ pub fn detect_smells_for_symbol(graph: &Graph, symbol_id: &str) -> SmellsResult 
     result
 }
 
-pub fn filter_smells_to_module(graph: &Graph, result: &mut SmellsResult, module_name: &str) {
+pub fn detect_smells_for_module(graph: &Graph, module_name: &str) -> SmellsResult {
     let module_lower = module_name.to_lowercase();
-    result.smells.retain(|smell| {
-        graph.nodes.iter().any(|n| {
-            n.id == smell.symbol.id
-                && n.module
-                    .as_ref()
-                    .is_some_and(|m| m.to_lowercase() == module_lower)
-        })
-    });
-    recompute_totals(result);
+    let root_ids: HashSet<String> = graph
+        .nodes
+        .iter()
+        .filter(|node| module_matches_query(node, &module_lower))
+        .map(|node| node.id.clone())
+        .collect();
+    detect_smells_for_root_ids(graph, root_ids)
 }
 
 fn severity_rank(severity: &str) -> usize {
@@ -716,6 +720,71 @@ mod tests {
             "Modules/Room/Sources/Room/View/RoomPage+Layout.swift",
         );
         assert_eq!(result.total, 1);
+        assert_eq!(result.smells[0].kind, "high_fan_out");
+    }
+
+    #[test]
+    fn module_scope_runs_on_matching_module_only() {
+        let mut nodes = vec![
+            make_node("room::view", "RoomPage", NodeKind::Struct, "RoomPage.swift"),
+            make_node(
+                "share::view",
+                "SharePage",
+                NodeKind::Struct,
+                "SharePage.swift",
+            ),
+        ];
+        nodes[0].module = Some("Room".to_string());
+        nodes[1].module = Some("Share".to_string());
+
+        let mut edges = vec![
+            make_edge("room::body", "room::view", EdgeKind::Implements),
+            make_edge("share::body", "share::view", EdgeKind::Implements),
+        ];
+
+        let mut room_body = make_node(
+            "room::body",
+            "getter:body",
+            NodeKind::Function,
+            "RoomPage.swift",
+        );
+        room_body.module = Some("Room".to_string());
+        nodes.push(room_body);
+
+        let mut share_body = make_node(
+            "share::body",
+            "getter:body",
+            NodeKind::Function,
+            "SharePage.swift",
+        );
+        share_body.module = Some("Share".to_string());
+        nodes.push(share_body);
+
+        for i in 0..16 {
+            let id = format!("room::dep::{i}");
+            let mut dep = make_node(&id, &format!("dep{i}"), NodeKind::Function, "Deps.swift");
+            dep.module = Some("Room".to_string());
+            nodes.push(dep);
+            edges.push(make_edge("room::body", &id, EdgeKind::Calls));
+        }
+
+        for i in 0..16 {
+            let id = format!("share::dep::{i}");
+            let mut dep = make_node(&id, &format!("dep{i}"), NodeKind::Function, "Deps.swift");
+            dep.module = Some("Share".to_string());
+            nodes.push(dep);
+            edges.push(make_edge("share::body", &id, EdgeKind::Calls));
+        }
+
+        let graph = Graph {
+            version: String::new(),
+            nodes,
+            edges,
+        };
+
+        let result = detect_smells_for_module(&graph, "Room");
+        assert_eq!(result.total, 1);
+        assert_eq!(result.smells[0].symbol.id, "room::body");
         assert_eq!(result.smells[0].kind, "high_fan_out");
     }
 

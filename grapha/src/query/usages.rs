@@ -7,6 +7,7 @@ use grapha_core::graph::{Edge, EdgeKind, Graph, Node, NodeKind};
 use crate::localization::{
     LocalizationCatalogIndex, LocalizationCatalogRecord, LocalizationReference, directory_distance,
     localization_usage_nodes, node_index, parse_usage_reference, parse_wrapper_binding,
+    wrapper_name_matches_catalog_key,
 };
 
 use super::SymbolInfo;
@@ -117,7 +118,10 @@ pub fn query_usages(
         }
 
         if let Some(wrapper_name) = node.metadata.get("l10n.wrapper_name")
-            && target_wrapper_names.contains(wrapper_name.as_str())
+            && (target_wrapper_names.contains(wrapper_name.as_str())
+                || records
+                    .iter()
+                    .any(|record| wrapper_name_matches_catalog_key(wrapper_name, &record.key)))
         {
             candidate_ids.insert(node.id.as_str());
         }
@@ -313,6 +317,13 @@ fn resolve_for_record(
                 }
                 return Some(reference);
             }
+        }
+
+        if wrapper_name_matches_catalog_key(wrapper_name, &record.key) {
+            let mut reference = base_ref.clone();
+            reference.table = Some(record.table.clone());
+            reference.key = Some(record.key.clone());
+            return Some(reference);
         }
     }
 
