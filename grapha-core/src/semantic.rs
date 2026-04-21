@@ -139,6 +139,20 @@ impl SemanticDocument {
     where
         F: FnMut(&SemanticRelation, Option<&SemanticSymbol>) -> Option<TerminalEffect>,
     {
+        self.apply_call_relation_effects(&mut classify, false);
+    }
+
+    pub fn override_call_relations<F>(&mut self, mut classify: F)
+    where
+        F: FnMut(&SemanticRelation, Option<&SemanticSymbol>) -> Option<TerminalEffect>,
+    {
+        self.apply_call_relation_effects(&mut classify, true);
+    }
+
+    fn apply_call_relation_effects<F>(&mut self, classify: &mut F, overwrite_existing: bool)
+    where
+        F: FnMut(&SemanticRelation, Option<&SemanticSymbol>) -> Option<TerminalEffect>,
+    {
         let symbols_by_id: HashMap<&str, &SemanticSymbol> = self
             .symbols
             .iter()
@@ -146,7 +160,15 @@ impl SemanticDocument {
             .collect();
 
         for relation in &mut self.relations {
-            if relation.kind != EdgeKind::Calls || relation.direction.is_some() {
+            if relation.kind != EdgeKind::Calls {
+                continue;
+            }
+
+            if !overwrite_existing
+                && (relation.direction.is_some()
+                    || relation.operation.is_some()
+                    || relation.terminal_kind.is_some())
+            {
                 continue;
             }
 
@@ -755,5 +777,52 @@ mod tests {
             Some(TerminalKind::Network)
         );
         assert_eq!(document.relations[0].operation.as_deref(), Some("HTTP"));
+    }
+
+    #[test]
+    fn override_call_relations_replaces_existing_effect() {
+        let mut document = SemanticDocument::new();
+        document.symbols.push(SemanticSymbol {
+            id: "caller".to_string(),
+            kind: NodeKind::Function,
+            name: "load".to_string(),
+            file: PathBuf::from("main.rs"),
+            span: test_span(),
+            visibility: Visibility::Public,
+            properties: HashMap::new(),
+            annotations: Vec::new(),
+            signature: None,
+            doc_comment: None,
+            module: None,
+            snippet: None,
+            synthetic_kind: None,
+        });
+        document.relations.push(SemanticRelation {
+            source: "caller".to_string(),
+            target: SemanticTarget::ExternalRef("reqwest::get".to_string()),
+            kind: EdgeKind::Calls,
+            confidence: 1.0,
+            direction: Some(FlowDirection::Read),
+            operation: Some("HTTP".to_string()),
+            condition: None,
+            async_boundary: None,
+            provenance: Vec::new(),
+            terminal_kind: Some(TerminalKind::Network),
+        });
+
+        document.override_call_relations(|_, _| {
+            Some(TerminalEffect {
+                terminal_kind: TerminalKind::Event,
+                direction: FlowDirection::Write,
+                operation: "CUSTOM".to_string(),
+            })
+        });
+
+        assert_eq!(
+            document.relations[0].terminal_kind,
+            Some(TerminalKind::Event)
+        );
+        assert_eq!(document.relations[0].direction, Some(FlowDirection::Write));
+        assert_eq!(document.relations[0].operation.as_deref(), Some("CUSTOM"));
     }
 }

@@ -26,6 +26,7 @@ fn extraction_cache_key(path: &Path) -> String {
 fn make_extraction_cache_entry(
     file: &Path,
     file_context: &grapha_core::FileContext,
+    config_fingerprint: &str,
     result: &grapha_core::ExtractionResult,
 ) -> Option<(String, cache::ExtractionCacheEntry)> {
     let stamp = cache::FileStamp::from_path(file)?;
@@ -34,6 +35,7 @@ fn make_extraction_cache_entry(
         cache::ExtractionCacheEntry {
             stamp,
             module_name: file_context.module_name.clone(),
+            config_fingerprint: config_fingerprint.to_string(),
             result: result.clone(),
         },
     ))
@@ -48,7 +50,7 @@ fn apply_config_classifier_semantics(
     }
 
     let classifier = classify::toml_rules::TomlRulesClassifier::new(rules);
-    document.annotate_call_relations(|relation, source| {
+    document.override_call_relations(|relation, source| {
         let context = grapha_core::ClassifyContext {
             source_node: relation.source.clone(),
             file: source.map(|symbol| symbol.file.clone()).unwrap_or_default(),
@@ -78,6 +80,7 @@ pub(crate) fn run_pipeline(
     let mut project_context = grapha_core::project_context(path);
 
     let cfg = config::load_config(path);
+    let config_fingerprint = cfg.extraction_cache_fingerprint();
     project_context.index_store_enabled = cfg.swift.index_store;
 
     let (files, _) = std::thread::scope(|scope| {
@@ -191,6 +194,7 @@ pub(crate) fn run_pipeline(
             if let Some(existing_cache) = existing_extraction_cache
                 && let Some(entry) = existing_cache.get(&cache_key)
                 && entry.module_name.as_deref() == file_context.module_name.as_deref()
+                && entry.config_fingerprint == config_fingerprint
                 && cache::FileStamp::from_path(file).is_some_and(|stamp| stamp == entry.stamp)
             {
                 reused_cached.fetch_add(1, Ordering::Relaxed);
@@ -257,9 +261,12 @@ pub(crate) fn run_pipeline(
                         }
                     }
                     t_snippet_ns.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                    if let Some((key, entry)) =
-                        make_extraction_cache_entry(file, &file_context, &result)
-                    {
+                    if let Some((key, entry)) = make_extraction_cache_entry(
+                        file,
+                        &file_context,
+                        &config_fingerprint,
+                        &result,
+                    ) {
                         extraction_cache_entries
                             .lock()
                             .expect("extraction cache mutex poisoned")
@@ -443,9 +450,16 @@ pub(crate) fn handle_analyze(
 #[cfg(test)]
 mod tests {
     use super::run_pipeline;
-    use grapha_core::graph::NodeKind;
+    use grapha_core::graph::{EdgeKind, FlowDirection, NodeKind, NodeRole, TerminalKind};
     use std::fs;
     use tempfile::TempDir;
+
+    fn write_rust_project(project_root: &std::path::Path, config: &str, source: &str) {
+        let src_dir = project_root.join("src");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(project_root.join("grapha.toml"), config).unwrap();
+        fs::write(src_dir.join("main.rs"), source).unwrap();
+    }
 
     #[test]
     fn run_pipeline_honors_swift_index_store_config_false_end_to_end() {
@@ -493,6 +507,117 @@ mod tests {
         assert!(
             grapha_swift::index_store_path(&project_root).is_none(),
             "cached index store should be cleared when [swift].index_store = false"
+        );
+    }
+
+    #[test]
+    fn run_pipeline_config_rules_override_builtin_terminal_effects() {
+        let project_dir = TempDir::new().unwrap();
+        let project_root = project_dir.path().join("demo");
+        write_rust_project(
+            &project_root,
+            r#"
+[[classifiers]]
+pattern = "reqwest"
+terminal = "event"
+direction = "write"
+operation = "CUSTOM_OVERRIDE"
+"#,
+            r#"
+fn load() {
+    reqwest::get("https://example.com");
+}
+"#,
+        );
+
+        let output = run_pipeline(&project_root, false, false, None).unwrap();
+        let edge = output
+            .graph
+            .edges
+            .iter()
+            .find(|edge| edge.kind == EdgeKind::Calls)
+            .expect("expected a call edge");
+        let load = output
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.name == "load")
+            .expect("expected the load node");
+
+        assert_eq!(edge.direction, Some(FlowDirection::Write));
+        assert_eq!(edge.operation.as_deref(), Some("CUSTOM_OVERRIDE"));
+        assert_eq!(
+            load.role,
+            Some(NodeRole::Terminal {
+                kind: TerminalKind::Event
+            })
+        );
+    }
+
+    #[test]
+    fn run_pipeline_invalidates_cached_results_when_classifier_rules_change() {
+        let project_dir = TempDir::new().unwrap();
+        let project_root = project_dir.path().join("demo");
+        write_rust_project(
+            &project_root,
+            r#"
+[[classifiers]]
+pattern = "custom_api"
+terminal = "network"
+direction = "read"
+operation = "FIRST_CFG"
+"#,
+            r#"
+fn custom_api() {}
+
+fn load() {
+    custom_api();
+}
+"#,
+        );
+
+        let first = run_pipeline(&project_root, false, false, None).unwrap();
+
+        fs::write(
+            project_root.join("grapha.toml"),
+            r#"
+[[classifiers]]
+pattern = "custom_api"
+terminal = "event"
+direction = "write"
+operation = "SECOND_CFG"
+"#,
+        )
+        .unwrap();
+
+        let second = run_pipeline(
+            &project_root,
+            false,
+            false,
+            Some(&first.extraction_cache_entries),
+        )
+        .unwrap();
+
+        let edge = second
+            .graph
+            .edges
+            .iter()
+            .find(|edge| edge.kind == EdgeKind::Calls)
+            .expect("expected a call edge");
+        let custom_api = second
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.name == "custom_api")
+            .expect("expected the custom_api node");
+
+        assert_eq!(edge.direction, Some(FlowDirection::Write));
+        assert_eq!(edge.operation.as_deref(), Some("SECOND_CFG"));
+        assert_eq!(
+            custom_api.role,
+            Some(NodeRole::Terminal {
+                kind: TerminalKind::Event
+            })
         );
     }
 }

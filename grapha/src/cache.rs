@@ -63,7 +63,7 @@ impl GraphCache {
 const QUERY_CACHE_FILENAME: &str = "query_cache.bin";
 const MAX_QUERY_CACHE_ENTRIES: usize = 64;
 const EXTRACTION_CACHE_FILENAME: &str = "extraction_cache.bin";
-const EXTRACTION_CACHE_FORMAT_VERSION: u32 = 2;
+const EXTRACTION_CACHE_FORMAT_VERSION: u32 = 3;
 
 #[derive(Serialize, Deserialize)]
 struct QueryCacheEntry {
@@ -94,6 +94,8 @@ impl FileStamp {
 pub struct ExtractionCacheEntry {
     pub stamp: FileStamp,
     pub module_name: Option<String>,
+    #[serde(default)]
+    pub config_fingerprint: String,
     pub result: ExtractionResult,
 }
 
@@ -444,6 +446,7 @@ mod tests {
             ExtractionCacheEntry {
                 stamp: FileStamp::from_path(&file).unwrap(),
                 module_name: Some("sample".to_string()),
+                config_fingerprint: "fingerprint:v1".to_string(),
                 result: sample_extraction_result("main.rs"),
             },
         );
@@ -454,6 +457,7 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         let entry = loaded.get("main.rs").unwrap();
         assert_eq!(entry.module_name.as_deref(), Some("sample"));
+        assert_eq!(entry.config_fingerprint, "fingerprint:v1");
         assert_eq!(entry.result.nodes[0].name, "main");
     }
 
@@ -470,6 +474,7 @@ mod tests {
             ExtractionCacheEntry {
                 stamp: FileStamp::from_path(&file).unwrap(),
                 module_name: Some("sample".to_string()),
+                config_fingerprint: "legacy".to_string(),
                 result: sample_extraction_result("main.rs"),
             },
         );
@@ -497,6 +502,7 @@ mod tests {
             ExtractionCacheEntry {
                 stamp: FileStamp::from_path(&file).unwrap(),
                 module_name: Some("sample".to_string()),
+                config_fingerprint: "fingerprint:v1".to_string(),
                 result: sample_extraction_result("main.rs"),
             },
         );

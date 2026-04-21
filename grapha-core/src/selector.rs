@@ -100,10 +100,12 @@ pub fn select_graph_nodes<'a>(graph: &'a Graph, selector: &SymbolSelector) -> Ve
 }
 
 pub fn select_graph_edges<'a>(graph: &'a Graph, selector: &RelationSelector) -> Vec<&'a Edge> {
+    let node_ids: std::collections::HashSet<&str> =
+        graph.nodes.iter().map(|node| node.id.as_str()).collect();
     graph
         .edges
         .iter()
-        .filter(|edge| edge_matches(edge, selector))
+        .filter(|edge| edge_matches(edge, &node_ids, selector))
         .collect()
 }
 
@@ -192,7 +194,11 @@ fn node_role_matches(role: Option<&NodeRole>, selector: AnnotationSelector) -> b
     }
 }
 
-fn edge_matches(edge: &Edge, selector: &RelationSelector) -> bool {
+fn edge_matches(
+    edge: &Edge,
+    node_ids: &std::collections::HashSet<&str>,
+    selector: &RelationSelector,
+) -> bool {
     selector
         .source
         .as_ref()
@@ -202,7 +208,7 @@ fn edge_matches(edge: &Edge, selector: &RelationSelector) -> bool {
             .target_symbol
             .as_ref()
             .is_none_or(|target| edge.target == *target)
-        && (!selector.external_only || selector.target_symbol.is_none())
+        && (!selector.external_only || !node_ids.contains(edge.target.as_str()))
 }
 
 #[cfg(test)]
@@ -210,7 +216,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    use crate::graph::{FlowDirection, Span, Visibility};
+    use crate::graph::{Edge, FlowDirection, Graph, Node, Span, Visibility};
     use crate::semantic::{SemanticDocument, SemanticRelation, SemanticSymbol, SemanticTarget};
 
     use super::*;
@@ -272,5 +278,83 @@ mod tests {
             },
         );
         assert_eq!(relations.len(), 1);
+    }
+
+    #[test]
+    fn selects_only_external_graph_edges_when_requested() {
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                Node {
+                    id: "caller".to_string(),
+                    kind: NodeKind::Function,
+                    name: "load".to_string(),
+                    file: PathBuf::from("main.rs"),
+                    span: Span {
+                        start: [1, 0],
+                        end: [2, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: None,
+                    snippet: None,
+                },
+                Node {
+                    id: "callee".to_string(),
+                    kind: NodeKind::Function,
+                    name: "helper".to_string(),
+                    file: PathBuf::from("main.rs"),
+                    span: Span {
+                        start: [3, 0],
+                        end: [4, 0],
+                    },
+                    visibility: Visibility::Private,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: None,
+                    snippet: None,
+                },
+            ],
+            edges: vec![
+                Edge {
+                    source: "caller".to_string(),
+                    target: "callee".to_string(),
+                    kind: EdgeKind::Calls,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "caller".to_string(),
+                    target: "reqwest::get".to_string(),
+                    kind: EdgeKind::Calls,
+                    confidence: 1.0,
+                    direction: Some(FlowDirection::Read),
+                    operation: Some("HTTP".to_string()),
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+            ],
+        };
+
+        let edges = select_graph_edges(
+            &graph,
+            &RelationSelector {
+                external_only: true,
+                ..RelationSelector::calls()
+            },
+        );
+
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].target, "reqwest::get");
     }
 }

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SwiftConfig {
@@ -42,12 +42,28 @@ pub struct GraphaConfig {
     pub external: Vec<ExternalRepo>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ClassifierRule {
     pub pattern: String,
     pub terminal: String,
     pub direction: String,
     pub operation: String,
+}
+
+impl GraphaConfig {
+    pub fn extraction_cache_fingerprint(&self) -> String {
+        #[derive(Serialize)]
+        struct ExtractionCacheFingerprint<'a> {
+            swift_index_store: bool,
+            classifiers: &'a [ClassifierRule],
+        }
+
+        serde_json::to_string(&ExtractionCacheFingerprint {
+            swift_index_store: self.swift.index_store,
+            classifiers: &self.classifiers,
+        })
+        .unwrap_or_default()
+    }
 }
 
 pub fn load_config(project_root: &Path) -> GraphaConfig {
@@ -182,5 +198,54 @@ path = "/path/to/framenetwork"
     fn external_defaults_empty() {
         let config: GraphaConfig = toml::from_str("").unwrap();
         assert!(config.external.is_empty());
+    }
+
+    #[test]
+    fn extraction_cache_fingerprint_tracks_only_extraction_settings() {
+        let config_a: GraphaConfig = toml::from_str(
+            r#"
+[[classifiers]]
+pattern = "reqwest"
+terminal = "network"
+direction = "read"
+operation = "HTTP"
+
+[output]
+default_fields = ["id"]
+"#,
+        )
+        .unwrap();
+        let config_b: GraphaConfig = toml::from_str(
+            r#"
+[[classifiers]]
+pattern = "reqwest"
+terminal = "network"
+direction = "read"
+operation = "HTTP"
+
+[output]
+default_fields = ["id", "file"]
+"#,
+        )
+        .unwrap();
+        let config_c: GraphaConfig = toml::from_str(
+            r#"
+[[classifiers]]
+pattern = "reqwest"
+terminal = "event"
+direction = "write"
+operation = "PUBLISH"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config_a.extraction_cache_fingerprint(),
+            config_b.extraction_cache_fingerprint()
+        );
+        assert_ne!(
+            config_a.extraction_cache_fingerprint(),
+            config_c.extraction_cache_fingerprint()
+        );
     }
 }
