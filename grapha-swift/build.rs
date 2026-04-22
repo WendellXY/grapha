@@ -1,11 +1,12 @@
 mod build_support;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use build_support::{
     BRIDGE_INPUTS, BRIDGE_MODE_ENV, BridgeBuildResult, BridgeMode, PostBuildDecision,
-    PreBuildDecision, parse_bridge_mode, post_build_decision, pre_build_decision,
+    PreBuildDecision, bridge_build_paths, parse_bridge_mode, post_build_decision,
+    pre_build_decision,
 };
 
 const DISABLE_SWIFT_SANDBOX_ENV: &str = "GRAPHA_SWIFT_BUILD_DISABLE_SANDBOX";
@@ -31,6 +32,10 @@ fn main() {
         .expect("Cargo should always provide CARGO_MANIFEST_DIR to build scripts");
     let bridge_dir = Path::new(&manifest_dir).join("swift-bridge");
     let package_manifest = bridge_dir.join("Package.swift");
+    let out_dir = PathBuf::from(
+        std::env::var("OUT_DIR").expect("Cargo should always provide OUT_DIR to build scripts"),
+    );
+    let (scratch_dir, lib_path) = bridge_build_paths(&out_dir);
     match pre_build_decision(mode, package_manifest.exists()) {
         PreBuildDecision::Skip(message) => {
             disable_bridge(message);
@@ -47,12 +52,13 @@ fn main() {
         swift_build.arg("--disable-sandbox");
     }
 
+    swift_build.arg("--scratch-path").arg(&scratch_dir);
+
     let status = swift_build
         .args(["-c", "release"])
         .current_dir(&bridge_dir)
         .status();
 
-    let lib_path = bridge_dir.join(".build/release");
     let build_result = match status {
         Ok(s) if s.success() && lib_path.join("libGraphaSwiftBridge.dylib").exists() => {
             BridgeBuildResult::Success

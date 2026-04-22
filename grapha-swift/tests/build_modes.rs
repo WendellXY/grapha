@@ -3,8 +3,9 @@ mod build_support;
 
 use build_support::{
     BRIDGE_INPUTS, BridgeBuildResult, BridgeMode, PostBuildDecision, PreBuildDecision,
-    parse_bridge_mode, post_build_decision, pre_build_decision,
+    bridge_build_paths, parse_bridge_mode, post_build_decision, pre_build_decision,
 };
+use std::path::Path;
 
 #[test]
 fn parses_default_mode_as_auto() {
@@ -35,6 +36,17 @@ fn watches_all_swift_bridge_inputs() {
             "swift-bridge/Package.swift",
             "swift-bridge/Package.resolved",
         ]
+    );
+}
+
+#[test]
+fn bridge_build_uses_out_dir_scratch_space() {
+    let (scratch_dir, lib_dir) = bridge_build_paths(Path::new("/tmp/grapha-out"));
+
+    assert_eq!(scratch_dir, Path::new("/tmp/grapha-out/swift-bridge-build"));
+    assert_eq!(
+        lib_dir,
+        Path::new("/tmp/grapha-out/swift-bridge-build/release")
     );
 }
 

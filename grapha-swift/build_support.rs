@@ -1,9 +1,17 @@
+use std::path::{Path, PathBuf};
+
 pub const BRIDGE_MODE_ENV: &str = "GRAPHA_SWIFT_BRIDGE_MODE";
 pub const BRIDGE_INPUTS: &[&str] = &[
     "swift-bridge/Sources/",
     "swift-bridge/Package.swift",
     "swift-bridge/Package.resolved",
 ];
+
+pub fn bridge_build_paths(out_dir: &Path) -> (PathBuf, PathBuf) {
+    let scratch_dir = out_dir.join("swift-bridge-build");
+    let lib_dir = scratch_dir.join("release");
+    (scratch_dir, lib_dir)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeMode {
