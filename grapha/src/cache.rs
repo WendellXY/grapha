@@ -41,7 +41,8 @@ impl GraphCache {
     pub fn load(&self) -> anyhow::Result<Graph> {
         let bytes = fs::read(&self.cache_path)
             .with_context(|| format!("reading cache file {}", self.cache_path.display()))?;
-        let graph: Graph = bincode::deserialize(&bytes)
+        let graph: Graph = bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
+            .map(|(graph, _)| graph)
             .with_context(|| format!("deserialising cache file {}", self.cache_path.display()))?;
         Ok(graph)
     }
@@ -52,7 +53,7 @@ impl GraphCache {
         if let Some(parent) = self.cache_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let bytes = bincode::serialize(graph)
+        let bytes = bincode::serde::encode_to_vec(graph, bincode::config::standard())
             .with_context(|| "serialising graph to bincode".to_string())?;
         fs::write(&self.cache_path, bytes)
             .with_context(|| format!("writing cache file {}", self.cache_path.display()))?;
@@ -205,7 +206,9 @@ impl QueryCache {
         let Ok(bytes) = fs::read(&self.cache_path) else {
             return HashMap::new();
         };
-        bincode::deserialize(&bytes).unwrap_or_default()
+        bincode::serde::decode_from_slice(&bytes, bincode::config::standard())
+            .map(|(entries, _)| entries)
+            .unwrap_or_default()
     }
 
     /// Returns the cached output for `key` if the cache entry exists and the
@@ -247,7 +250,8 @@ impl QueryCache {
         if let Some(parent) = self.cache_path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let bytes = bincode::serialize(&entries).context("serialising query cache to bincode")?;
+        let bytes = bincode::serde::encode_to_vec(&entries, bincode::config::standard())
+            .context("serialising query cache to bincode")?;
         fs::write(&self.cache_path, bytes)
             .with_context(|| format!("writing query cache {}", self.cache_path.display()))?;
         Ok(())

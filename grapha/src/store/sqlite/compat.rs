@@ -9,14 +9,17 @@ pub(super) fn serialize_provenance(provenance: &[EdgeProvenance]) -> anyhow::Res
     if provenance.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(bincode::serialize(provenance)?)
+    Ok(bincode::serde::encode_to_vec(
+        provenance,
+        bincode::config::legacy(),
+    )?)
 }
 
 fn deserialize_provenance(blob: &[u8]) -> anyhow::Result<Vec<EdgeProvenance>> {
     if blob.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(bincode::deserialize(blob)?)
+    Ok(bincode::serde::decode_from_slice(blob, bincode::config::legacy())?.0)
 }
 
 pub(super) fn load_edges(

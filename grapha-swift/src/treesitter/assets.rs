@@ -54,6 +54,11 @@ struct ImageAssetCall {
     byte_offset: usize,
 }
 
+fn child_at<'a>(node: tree_sitter::Node<'a>, index: usize) -> Option<tree_sitter::Node<'a>> {
+    let index = u32::try_from(index).ok()?;
+    node.child(index)
+}
+
 fn collect_image_asset_calls<'a>(
     node: tree_sitter::Node<'a>,
     source: &[u8],
@@ -66,7 +71,7 @@ fn collect_image_asset_calls<'a>(
     }
 
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = child_at(node, i) {
             collect_image_asset_calls(child, source, calls);
         }
     }
@@ -88,7 +93,7 @@ fn try_parse_image_call(node: tree_sitter::Node, source: &[u8]) -> Option<ImageA
     // Look at value_argument children
     let arg_count = value_arguments.child_count();
     for i in 0..arg_count {
-        let Some(arg) = value_arguments.child(i) else {
+        let Some(arg) = child_at(value_arguments, i) else {
             continue;
         };
         if arg.kind() != "value_argument" {
@@ -140,7 +145,7 @@ fn find_child_by_kind<'a>(
     kind: &str,
 ) -> Option<tree_sitter::Node<'a>> {
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i)
+        if let Some(child) = child_at(node, i)
             && child.kind() == kind
         {
             return Some(child);
@@ -168,14 +173,14 @@ fn extract_argument_label_and_value<'a>(
         // Value is the last non-colon child
         let value = (0..child_count)
             .rev()
-            .filter_map(|i| arg.child(i))
+            .filter_map(|i| child_at(arg, i))
             .find(|c| c.kind() != "simple_identifier" && c.kind() != ":");
         return (label, value);
     }
 
     // No label — value is the first meaningful child
     let value = (0..child_count)
-        .filter_map(|i| arg.child(i))
+        .filter_map(|i| child_at(arg, i))
         .find(|c| c.kind() != "," && c.kind() != "(" && c.kind() != ")");
     (None, value)
 }
@@ -184,7 +189,7 @@ fn extract_string_literal(node: tree_sitter::Node, source: &[u8]) -> Option<Stri
     // line_string_literal containing string_content
     if node.kind() == "line_string_literal" {
         for i in 0..node.child_count() {
-            if let Some(child) = node.child(i)
+            if let Some(child) = child_at(node, i)
                 && child.kind() == "line_str_text"
             {
                 return child.utf8_text(source).ok().map(|s| s.to_string());

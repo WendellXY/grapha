@@ -526,7 +526,10 @@ pub fn search_filtered(
         return Ok(Vec::new());
     }
 
-    let top_docs = searcher.search(&final_query, &TopDocs::with_limit(candidate_limit))?;
+    let top_docs = searcher.search(
+        &final_query,
+        &TopDocs::with_limit(candidate_limit).order_by_score(),
+    )?;
 
     let mut results = Vec::new();
     for (score, doc_address) in top_docs {

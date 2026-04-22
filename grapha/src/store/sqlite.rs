@@ -119,13 +119,6 @@ pub(super) fn str_to_enum<T: serde::de::DeserializeOwned>(s: &str) -> anyhow::Re
     Ok(serde_json::from_str(&quoted)?)
 }
 
-#[cfg(test)]
-fn serialize_provenance(
-    provenance: &[grapha_core::graph::EdgeProvenance],
-) -> anyhow::Result<Vec<u8>> {
-    compat::serialize_provenance(provenance)
-}
-
 impl Store for SqliteStore {
     fn save(&self, graph: &Graph) -> anyhow::Result<()> {
         write::save_full(self, graph)
@@ -149,7 +142,99 @@ mod tests {
     use super::*;
     use grapha_core::graph::*;
     use std::collections::HashMap;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    const LEGACY_PROVENANCE_BLOB: &[u8] = &[
+        1, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 0, 0, 0, 0, 109, 97, 105, 110, 46, 115, 119, 105, 102,
+        116, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0,
+        0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 109, 97, 105, 110,
+    ];
+
+    fn insert_legacy_schema_row(conn: &Connection, schema_version: &str, provenance: &[u8]) {
+        conn.execute_batch(&format!(
+            "CREATE TABLE meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            CREATE TABLE nodes (
+                id         TEXT PRIMARY KEY,
+                kind       TEXT NOT NULL,
+                name       TEXT NOT NULL,
+                file       TEXT NOT NULL,
+                span_start_line   INTEGER NOT NULL,
+                span_start_col    INTEGER NOT NULL,
+                span_end_line     INTEGER NOT NULL,
+                span_end_col      INTEGER NOT NULL,
+                visibility TEXT NOT NULL,
+                metadata   TEXT NOT NULL,
+                role       TEXT,
+                signature  TEXT,
+                doc_comment TEXT,
+                module     TEXT,
+                snippet    TEXT
+            );
+            CREATE TABLE edges (
+                edge_id    TEXT PRIMARY KEY,
+                source     TEXT NOT NULL,
+                target     TEXT NOT NULL,
+                kind       TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                direction  TEXT,
+                operation  TEXT,
+                condition  TEXT,
+                async_boundary INTEGER,
+                provenance BLOB NOT NULL
+            );
+            INSERT INTO meta (key, value) VALUES ('version', '0.1.0');
+            INSERT INTO meta (key, value) VALUES ('store_schema_version', '{schema_version}');"
+        ))
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO nodes (
+                id, kind, name, file,
+                span_start_line, span_start_col, span_end_line, span_end_col,
+                visibility, metadata, role, signature, doc_comment, module, snippet
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            rusqlite::params![
+                "main",
+                "function",
+                "main",
+                "main.swift",
+                0_i64,
+                0_i64,
+                1_i64,
+                0_i64,
+                "public",
+                "{}",
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO edges (
+                edge_id, source, target, kind, confidence,
+                direction, operation, condition, async_boundary, provenance
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            rusqlite::params![
+                "main::calls::helper",
+                "main",
+                "helper",
+                "calls",
+                1.0_f64,
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<String>::None,
+                Option::<i64>::None,
+                provenance,
+            ],
+        )
+        .unwrap();
+    }
 
     #[test]
     fn sqlite_store_round_trips() {
@@ -770,96 +855,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("schema-v5.db");
         let conn = Connection::open(&path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE meta (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            CREATE TABLE nodes (
-                id         TEXT PRIMARY KEY,
-                kind       TEXT NOT NULL,
-                name       TEXT NOT NULL,
-                file       TEXT NOT NULL,
-                span_start_line   INTEGER NOT NULL,
-                span_start_col    INTEGER NOT NULL,
-                span_end_line     INTEGER NOT NULL,
-                span_end_col      INTEGER NOT NULL,
-                visibility TEXT NOT NULL,
-                metadata   TEXT NOT NULL,
-                role       TEXT,
-                signature  TEXT,
-                doc_comment TEXT,
-                module     TEXT,
-                snippet    TEXT
-            );
-            CREATE TABLE edges (
-                edge_id    TEXT PRIMARY KEY,
-                source     TEXT NOT NULL,
-                target     TEXT NOT NULL,
-                kind       TEXT NOT NULL,
-                confidence REAL NOT NULL,
-                direction  TEXT,
-                operation  TEXT,
-                condition  TEXT,
-                async_boundary INTEGER,
-                provenance BLOB NOT NULL
-            );
-            INSERT INTO meta (key, value) VALUES ('version', '0.1.0');
-            INSERT INTO meta (key, value) VALUES ('store_schema_version', '5');",
-        )
-        .unwrap();
-        let provenance = vec![EdgeProvenance {
-            file: Path::new("main.swift").into(),
-            span: Span {
-                start: [0, 0],
-                end: [0, 4],
-            },
-            symbol_id: "main".to_string(),
-        }];
-        conn.execute(
-            "INSERT INTO nodes (
-                id, kind, name, file,
-                span_start_line, span_start_col, span_end_line, span_end_col,
-                visibility, metadata, role, signature, doc_comment, module, snippet
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-            rusqlite::params![
-                "main",
-                "function",
-                "main",
-                "main.swift",
-                0_i64,
-                0_i64,
-                1_i64,
-                0_i64,
-                "public",
-                "{}",
-                Option::<String>::None,
-                Option::<String>::None,
-                Option::<String>::None,
-                Option::<String>::None,
-                Option::<String>::None,
-            ],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO edges (
-                edge_id, source, target, kind, confidence,
-                direction, operation, condition, async_boundary, provenance
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            rusqlite::params![
-                "main::calls::helper",
-                "main",
-                "helper",
-                "calls",
-                1.0_f64,
-                Option::<String>::None,
-                Option::<String>::None,
-                Option::<String>::None,
-                Option::<i64>::None,
-                serialize_provenance(&provenance).unwrap(),
-            ],
-        )
-        .unwrap();
+        insert_legacy_schema_row(&conn, "5", LEGACY_PROVENANCE_BLOB);
         drop(conn);
 
         let store = SqliteStore::new(path);
@@ -867,7 +863,44 @@ mod tests {
 
         assert_eq!(loaded.nodes.len(), 1);
         assert_eq!(loaded.edges.len(), 1);
-        assert_eq!(loaded.edges[0].provenance, provenance);
+        assert_eq!(
+            loaded.edges[0].provenance,
+            vec![EdgeProvenance {
+                file: PathBuf::from("main.swift"),
+                span: Span {
+                    start: [0, 0],
+                    end: [0, 4],
+                },
+                symbol_id: "main".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn sqlite_load_reads_schema_v6_legacy_binary_provenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("schema-v6.db");
+        let conn = Connection::open(&path).unwrap();
+        insert_legacy_schema_row(&conn, "6", LEGACY_PROVENANCE_BLOB);
+        drop(conn);
+
+        let store = SqliteStore::new(path);
+        let loaded = store.load().unwrap();
+
+        assert_eq!(loaded.nodes.len(), 1);
+        assert_eq!(loaded.edges.len(), 1);
+        assert_eq!(loaded.edges[0].source, "main");
+        assert_eq!(
+            loaded.edges[0].provenance,
+            vec![EdgeProvenance {
+                file: PathBuf::from("main.swift"),
+                span: Span {
+                    start: [0, 0],
+                    end: [0, 4],
+                },
+                symbol_id: "main".to_string(),
+            }]
+        );
     }
 
     #[test]
