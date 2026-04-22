@@ -494,6 +494,9 @@ enum RepoCommands {
         /// Limit smell analysis to a specific symbol and its local neighborhood
         #[arg(long)]
         symbol: Option<String>,
+        /// Bypass both cached graph loads and cached smell results
+        #[arg(long)]
+        no_cache: bool,
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,

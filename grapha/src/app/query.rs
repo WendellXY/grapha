@@ -11,7 +11,8 @@ use crate::{
 };
 
 use super::index::{
-    load_graph, load_graph_for_l10n, load_graph_for_l10n_usages, open_search_index,
+    load_graph, load_graph_for_l10n, load_graph_for_l10n_usages, load_graph_uncached,
+    open_search_index,
 };
 
 fn query_cache_key(parts: &[&str]) -> String {
@@ -101,6 +102,20 @@ pub(crate) fn tree_render_options(color: ColorMode) -> render::RenderOptions {
 fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+fn repo_smells_cache_key(module: Option<&str>, file: Option<&str>, symbol: Option<&str>) -> String {
+    let (scope, value) = if let Some(module) = module {
+        ("module", module)
+    } else if let Some(file) = file {
+        ("file", file)
+    } else if let Some(symbol) = symbol {
+        ("symbol", symbol)
+    } else {
+        ("all", "")
+    };
+
+    query_cache_key(&["repo", "smells", scope, value])
 }
 
 fn print_query_result<T, R>(
@@ -626,9 +641,9 @@ pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Resul
             module,
             file,
             symbol,
+            no_cache,
             path,
         } => {
-            let graph = load_graph(&path)?;
             let selected_scope_count = usize::from(module.is_some())
                 + usize::from(file.is_some())
                 + usize::from(symbol.is_some());
@@ -636,6 +651,22 @@ pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Resul
                 bail!("choose only one of --module, --file, or --symbol");
             }
 
+            let store_dir = path.join(".grapha");
+            let db_path = store_dir.join("grapha.db");
+            let query_cache = cache::QueryCache::new(&store_dir);
+            let cache_key =
+                repo_smells_cache_key(module.as_deref(), file.as_deref(), symbol.as_deref());
+
+            if !no_cache && let Some(cached) = query_cache.get(&cache_key, &db_path) {
+                print!("{cached}");
+                return Ok(());
+            }
+
+            let graph = if no_cache {
+                load_graph_uncached(&path)?
+            } else {
+                load_graph(&path)?
+            };
             let result = if let Some(ref file_query) = file {
                 query::smells::detect_smells_for_file(&graph, file_query)
             } else if let Some(ref symbol_query) = symbol {
@@ -648,7 +679,14 @@ pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Resul
                 query::smells::detect_smells(&graph)
             };
 
-            print_json(&result)
+            if no_cache {
+                print_json(&result)
+            } else {
+                let output = format!("{}\n", serde_json::to_string_pretty(&result)?);
+                print!("{output}");
+                let _ = query_cache.put(&cache_key, &db_path, &output);
+                Ok(())
+            }
         }
         crate::RepoCommands::Modules { path } => {
             let graph = load_graph(&path)?;

@@ -6,15 +6,20 @@ use anyhow::{Context, anyhow};
 use crate::store::Store;
 use crate::{assets, cache, delta, localization, progress, search, store};
 
-pub(crate) fn load_graph(path: &Path) -> anyhow::Result<grapha_core::graph::Graph> {
+fn load_graph_with_cache(
+    path: &Path,
+    use_cache: bool,
+) -> anyhow::Result<grapha_core::graph::Graph> {
     let store_dir = path.join(".grapha");
     let db_path = store_dir.join("grapha.db");
 
-    let graph_cache = cache::GraphCache::new(&store_dir);
-    if graph_cache.is_fresh(&db_path)
-        && let Ok(graph) = graph_cache.load()
-    {
-        return Ok(graph);
+    if use_cache {
+        let graph_cache = cache::GraphCache::new(&store_dir);
+        if graph_cache.is_fresh(&db_path)
+            && let Ok(graph) = graph_cache.load()
+        {
+            return Ok(graph);
+        }
     }
 
     let s = store::sqlite::SqliteStore::new(db_path);
@@ -22,9 +27,19 @@ pub(crate) fn load_graph(path: &Path) -> anyhow::Result<grapha_core::graph::Grap
         .load()
         .context("no index found — run `grapha index` first")?;
 
-    let _ = graph_cache.save(&graph);
+    if use_cache {
+        let _ = cache::GraphCache::new(&store_dir).save(&graph);
+    }
 
     Ok(graph)
+}
+
+pub(crate) fn load_graph(path: &Path) -> anyhow::Result<grapha_core::graph::Graph> {
+    load_graph_with_cache(path, true)
+}
+
+pub(crate) fn load_graph_uncached(path: &Path) -> anyhow::Result<grapha_core::graph::Graph> {
+    load_graph_with_cache(path, false)
 }
 
 pub(crate) fn load_graph_for_l10n(path: &Path) -> anyhow::Result<grapha_core::graph::Graph> {

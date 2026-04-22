@@ -481,6 +481,83 @@ fn repo_smells_symbol_scope_limits_results_to_symbol_neighborhood() {
 }
 
 #[test]
+fn repo_smells_populates_graph_and_query_caches() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+    write_repo_smells_scope_fixture(dir.path());
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let graph_cache_path = store_dir.join("graph.bincode");
+    let query_cache_path = store_dir.join("query_cache.bin");
+    assert!(!graph_cache_path.exists());
+    assert!(!query_cache_path.exists());
+
+    grapha()
+        .args([
+            "repo",
+            "smells",
+            "--file",
+            "main.rs",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"name\": \"hot\""));
+
+    assert!(graph_cache_path.exists());
+    assert!(query_cache_path.exists());
+}
+
+#[test]
+fn repo_smells_no_cache_bypasses_graph_and_query_caches() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+    write_repo_smells_scope_fixture(dir.path());
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let graph_cache_path = store_dir.join("graph.bincode");
+    let query_cache_path = store_dir.join("query_cache.bin");
+    assert!(!graph_cache_path.exists());
+    assert!(!query_cache_path.exists());
+
+    grapha()
+        .args([
+            "repo",
+            "smells",
+            "--file",
+            "main.rs",
+            "--no-cache",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"name\": \"hot\""));
+
+    assert!(!graph_cache_path.exists());
+    assert!(!query_cache_path.exists());
+}
+
+#[test]
 fn symbol_search_includes_id_by_default() {
     let dir = tempfile::tempdir().unwrap();
     let store_dir = dir.path().join(".grapha");
