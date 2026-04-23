@@ -28,10 +28,42 @@ Invariants:
 - CI-oriented checks should return stable JSON that can be consumed by agents and shell scripts.
 - Configuration should live in `grapha.toml` and be safe to ignore when absent.
 
-## Roadmap
+## Roadmap Status
 
-1. **Architecture guard**
-   Add `grapha repo arch` with `grapha.toml` architecture rules. Detect forbidden dependencies between configured layers/components using existing graph edges.
+### Completed
+
+1. **Architecture guard** — done
+   Added `grapha repo arch` with `grapha.toml` architecture rules. It detects forbidden dependencies between configured layers/components using existing graph edges, without adding new database tables.
+
+Evidence:
+
+- Config model: `grapha/src/config.rs`
+- Checker: `grapha/src/query/arch.rs`
+- CLI wiring: `grapha/src/main.rs`, `grapha/src/app/query.rs`
+- Public docs: `README.md`
+- Tests: config parsing plus architecture matching and violation detection tests
+
+4. **Brief agent output** — done for first narrow slice
+   Added compact `--format brief` output for `symbol context` and `repo arch`. Other query commands still keep their existing `json|tree` surface until they receive command-specific brief renderers.
+
+Evidence:
+
+- Context brief CLI: `grapha/src/main.rs`, `grapha/src/app/query.rs`
+- Brief renderers: `grapha/src/render.rs`
+- Public docs: `README.md`
+- Tests: focused renderer tests for context and architecture brief output
+- Playground smoke: indexed `/Users/wendell/developer/WeNext/worktree/lama-ludo-ios/refactor/follow-module-swift-6-support` and ran `repo arch --format brief` plus `symbol context --format brief`
+
+5. **Graph quality benchmark** — done for first harness slice
+   Added a repeatable ignored integration-test harness with a fixed Rust fixture. It measures impact traversal behavior, architecture violation detection, output-size proxy, and command latency without depending on the external playground project.
+
+Evidence:
+
+- Harness: `grapha/tests/quality_benchmark.rs`
+- Fixture: `grapha/tests/fixtures/quality/`
+- Run command: `cargo test -p grapha --test quality_benchmark -- --ignored --nocapture`
+
+### Remaining
 
 2. **Persistent history**
    Add an event/history store for commit, build, test, deploy, and incident-like records, linked back to files, modules, and symbols.
@@ -39,11 +71,8 @@ Invariants:
 3. **Repo-origin metadata**
    Stamp nodes and edges with repo identity for multi-repo graphs so external repos can be queried explicitly without relying on absolute paths.
 
-4. **Brief agent output**
-   Add compact `--format brief` output for high-use commands such as `context`, `impact`, `trace`, `smells`, and `arch`.
-
-5. **Graph quality benchmark**
-   Build a repeatable benchmark for impact analysis, call-chain recall, architecture violation detection, query latency, and token cost.
+4. **Brief agent output expansion**
+   Extend compact `--format brief` output beyond the first `context`/`arch` slice to additional high-use commands such as `impact`, `trace`, and `smells`.
 
 6. **Optional inferred enrichment**
    Add opt-in LLM or heuristic enrichment for module summaries, ownership, and doc-code links. Store these as inferred metadata with confidence.
@@ -51,7 +80,7 @@ Invariants:
 7. **Self-maintenance checks**
    Add checks for stale inferred links, orphan entities, missing relations, and inconsistent graph provenance.
 
-## Implementation Plan For Slice 1: `grapha repo arch`
+## Completed Slice 1: `grapha repo arch`
 
 Files:
 
