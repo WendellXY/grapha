@@ -13,6 +13,14 @@ pub fn bridge_build_paths(out_dir: &Path) -> (PathBuf, PathBuf) {
     (scratch_dir, lib_dir)
 }
 
+pub fn staged_bridge_dir(out_dir: &Path) -> PathBuf {
+    out_dir
+        .ancestors()
+        .nth(3)
+        .expect("OUT_DIR should live under target/<profile>/build/<pkg>/out")
+        .to_path_buf()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BridgeMode {
     Auto,

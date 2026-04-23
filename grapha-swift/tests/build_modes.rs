@@ -4,6 +4,7 @@ mod build_support;
 use build_support::{
     BRIDGE_INPUTS, BridgeBuildResult, BridgeMode, PostBuildDecision, PreBuildDecision,
     bridge_build_paths, parse_bridge_mode, post_build_decision, pre_build_decision,
+    staged_bridge_dir,
 };
 use std::path::Path;
 
@@ -48,6 +49,15 @@ fn bridge_build_uses_out_dir_scratch_space() {
         lib_dir,
         Path::new("/tmp/grapha-out/swift-bridge-build/release")
     );
+}
+
+#[test]
+fn staged_bridge_dir_uses_profile_output_directory() {
+    let staged_dir = staged_bridge_dir(Path::new(
+        "/tmp/grapha/target/release/build/grapha-swift-deadbeef/out",
+    ));
+
+    assert_eq!(staged_dir, Path::new("/tmp/grapha/target/release"));
 }
 
 #[test]

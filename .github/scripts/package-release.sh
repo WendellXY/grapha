@@ -17,7 +17,7 @@ staging_dir="${dist_dir}/${archive_stem}"
 archive_path="${dist_dir}/${archive_stem}.tar.gz"
 checksum_path="${dist_dir}/${archive_stem}.sha256"
 binary_path="${repo_root}/target/release/grapha"
-bridge_path="${repo_root}/grapha-swift/swift-bridge/.build/release/libGraphaSwiftBridge.dylib"
+bridge_path="${repo_root}/target/release/libGraphaSwiftBridge.dylib"
 
 if [[ ! -f "${binary_path}" ]]; then
   echo "missing grapha binary at ${binary_path}" >&2
