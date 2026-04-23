@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::store::Store;
-use crate::{mcp, recall, search, serve, store, watch};
+use crate::{index_status, mcp, recall, search, serve, store, watch};
 
 use super::index::{load_graph, open_search_index};
 
@@ -48,10 +48,18 @@ fn run_mcp_server_with_optional_watch(
                                         eprintln!("watch: failed to save graph: {e}");
                                         continue;
                                     }
-
                                     let search_path = store_path.join("search_index");
                                     match search::build_index(&graph, &search_path) {
                                         Ok(index) => {
+                                            if let Err(e) = index_status::save_index_status(
+                                                &project_path,
+                                                &store_path,
+                                                graph.nodes.len(),
+                                                graph.edges.len(),
+                                            ) {
+                                                eprintln!("watch: failed to save index status: {e}");
+                                                continue;
+                                            }
                                             if state_tx.send((graph, index)).is_err() {
                                                 break;
                                             }
@@ -93,7 +101,7 @@ pub(crate) fn handle_serve(
         run_mcp_server_with_optional_watch(path, graph, search_index, watch_mode)
     } else {
         let rt = tokio::runtime::Runtime::new()?;
-        rt.block_on(serve::run(graph, search_index, port))?;
+        rt.block_on(serve::run(path, graph, search_index, port))?;
         Ok(())
     }
 }

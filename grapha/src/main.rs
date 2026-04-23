@@ -10,6 +10,7 @@ mod delta;
 mod extract;
 mod fields;
 mod filter;
+mod index_status;
 mod localization;
 mod mcp;
 mod progress;
@@ -192,6 +193,15 @@ enum SymbolCommands {
         /// Enable fuzzy matching (tolerates typos)
         #[arg(long)]
         fuzzy: bool,
+        /// Require an exact declaration-name match (e.g. "foo" matches "foo(x:)")
+        #[arg(long)]
+        exact_name: bool,
+        /// Exclude synthetic nodes and accessor functions from results
+        #[arg(long)]
+        declarations_only: bool,
+        /// Keep only public symbols
+        #[arg(long)]
+        public_only: bool,
         /// Include source snippet and relationships in results
         #[arg(long)]
         context: bool,
@@ -465,6 +475,12 @@ enum ConceptCommands {
 
 #[derive(Subcommand)]
 enum RepoCommands {
+    /// Show index freshness and repository snapshot metadata
+    Status {
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
     /// Detect code changes and analyze their impact
     Changes {
         /// Scope: "unstaged", "staged", "all", or a git ref (e.g., "main")

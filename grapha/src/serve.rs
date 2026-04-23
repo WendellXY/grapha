@@ -1,6 +1,7 @@
 pub mod api;
 
 use std::sync::Arc;
+use std::path::PathBuf;
 
 use axum::Router;
 use axum::response::Html;
@@ -12,12 +13,19 @@ use tantivy::Index;
 const INDEX_HTML: &str = include_str!("serve/web/index.html");
 
 pub struct AppState {
+    pub project_path: PathBuf,
     pub graph: Graph,
     pub search_index: Index,
 }
 
-pub async fn run(graph: Graph, search_index: Index, port: u16) -> anyhow::Result<()> {
+pub async fn run(
+    project_path: PathBuf,
+    graph: Graph,
+    search_index: Index,
+    port: u16,
+) -> anyhow::Result<()> {
     let state = Arc::new(AppState {
+        project_path,
         graph,
         search_index,
     });
@@ -28,6 +36,7 @@ pub async fn run(graph: Graph, search_index: Index, port: u16) -> anyhow::Result
         .route("/api/context/{symbol}", get(api::get_context))
         .route("/api/trace/{symbol}", get(api::get_trace))
         .route("/api/reverse/{symbol}", get(api::get_reverse))
+        .route("/api/status", get(api::get_index_status))
         .route("/api/search", get(api::get_search))
         .with_state(state)
         .layer(tower_http::cors::CorsLayer::permissive());

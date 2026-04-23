@@ -35,6 +35,9 @@ pub struct SearchOptions {
     pub file_glob: Option<String>,
     pub role: Option<String>,
     pub fuzzy: bool,
+    pub exact_name: bool,
+    pub declarations_only: bool,
+    pub public_only: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -396,7 +399,47 @@ fn requires_full_rebuild_for_locators(previous: &Graph, delta: &GraphDelta<'_>) 
                 .deleted_edge_ids
                 .iter()
                 .any(|deleted| deleted == &crate::delta::edge_fingerprint(edge))
-    })
+        })
+}
+
+fn normalized_exact_name(name: &str) -> String {
+    let trimmed = name.trim();
+    trimmed
+        .split('(')
+        .next()
+        .unwrap_or(trimmed)
+        .trim()
+        .to_lowercase()
+}
+
+fn is_accessor_symbol(id: &str) -> bool {
+    id.contains("functiongetter:")
+        || id.contains("functionsetter:")
+        || id.contains("getter:")
+        || id.contains("setter:")
+}
+
+fn is_declaration_result(result: &SearchResult) -> bool {
+    !matches!(result.kind.as_str(), "view" | "branch") && !is_accessor_symbol(&result.id)
+}
+
+fn exact_match_rank(result: &SearchResult, query_name: &str) -> usize {
+    usize::from(normalized_exact_name(&result.name) != query_name)
+}
+
+fn declaration_rank(result: &SearchResult) -> usize {
+    if !is_declaration_result(result) {
+        return 5;
+    }
+
+    match result.kind.as_str() {
+        "class" | "struct" | "enum" | "trait" | "protocol" | "module" | "type_alias"
+        | "extension" => 0,
+        "function" => 1,
+        "property" | "constant" | "field" | "variant" => 2,
+        "impl" => 3,
+        _ => 4,
+    }
 }
 
 fn has_glob_metacharacters(pattern: &str) -> bool {
@@ -509,6 +552,13 @@ pub fn search_filtered(
             Box::new(TermQuery::new(term, IndexRecordOption::Basic)),
         ));
     }
+    if options.public_only {
+        let term = Term::from_field_text(fields.visibility, "public");
+        clauses.push((
+            Occur::Must,
+            Box::new(TermQuery::new(term, IndexRecordOption::Basic)),
+        ));
+    }
 
     let final_query = BooleanQuery::new(clauses);
     let file_filter = options
@@ -516,7 +566,10 @@ pub fn search_filtered(
         .as_deref()
         .map(build_file_filter_regex)
         .transpose()?;
-    let candidate_limit = if file_filter.is_some() {
+    let requires_full_candidate_scan = file_filter.is_some()
+        || options.exact_name
+        || options.declarations_only;
+    let candidate_limit = if requires_full_candidate_scan {
         searcher.search(&final_query, &Count)?
     } else {
         limit
@@ -532,6 +585,7 @@ pub fn search_filtered(
     )?;
 
     let mut results = Vec::new();
+    let normalized_query_name = options.exact_name.then(|| normalized_exact_name(query_str));
     for (score, doc_address) in top_docs {
         let doc: TantivyDocument = searcher.doc(doc_address)?;
         let get_str = |field| {
@@ -548,7 +602,7 @@ pub fn search_filtered(
         }
         let module_val = get_str(fields.module);
         let role_val = get_str(fields.role);
-        results.push(SearchResult {
+        let result = SearchResult {
             id: get_str(fields.id),
             locator: get_str(fields.locator),
             name: get_str(fields.name),
@@ -565,7 +619,16 @@ pub fn search_filtered(
             } else {
                 Some(role_val)
             },
-        });
+        };
+        if let Some(query_name) = normalized_query_name.as_deref()
+            && normalized_exact_name(&result.name) != query_name
+        {
+            continue;
+        }
+        if options.declarations_only && !is_declaration_result(&result) {
+            continue;
+        }
+        results.push(result);
         if results.len() == limit {
             break;
         }
@@ -577,6 +640,15 @@ pub fn search_filtered(
             locator_rank(&left.locator, &query_lower)
                 .cmp(&locator_rank(&right.locator, &query_lower))
                 .then_with(|| search_kind_rank(&left.kind).cmp(&search_kind_rank(&right.kind)))
+                .then_with(|| right.score.total_cmp(&left.score))
+                .then_with(|| left.locator.cmp(&right.locator))
+        });
+    } else if identifier_like_query(query_str) && !options.fuzzy {
+        let query_name = normalized_exact_name(query_str);
+        results.sort_by(|left, right| {
+            exact_match_rank(left, &query_name)
+                .cmp(&exact_match_rank(right, &query_name))
+                .then_with(|| declaration_rank(left).cmp(&declaration_rank(right)))
                 .then_with(|| right.score.total_cmp(&left.score))
                 .then_with(|| left.locator.cmp(&right.locator))
         });
@@ -1097,6 +1169,253 @@ mod tests {
                 .map(|result| &result.name)
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn exact_name_matches_function_base_name_without_signature_noise() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                Node {
+                    id: "s:12ModuleExport16routeProfileHome3uidyx_tSzRzlF".into(),
+                    kind: NodeKind::Function,
+                    name: "routeProfileHome(uid:)".into(),
+                    file: "ProfileUtil.swift".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [1, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: Some("ModuleExport".into()),
+                    snippet: None,
+                },
+                Node {
+                    id: "other".into(),
+                    kind: NodeKind::Function,
+                    name: "routeProfileHomeElsewhere(uid:)".into(),
+                    file: "Other.swift".into(),
+                    span: Span {
+                        start: [2, 0],
+                        end: [3, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: Some("Other".into()),
+                    snippet: None,
+                },
+            ],
+            edges: vec![],
+        };
+        let index = build_index(&graph, dir.path()).unwrap();
+
+        let results = search_filtered(
+            &index,
+            "routeProfileHome",
+            10,
+            &SearchOptions {
+                exact_name: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "routeProfileHome(uid:)");
+    }
+
+    #[test]
+    fn declarations_only_excludes_accessors_and_synthetic_nodes() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                Node {
+                    id: "type".into(),
+                    kind: NodeKind::Property,
+                    name: "body".into(),
+                    file: "Body.swift".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [1, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: Some("App".into()),
+                    snippet: None,
+                },
+                Node {
+                    id: "functiongetter:body".into(),
+                    kind: NodeKind::Function,
+                    name: "body".into(),
+                    file: "Body.swift".into(),
+                    span: Span {
+                        start: [2, 0],
+                        end: [3, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: Some("App".into()),
+                    snippet: None,
+                },
+                Node {
+                    id: "view".into(),
+                    kind: NodeKind::View,
+                    name: "body".into(),
+                    file: "Body.swift".into(),
+                    span: Span {
+                        start: [4, 0],
+                        end: [5, 0],
+                    },
+                    visibility: Visibility::Private,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: Some("App".into()),
+                    snippet: None,
+                },
+            ],
+            edges: vec![],
+        };
+        let index = build_index(&graph, dir.path()).unwrap();
+
+        let results = search_filtered(
+            &index,
+            "body",
+            10,
+            &SearchOptions {
+                declarations_only: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].kind, "property");
+    }
+
+    #[test]
+    fn public_only_filters_private_symbols() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                Node {
+                    id: "public".into(),
+                    kind: NodeKind::Function,
+                    name: "run".into(),
+                    file: "run.rs".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [1, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: Some("App".into()),
+                    snippet: None,
+                },
+                Node {
+                    id: "private".into(),
+                    kind: NodeKind::Function,
+                    name: "run".into(),
+                    file: "run.rs".into(),
+                    span: Span {
+                        start: [2, 0],
+                        end: [3, 0],
+                    },
+                    visibility: Visibility::Private,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: Some("App".into()),
+                    snippet: None,
+                },
+            ],
+            edges: vec![],
+        };
+        let index = build_index(&graph, dir.path()).unwrap();
+
+        let results = search_filtered(
+            &index,
+            "run",
+            10,
+            &SearchOptions {
+                public_only: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "public");
+    }
+
+    #[test]
+    fn identifier_search_prefers_real_declaration_over_synthetic_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                Node {
+                    id: "synthetic".into(),
+                    kind: NodeKind::View,
+                    name: "UserNameView".into(),
+                    file: "Synthetic.swift".into(),
+                    span: Span {
+                        start: [0, 0],
+                        end: [1, 0],
+                    },
+                    visibility: Visibility::Private,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: Some("App".into()),
+                    snippet: None,
+                },
+                Node {
+                    id: "real".into(),
+                    kind: NodeKind::Struct,
+                    name: "UserNameView".into(),
+                    file: "UserNameView.swift".into(),
+                    span: Span {
+                        start: [2, 0],
+                        end: [3, 0],
+                    },
+                    visibility: Visibility::Public,
+                    metadata: HashMap::new(),
+                    role: None,
+                    signature: None,
+                    doc_comment: None,
+                    module: Some("ModuleExport".into()),
+                    snippet: None,
+                },
+            ],
+            edges: vec![],
+        };
+        let index = build_index(&graph, dir.path()).unwrap();
+
+        let results = search(&index, "UserNameView", 10).unwrap();
+
+        assert_eq!(results.first().map(|result| result.kind.as_str()), Some("struct"));
     }
 
     #[test]

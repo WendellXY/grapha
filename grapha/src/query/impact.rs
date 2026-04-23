@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use serde::Serialize;
 
-use grapha_core::graph::{EdgeKind, Graph, Node, NodeKind};
+use grapha_core::graph::{EdgeKind, Graph, Node, NodeKind, Visibility};
 
 use super::{QueryResolveError, SymbolRef};
 
@@ -13,8 +13,25 @@ pub(crate) struct ImpactTreeNode {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ImpactModuleCount {
+    pub module: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ImpactSummary {
+    pub direct_dependent_count: usize,
+    pub direct_file_count: usize,
+    pub direct_module_count: usize,
+    pub top_direct_modules: Vec<ImpactModuleCount>,
+    pub public_dependent_count: usize,
+    pub internal_dependent_count: usize,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ImpactResult {
     pub source: String,
+    pub summary: ImpactSummary,
     pub depth_1: Vec<SymbolRef>,
     pub depth_2: Vec<SymbolRef>,
     pub depth_3_plus: Vec<SymbolRef>,
@@ -66,6 +83,54 @@ fn build_impact_tree<'a>(
     }
 }
 
+fn summarize_dependents(direct_nodes: &[&Node], all_nodes: &[&Node]) -> ImpactSummary {
+    let direct_files: HashSet<String> = direct_nodes
+        .iter()
+        .map(|node| node.file.to_string_lossy().to_string())
+        .collect();
+    let direct_modules: HashSet<String> = direct_nodes
+        .iter()
+        .map(|node| node.module.as_deref().unwrap_or("<unknown>").to_string())
+        .collect();
+
+    let mut module_counts: HashMap<String, usize> = HashMap::new();
+    for node in direct_nodes {
+        let module = node.module.as_deref().unwrap_or("<unknown>").to_string();
+        *module_counts.entry(module).or_default() += 1;
+    }
+    let mut top_direct_modules: Vec<ImpactModuleCount> = module_counts
+        .into_iter()
+        .map(|(module, count)| ImpactModuleCount { module, count })
+        .collect();
+    top_direct_modules.sort_by(|left, right| {
+        right
+            .count
+            .cmp(&left.count)
+            .then_with(|| left.module.cmp(&right.module))
+    });
+    top_direct_modules.truncate(5);
+
+    let (public_dependent_count, internal_dependent_count) =
+        all_nodes
+            .iter()
+            .fold((0usize, 0usize), |(public, internal), node| {
+                if node.visibility == Visibility::Public {
+                    (public + 1, internal)
+                } else {
+                    (public, internal + 1)
+                }
+            });
+
+    ImpactSummary {
+        direct_dependent_count: direct_nodes.len(),
+        direct_file_count: direct_files.len(),
+        direct_module_count: direct_modules.len(),
+        top_direct_modules,
+        public_dependent_count,
+        internal_dependent_count,
+    }
+}
+
 pub fn query_impact(
     graph: &Graph,
     symbol: &str,
@@ -114,6 +179,8 @@ pub fn query_impact(
     let mut depth_1 = Vec::new();
     let mut depth_2 = Vec::new();
     let mut depth_3_plus = Vec::new();
+    let mut direct_nodes = Vec::new();
+    let mut all_nodes = Vec::new();
     let mut parents: HashMap<&str, &str> = HashMap::new();
 
     let mut queue: VecDeque<(&str, usize)> = VecDeque::new();
@@ -146,14 +213,18 @@ pub fn query_impact(
                     continue;
                 }
                 visited.insert(dep_id);
-                if let Some(dep_node) = node_index.get(dep_id) {
+                if let Some(dep_node) = node_index.get(dep_id).copied() {
                     parents.insert(dep_id, current);
                     let sym_ref = to_symbol_ref(dep_node);
                     match depth + 1 {
-                        1 => depth_1.push(sym_ref),
+                        1 => {
+                            depth_1.push(sym_ref);
+                            direct_nodes.push(dep_node);
+                        }
                         2 => depth_2.push(sym_ref),
                         _ => depth_3_plus.push(sym_ref),
                     }
+                    all_nodes.push(dep_node);
                     queue.push_back((dep_id, depth + 1));
                 }
             }
@@ -161,6 +232,7 @@ pub fn query_impact(
     }
 
     let total = depth_1.len() + depth_2.len() + depth_3_plus.len();
+    let summary = summarize_dependents(&direct_nodes, &all_nodes);
     let mut children_by_parent: HashMap<&str, Vec<&str>> = HashMap::new();
     for (child, parent) in parents {
         children_by_parent.entry(parent).or_default().push(child);
@@ -173,6 +245,7 @@ pub fn query_impact(
 
     Ok(ImpactResult {
         source: node.id.clone(),
+        summary,
         depth_1,
         depth_2,
         depth_3_plus,
@@ -258,6 +331,8 @@ mod tests {
         assert_eq!(result.depth_3_plus.len(), 1);
         assert_eq!(result.depth_3_plus[0].name, "a");
         assert_eq!(result.total_affected, 3);
+        assert_eq!(result.summary.direct_dependent_count, 1);
+        assert_eq!(result.summary.public_dependent_count, 3);
     }
 
     #[test]
@@ -326,6 +401,7 @@ mod tests {
         assert_eq!(result.depth_1[0].name, "canShowGameRoom");
         assert_eq!(result.depth_2.len(), 1);
         assert_eq!(result.depth_2[0].name, "body");
+        assert_eq!(result.summary.direct_dependent_count, 1);
     }
 
     #[test]
@@ -549,6 +625,7 @@ mod tests {
         assert_eq!(result.depth_2.len(), 1);
         assert_eq!(result.depth_2[0].name, "app");
         assert_eq!(result.total_affected, 2);
+        assert_eq!(result.summary.direct_file_count, 1);
     }
 
     #[test]
@@ -609,5 +686,105 @@ mod tests {
         assert!(result.depth_1.is_empty());
         assert!(result.depth_2.is_empty());
         assert!(result.depth_3_plus.is_empty());
+    }
+
+    #[test]
+    fn impact_summary_counts_direct_files_modules_and_visibility() {
+        let mk = |id: &str,
+                  name: &str,
+                  file: &str,
+                  module: Option<&str>,
+                  visibility: Visibility|
+         -> Node {
+            Node {
+                id: id.into(),
+                kind: NodeKind::Function,
+                name: name.into(),
+                file: file.into(),
+                span: Span {
+                    start: [0, 0],
+                    end: [1, 0],
+                },
+                visibility,
+                metadata: StdHashMap::new(),
+                role: None,
+                signature: None,
+                doc_comment: None,
+                module: module.map(str::to_string),
+                snippet: None,
+            }
+        };
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                mk("source", "source", "a.swift", Some("App"), Visibility::Public),
+                mk(
+                    "direct_a",
+                    "directA",
+                    "b.swift",
+                    Some("FeatureA"),
+                    Visibility::Public,
+                ),
+                mk(
+                    "direct_b",
+                    "directB",
+                    "c.swift",
+                    Some("FeatureA"),
+                    Visibility::Private,
+                ),
+                mk(
+                    "indirect",
+                    "indirect",
+                    "d.swift",
+                    Some("FeatureB"),
+                    Visibility::Private,
+                ),
+            ],
+            edges: vec![
+                Edge {
+                    source: "direct_a".into(),
+                    target: "source".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "direct_b".into(),
+                    target: "source".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+                Edge {
+                    source: "indirect".into(),
+                    target: "direct_a".into(),
+                    kind: EdgeKind::Calls,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                },
+            ],
+        };
+
+        let result = query_impact(&graph, "source", 3).unwrap();
+        assert_eq!(result.summary.direct_dependent_count, 2);
+        assert_eq!(result.summary.direct_file_count, 2);
+        assert_eq!(result.summary.direct_module_count, 1);
+        assert_eq!(result.summary.top_direct_modules[0].module, "FeatureA");
+        assert_eq!(result.summary.top_direct_modules[0].count, 2);
+        assert_eq!(result.summary.public_dependent_count, 1);
+        assert_eq!(result.summary.internal_dependent_count, 2);
     }
 }

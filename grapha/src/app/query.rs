@@ -186,6 +186,9 @@ pub(crate) fn handle_symbol_command(
             file,
             role,
             fuzzy,
+            exact_name,
+            declarations_only,
+            public_only,
             context,
             fields,
         } => {
@@ -197,6 +200,9 @@ pub(crate) fn handle_symbol_command(
                 file_glob: file,
                 role,
                 fuzzy,
+                exact_name,
+                declarations_only,
+                public_only,
             };
             let t = Instant::now();
             let results = search::search_filtered(&index, &query, limit, &options)?;
@@ -208,6 +214,15 @@ pub(crate) fn handle_symbol_command(
             };
             let projected = search::project_results(&results, graph.as_ref(), field_set, context);
             print_json(&projected)?;
+            if let Ok(status) = crate::index_status::load_index_status(&path, &path.join(".grapha"))
+                && status.freshness_tracking_available
+                && status.may_be_stale
+            {
+                eprintln!(
+                    "  \x1b[33m!\x1b[0m results may be stale ({} file(s) changed since last index)",
+                    status.changed_file_count_since_index
+                );
+            }
 
             eprintln!(
                 "\n  {} results in {:.1}ms",
@@ -627,6 +642,10 @@ pub(crate) fn handle_concept_command(
 
 pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Result<()> {
     match command {
+        crate::RepoCommands::Status { path } => {
+            let status = crate::index_status::load_index_status(&path, &path.join(".grapha"))?;
+            print_json(&status)
+        }
         crate::RepoCommands::Changes { scope, path } => {
             let graph = load_graph(&path)?;
             let report = changes::detect_changes(&path, &graph, &scope)?;

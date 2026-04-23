@@ -1396,6 +1396,25 @@ pub fn render_impact_with_options(result: &ImpactResult, options: RenderOptions)
                 ],
                 options,
             )),
+            TreeNode::leaf(format_summary(
+                &[
+                    (
+                        "direct_dependents",
+                        result.summary.direct_dependent_count.to_string(),
+                    ),
+                    ("direct_files", result.summary.direct_file_count.to_string()),
+                    ("direct_modules", result.summary.direct_module_count.to_string()),
+                    (
+                        "public_dependents",
+                        result.summary.public_dependent_count.to_string(),
+                    ),
+                    (
+                        "internal_dependents",
+                        result.summary.internal_dependent_count.to_string(),
+                    ),
+                ],
+                options,
+            )),
             TreeNode::branch(
                 format_section_count("dependents", result.total_affected, options),
                 dependents,
@@ -1418,12 +1437,12 @@ mod tests {
         ContextResult, SymbolInfo, SymbolRef, SymbolTreeRef, dataflow::DataflowEdge,
         dataflow::DataflowEdgeKind, dataflow::DataflowNode, dataflow::DataflowNodeKind,
         dataflow::DataflowResult, dataflow::DataflowSummary, entries::EntriesResult,
-        impact::ImpactResult, impact::ImpactTreeNode, localize::LocalizationMatch,
-        localize::LocalizeResult, localize::UnmatchedLocalizationUsage, origin::OriginPath,
-        origin::OriginResult, origin::OriginSnippet, reverse::AffectedEntry,
-        reverse::ReverseResult, trace::Flow, trace::TerminalInfo, trace::TraceResult,
-        trace::TraceSummary, usages::RecordUsages, usages::UsageQuery, usages::UsageSite,
-        usages::UsagesResult,
+        impact::ImpactModuleCount, impact::ImpactResult, impact::ImpactSummary,
+        impact::ImpactTreeNode, localize::LocalizationMatch, localize::LocalizeResult,
+        localize::UnmatchedLocalizationUsage, origin::OriginPath, origin::OriginResult,
+        origin::OriginSnippet, reverse::AffectedEntry, reverse::ReverseResult, trace::Flow,
+        trace::TerminalInfo, trace::TraceResult, trace::TraceSummary, usages::RecordUsages,
+        usages::UsageQuery, usages::UsageSite, usages::UsagesResult,
     };
 
     use super::*;
@@ -1790,6 +1809,17 @@ mod tests {
 
         let result = ImpactResult {
             source: "core.rs::source".to_string(),
+            summary: ImpactSummary {
+                direct_dependent_count: 1,
+                direct_file_count: 1,
+                direct_module_count: 1,
+                top_direct_modules: vec![ImpactModuleCount {
+                    module: "Core".into(),
+                    count: 1,
+                }],
+                public_dependent_count: 2,
+                internal_dependent_count: 0,
+            },
             depth_1: vec![symbol_ref("alpha", NodeKind::Function, "a.rs")],
             depth_2: vec![symbol_ref("beta", NodeKind::Function, "b.rs")],
             depth_3_plus: Vec::new(),
@@ -1801,6 +1831,11 @@ mod tests {
         let rendered = render_impact_with_options(&result, RenderOptions::plain());
         assert!(rendered.contains("source [function] (core.rs)"));
         assert!(rendered.contains("summary: depth_1=1, depth_2=1, depth_3_plus=0, total=2"));
+        assert!(
+            rendered.contains(
+                "summary: direct_dependents=1, direct_files=1, direct_modules=1, public_dependents=2, internal_dependents=0"
+            )
+        );
         assert!(rendered.contains("dependents (2)"));
         assert!(rendered.contains("alpha [function] (a.rs)"));
         assert!(rendered.contains("beta [function] (b.rs)"));

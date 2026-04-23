@@ -74,6 +74,19 @@ pub async fn get_reverse(
     query_response(query::reverse::query_reverse(&state.graph, &decoded, None))
 }
 
+pub async fn get_index_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let status = match crate::index_status::load_index_status(
+        &state.project_path,
+        &state.project_path.join(".grapha"),
+    ) {
+        Ok(status) => serde_json::to_value(status).unwrap_or_default(),
+        Err(error) => serde_json::json!({
+            "error": error.to_string()
+        }),
+    };
+    Json(status)
+}
+
 #[derive(Deserialize)]
 pub struct SearchParams {
     #[serde(default)]
@@ -86,6 +99,12 @@ pub struct SearchParams {
     pub role: Option<String>,
     #[serde(default)]
     pub fuzzy: bool,
+    #[serde(default)]
+    pub exact_name: bool,
+    #[serde(default)]
+    pub declarations_only: bool,
+    #[serde(default)]
+    pub public_only: bool,
     #[serde(default)]
     pub context: bool,
     pub fields: Option<String>,
@@ -105,6 +124,9 @@ pub async fn get_search(
         file_glob: params.file,
         role: params.role,
         fuzzy: params.fuzzy,
+        exact_name: params.exact_name,
+        declarations_only: params.declarations_only,
+        public_only: params.public_only,
     };
     let results =
         crate::search::search_filtered(&state.search_index, &params.q, params.limit, &options)
@@ -117,7 +139,16 @@ pub async fn get_search(
     let graph =
         crate::search::needs_graph_for_projection(fields, params.context).then_some(&state.graph);
     let projected = crate::search::project_results(&results, graph, fields, params.context);
-    Json(serde_json::json!({ "results": projected, "total": results.len() }))
+    let index_status = crate::index_status::load_index_status(
+        &state.project_path,
+        &state.project_path.join(".grapha"),
+    )
+    .ok();
+    Json(serde_json::json!({
+        "results": projected,
+        "total": results.len(),
+        "index_status": index_status
+    }))
 }
 
 #[cfg(test)]
@@ -127,6 +158,7 @@ mod tests {
     use crate::serve::AppState;
     use grapha_core::graph::{Edge, EdgeKind, Graph, Node, NodeKind, NodeRole, Span, Visibility};
     use std::collections::HashMap;
+    use std::path::PathBuf;
     use tempfile::tempdir;
 
     fn make_state() -> (Arc<AppState>, tempfile::TempDir) {
@@ -184,6 +216,7 @@ mod tests {
         let index = search::build_index(&graph, dir.path()).unwrap();
         (
             Arc::new(AppState {
+                project_path: PathBuf::from("."),
                 graph,
                 search_index: index,
             }),
@@ -204,6 +237,9 @@ mod tests {
                 file: Some("main.rs".into()),
                 role: Some("entry_point".into()),
                 fuzzy: false,
+                exact_name: false,
+                declarations_only: false,
+                public_only: false,
                 context: true,
                 fields: Some("id,signature,role,snippet".into()),
             }),

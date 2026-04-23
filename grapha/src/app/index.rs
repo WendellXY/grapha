@@ -4,7 +4,7 @@ use std::time::Instant;
 use anyhow::{Context, anyhow};
 
 use crate::store::Store;
-use crate::{assets, cache, delta, localization, progress, search, store};
+use crate::{assets, cache, delta, index_status, localization, progress, search, store};
 
 fn load_graph_with_cache(
     path: &Path,
@@ -199,6 +199,7 @@ pub(crate) fn handle_index(
         extraction_cache
             .save_entries(&pipeline.extraction_cache_entries)
             .with_context(|| "failed to save extraction cache".to_string())?;
+        index_status::save_index_status(&path, &store_path, graph.nodes.len(), graph.edges.len())?;
 
         eprintln!("  \x1b[32m✓\x1b[0m no graph changes detected, skipping store and search sync");
         progress::done_elapsed(
@@ -300,6 +301,7 @@ pub(crate) fn handle_index(
     extraction_cache
         .save_entries(&pipeline.extraction_cache_entries)
         .with_context(|| "failed to save extraction cache".to_string())?;
+    index_status::save_index_status(&path, &store_path, graph.nodes.len(), graph.edges.len())?;
 
     progress::done_elapsed(
         &format!(

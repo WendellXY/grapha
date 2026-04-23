@@ -55,9 +55,32 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                         "type": "boolean",
                         "description": "Enable fuzzy matching (default: false)",
                         "default": false
+                    },
+                    "exact_name": {
+                        "type": "boolean",
+                        "description": "Require an exact declaration-name match (default: false)",
+                        "default": false
+                    },
+                    "declarations_only": {
+                        "type": "boolean",
+                        "description": "Exclude synthetic nodes and accessor functions (default: false)",
+                        "default": false
+                    },
+                    "public_only": {
+                        "type": "boolean",
+                        "description": "Keep only public symbols (default: false)",
+                        "default": false
                     }
                 },
                 "required": ["query"]
+            }),
+        },
+        ToolDefinition {
+            name: "get_index_status".to_string(),
+            description: "Show the last index timestamp, repo snapshot metadata, and whether results may be stale.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {}
             }),
         },
         ToolDefinition {
@@ -351,6 +374,7 @@ fn serialize_result<T: serde::Serialize>(result: &T) -> Value {
 pub fn handle_tool_call(state: &mut McpState, tool_name: &str, arguments: &Value) -> Value {
     match tool_name {
         "search_symbols" => handle_search_symbols(state, arguments),
+        "get_index_status" => handle_get_index_status(state),
         "get_symbol_context" => handle_get_symbol_context(state, arguments),
         "get_impact" => handle_get_impact(state, arguments),
         "get_file_map" => handle_get_file_map(state, arguments),
@@ -410,11 +434,31 @@ fn handle_search_symbols(state: &McpState, arguments: &Value) -> Value {
             .get("fuzzy")
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
+        exact_name: arguments
+            .get("exact_name")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        declarations_only: arguments
+            .get("declarations_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        public_only: arguments
+            .get("public_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
     };
 
     match search::search_filtered(&state.search_index, query_str, limit, &options) {
         Ok(results) => serialize_result(&results),
         Err(e) => tool_error(format!("search failed: {e}")),
+    }
+}
+
+fn handle_get_index_status(state: &McpState) -> Value {
+    let project_root = state.store_path.parent().unwrap_or(&state.store_path);
+    match crate::index_status::load_index_status(project_root, &state.store_path) {
+        Ok(status) => serialize_result(&status),
+        Err(error) => tool_error(format!("failed to load index status: {error}")),
     }
 }
 
@@ -806,10 +850,11 @@ mod tests {
     #[test]
     fn tool_definitions_count() {
         let tools = tool_definitions();
-        assert_eq!(tools.len(), 16);
+        assert_eq!(tools.len(), 17);
 
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"search_symbols"));
+        assert!(names.contains(&"get_index_status"));
         assert!(names.contains(&"get_symbol_context"));
         assert!(names.contains(&"get_impact"));
         assert!(names.contains(&"get_file_map"));
