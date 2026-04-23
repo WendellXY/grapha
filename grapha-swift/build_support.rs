@@ -8,7 +8,14 @@ pub const BRIDGE_INPUTS: &[&str] = &[
 ];
 
 pub fn bridge_build_paths(out_dir: &Path) -> (PathBuf, PathBuf) {
-    let scratch_dir = out_dir.join("swift-bridge-build");
+    let profile_dir = staged_bridge_dir(out_dir);
+    let profile = profile_dir
+        .file_name()
+        .expect("profile output directory should have a final path component");
+    let scratch_root = profile_dir
+        .parent()
+        .expect("profile output directory should live under target");
+    let scratch_dir = scratch_root.join("swift-bridge-build").join(profile);
     let lib_dir = scratch_dir.join("release");
     (scratch_dir, lib_dir)
 }

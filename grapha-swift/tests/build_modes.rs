@@ -41,13 +41,18 @@ fn watches_all_swift_bridge_inputs() {
 }
 
 #[test]
-fn bridge_build_uses_out_dir_scratch_space() {
-    let (scratch_dir, lib_dir) = bridge_build_paths(Path::new("/tmp/grapha-out"));
+fn bridge_build_uses_stable_profile_scratch_space() {
+    let (scratch_dir, lib_dir) = bridge_build_paths(Path::new(
+        "/tmp/grapha/target/debug/build/grapha-swift-deadbeef/out",
+    ));
 
-    assert_eq!(scratch_dir, Path::new("/tmp/grapha-out/swift-bridge-build"));
+    assert_eq!(
+        scratch_dir,
+        Path::new("/tmp/grapha/target/swift-bridge-build/debug")
+    );
     assert_eq!(
         lib_dir,
-        Path::new("/tmp/grapha-out/swift-bridge-build/release")
+        Path::new("/tmp/grapha/target/swift-bridge-build/debug/release")
     );
 }
 
