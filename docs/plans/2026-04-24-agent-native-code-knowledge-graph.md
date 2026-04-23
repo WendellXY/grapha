@@ -95,10 +95,19 @@ Evidence:
 - Public docs: `README.md`
 - Tests: `trace_brief_format_works`, `impact_brief_format_works`, and `repo_smells_brief_format_works`
 
-### Remaining
+6. **Optional inferred enrichment** — done
+   Added opt-in heuristic enrichment behind `[inferred].enabled = true`. `grapha repo infer` builds deterministic module-summary, ownership, and doc-code-link records, stores them in `.grapha/inferred.json`, and marks every record with source and confidence metadata.
 
-6. **Optional inferred enrichment**
-   Add opt-in LLM or heuristic enrichment for module summaries, ownership, and doc-code links. Store these as inferred metadata with confidence.
+Evidence:
+
+- Config surface: `grapha/src/config.rs`
+- Store/model/build logic: `grapha/src/inferred.rs`
+- CLI wiring: `grapha/src/main.rs`, `grapha/src/app/query.rs`
+- Brief renderer: `grapha/src/render.rs`
+- Public docs: `README.md`
+- Tests: inferred snapshot unit tests plus `repo_infer_brief_saves_opt_in_metadata`
+
+### Remaining
 
 7. **Self-maintenance checks**
    Add checks for stale inferred links, orphan entities, missing relations, and inconsistent graph provenance.

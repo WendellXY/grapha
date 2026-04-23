@@ -177,6 +177,7 @@ grapha repo modules                        # per-module metrics
 grapha repo map [--module M]               # file/symbol overview
 grapha repo changes [unstaged|staged|all|REF]
 grapha repo arch [--format json|brief]     # configured architecture rule violations
+grapha repo infer [--format json|brief]    # opt-in inferred module/ownership/doc metadata
 grapha repo history add --kind test --title "cargo test" [--file PATH] [--module M] [--symbol QUERY]
 grapha repo history list [--kind test] [--file PATH] [--module M] [--symbol QUERY] [--limit N]
 ```
@@ -222,6 +223,9 @@ index_store = true                         # false → tree-sitter only
 
 [output]
 default_fields = ["file", "module", "repo"]
+
+[inferred]
+enabled = false                            # true enables `grapha repo infer`
 
 [[external]]
 name = "FrameUI"

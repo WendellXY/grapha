@@ -6,6 +6,7 @@ use crate::concepts::{
     ConceptBindingView, ConceptEvidence, ConceptSearchResult, ConceptShowResult,
 };
 use crate::fields::FieldSet;
+use crate::inferred::InferredBuildResult;
 use crate::query::arch::{ArchitectureResult, ArchitectureViolation};
 use crate::query::{
     ContextResult, SymbolInfo, SymbolRef, SymbolTreeRef, dataflow::DataflowEdge,
@@ -1706,6 +1707,45 @@ pub fn render_smells_brief_with_options(result: &SmellsResult) -> String {
             smell.threshold
         )
     }));
+    lines.join("\n")
+}
+
+pub fn render_inferred_brief_with_options(result: &InferredBuildResult) -> String {
+    let mut kind_parts = result
+        .by_kind
+        .iter()
+        .map(|(kind, count)| format!("{kind}={count}"))
+        .collect::<Vec<_>>();
+    kind_parts.sort();
+
+    let mut lines = vec![format!(
+        "inferred: enabled={} saved={} total={}{}",
+        result.enabled,
+        result.saved,
+        result.total_records,
+        if kind_parts.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", kind_parts.join(", "))
+        }
+    )];
+    lines.push(format!("store: {}", result.store_path));
+    if !result.enabled {
+        lines.push("status: disabled by grapha.toml [inferred].enabled".to_string());
+        return lines.join("\n");
+    }
+    lines.extend(result.records.iter().take(20).map(|record| {
+        format!(
+            "- [{} confidence={:.2}] {} -> {}",
+            record.kind.as_str(),
+            record.confidence,
+            record.target.id,
+            record.value
+        )
+    }));
+    if result.records.len() > 20 {
+        lines.push(format!("... {} more", result.records.len() - 20));
+    }
     lines.join("\n")
 }
 

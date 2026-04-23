@@ -515,6 +515,56 @@ fn repo_smells_symbol_scope_limits_results_to_symbol_neighborhood() {
 }
 
 #[test]
+fn repo_infer_brief_saves_opt_in_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+    let feature_dir = dir.path().join("Features/Gifts");
+    std::fs::create_dir_all(&feature_dir).unwrap();
+    std::fs::write(
+        dir.path().join("grapha.toml"),
+        "[inferred]\nenabled = true\n",
+    )
+    .unwrap();
+    std::fs::write(
+        feature_dir.join("run.rs"),
+        "/// Starts the gift flow.\npub fn run() {}\n",
+    )
+    .unwrap();
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    grapha()
+        .args([
+            "repo",
+            "infer",
+            "--format",
+            "brief",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "inferred: enabled=true saved=true total=",
+        ))
+        .stdout(predicate::str::contains("doc_code_link=1"))
+        .stdout(predicate::str::contains("ownership=1"))
+        .stdout(predicate::str::contains("Starts the gift flow."));
+
+    let inferred = std::fs::read_to_string(store_dir.join("inferred.json")).unwrap();
+    assert!(inferred.contains("\"kind\": \"doc_code_link\""));
+    assert!(inferred.contains("\"confidence\": 0.7"));
+}
+
+#[test]
 fn repo_smells_populates_graph_and_query_caches() {
     let dir = tempfile::tempdir().unwrap();
     let store_dir = dir.path().join(".grapha");

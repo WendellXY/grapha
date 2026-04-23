@@ -60,6 +60,12 @@ pub struct RepoConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+pub struct InferredConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct GraphaConfig {
     #[serde(default)]
     pub repo: RepoConfig,
@@ -69,6 +75,8 @@ pub struct GraphaConfig {
     pub output: OutputConfig,
     #[serde(default)]
     pub architecture: ArchitectureConfig,
+    #[serde(default)]
+    pub inferred: InferredConfig,
     #[serde(default)]
     pub classifiers: Vec<ClassifierRule>,
     #[serde(default)]
@@ -298,6 +306,24 @@ reason = "Infrastructure must not depend on UI."
         let config: GraphaConfig = toml::from_str("").unwrap();
         assert!(config.architecture.layers.is_empty());
         assert!(config.architecture.deny.is_empty());
+    }
+
+    #[test]
+    fn inferred_defaults_disabled() {
+        let config: GraphaConfig = toml::from_str("").unwrap();
+        assert!(!config.inferred.enabled);
+    }
+
+    #[test]
+    fn parse_inferred_config() {
+        let config: GraphaConfig = toml::from_str(
+            r#"
+[inferred]
+enabled = true
+"#,
+        )
+        .unwrap();
+        assert!(config.inferred.enabled);
     }
 
     #[test]

@@ -8,8 +8,8 @@ use serde::Serialize;
 use crate::{
     AssetCommands, BriefOutputFormat, ColorMode, ConceptCommands, ContextOutputFormat,
     FlowCommands, L10nCommands, OriginTerminalFilter, QueryOutputFormat, RepoArchOutputFormat,
-    RepoSmellsOutputFormat, SymbolCommands, assets, cache, changes, concepts, config, fields,
-    history, localization, query, render, search,
+    RepoInferenceOutputFormat, RepoSmellsOutputFormat, SymbolCommands, assets, cache, changes,
+    concepts, config, fields, history, inferred, localization, query, render, search,
 };
 
 use super::index::{
@@ -804,6 +804,26 @@ pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Resul
             let graph = load_graph(&path)?;
             let result = query::module_summary::query_module_summary(&graph);
             print_json(&result)
+        }
+        crate::RepoCommands::Infer { format, path } => {
+            let cfg = config::load_config(&path);
+            let store_path = inferred::inferred_store_path(&path);
+            let (index, saved) = if cfg.inferred.enabled {
+                let graph = load_graph(&path)?;
+                let index = inferred::build_inferred_index(&graph);
+                inferred::save_inferred_index(&path, &index)?;
+                (index, true)
+            } else {
+                (inferred::load_inferred_index(&path)?, false)
+            };
+            let result = inferred::build_result(cfg.inferred.enabled, saved, &store_path, &index);
+            match format {
+                RepoInferenceOutputFormat::Json => print_json(&result),
+                RepoInferenceOutputFormat::Brief => {
+                    println!("{}", render::render_inferred_brief_with_options(&result));
+                    Ok(())
+                }
+            }
         }
         crate::RepoCommands::History { command } => handle_history_command(command),
     }

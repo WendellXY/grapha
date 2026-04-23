@@ -12,6 +12,7 @@ mod fields;
 mod filter;
 mod history;
 mod index_status;
+mod inferred;
 mod localization;
 mod mcp;
 mod progress;
@@ -90,6 +91,12 @@ impl RepoSmellsOutputFormat {
             Self::Brief => "brief",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum RepoInferenceOutputFormat {
+    Json,
+    Brief,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -591,6 +598,15 @@ enum RepoCommands {
     },
     /// Show per-module metrics (symbol counts, coupling, entry points)
     Modules {
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Build opt-in inferred metadata for modules, ownership, and doc-code links
+    Infer {
+        /// Output format
+        #[arg(long, value_enum, default_value_t = RepoInferenceOutputFormat::Json)]
+        format: RepoInferenceOutputFormat,
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
