@@ -84,6 +84,9 @@ grapha repo smells --symbol RoomPageCenterContentView --no-cache
 # 模块指标——符号数、耦合度
 grapha repo modules
 
+# 架构守护——按配置检查层级依赖规则
+grapha repo arch
+
 # 业务概念查找
 grapha concept search "送礼横幅" --format tree
 grapha concept bind "送礼横幅" --symbol GiftBannerPage --symbol GiftBannerViewModel
@@ -166,6 +169,7 @@ grapha repo smells [--module M | --file PATH | --symbol QUERY] [--no-cache]
 grapha repo modules                        # 模块级指标
 grapha repo map [--module M]               # 文件/符号概览
 grapha repo changes [unstaged|staged|all|REF]
+grapha repo arch                           # 配置化架构规则违规
 ```
 
 ### 索引与服务
@@ -210,6 +214,19 @@ default_fields = ["file", "module"]
 [[external]]
 name = "FrameUI"
 path = "/path/to/local/frameui"            # 纳入跨仓库分析
+
+[[architecture.layers]]
+name = "ui"
+patterns = ["AppUI*", "Features/*/View*"]
+
+[[architecture.layers]]
+name = "infra"
+patterns = ["Networking*", "Persistence*"]
+
+[[architecture.deny]]
+from = "infra"
+to = "ui"
+reason = "Infrastructure must not depend on UI."
 
 [[classifiers]]
 pattern = "FirebaseFirestore.*setData"

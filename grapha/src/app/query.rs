@@ -656,6 +656,12 @@ pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Resul
             let map = query::map::file_map(&graph, module.as_deref());
             print_json(&map)
         }
+        crate::RepoCommands::Arch { path } => {
+            let graph = load_graph(&path)?;
+            let cfg = config::load_config(&path);
+            let result = query::arch::check_architecture(&graph, &cfg.architecture);
+            print_json(&result)
+        }
         crate::RepoCommands::Smells {
             module,
             file,

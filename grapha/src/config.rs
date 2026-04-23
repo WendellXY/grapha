@@ -24,6 +24,29 @@ pub struct OutputConfig {
     pub default_fields: Vec<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ArchitectureConfig {
+    #[serde(default)]
+    pub layers: Vec<ArchitectureLayer>,
+    #[serde(default)]
+    pub deny: Vec<ArchitectureDenyRule>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ArchitectureLayer {
+    pub name: String,
+    #[serde(default)]
+    pub patterns: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ArchitectureDenyRule {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExternalRepo {
     pub name: String,
@@ -36,6 +59,8 @@ pub struct GraphaConfig {
     pub swift: SwiftConfig,
     #[serde(default)]
     pub output: OutputConfig,
+    #[serde(default)]
+    pub architecture: ArchitectureConfig,
     #[serde(default)]
     pub classifiers: Vec<ClassifierRule>,
     #[serde(default)]
@@ -214,6 +239,45 @@ path = "/path/to/framenetwork"
     fn external_defaults_empty() {
         let config: GraphaConfig = toml::from_str("").unwrap();
         assert!(config.external.is_empty());
+    }
+
+    #[test]
+    fn parse_architecture_rules() {
+        let toml_str = r#"
+[[architecture.layers]]
+name = "ui"
+patterns = ["AppUI*", "Features/*/View*"]
+
+[[architecture.layers]]
+name = "infra"
+patterns = ["Networking*", "Persistence*"]
+
+[[architecture.deny]]
+from = "infra"
+to = "ui"
+reason = "Infrastructure must not depend on UI."
+"#;
+        let config: GraphaConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.architecture.layers.len(), 2);
+        assert_eq!(config.architecture.layers[0].name, "ui");
+        assert_eq!(
+            config.architecture.layers[0].patterns,
+            ["AppUI*", "Features/*/View*"]
+        );
+        assert_eq!(config.architecture.deny.len(), 1);
+        assert_eq!(config.architecture.deny[0].from, "infra");
+        assert_eq!(config.architecture.deny[0].to, "ui");
+        assert_eq!(
+            config.architecture.deny[0].reason.as_deref(),
+            Some("Infrastructure must not depend on UI.")
+        );
+    }
+
+    #[test]
+    fn architecture_defaults_empty() {
+        let config: GraphaConfig = toml::from_str("").unwrap();
+        assert!(config.architecture.layers.is_empty());
+        assert!(config.architecture.deny.is_empty());
     }
 
     #[test]

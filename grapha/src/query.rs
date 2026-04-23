@@ -1,3 +1,4 @@
+pub mod arch;
 pub mod complexity;
 pub mod context;
 pub mod dataflow;

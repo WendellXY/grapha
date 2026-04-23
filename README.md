@@ -89,6 +89,9 @@ grapha repo smells --symbol RoomPageCenterContentView --no-cache
 # Module metrics — symbol counts, coupling ratios
 grapha repo modules
 
+# Architecture guard — configured layer dependency rules
+grapha repo arch
+
 # Business concept lookup
 grapha concept search "送礼横幅" --format tree
 grapha concept bind "送礼横幅" --symbol GiftBannerPage --symbol GiftBannerViewModel
@@ -171,6 +174,7 @@ grapha repo smells [--module M | --file PATH | --symbol QUERY] [--no-cache]
 grapha repo modules                        # per-module metrics
 grapha repo map [--module M]               # file/symbol overview
 grapha repo changes [unstaged|staged|all|REF]
+grapha repo arch                           # configured architecture rule violations
 ```
 
 ### Indexing & Serving
@@ -215,6 +219,19 @@ default_fields = ["file", "module"]
 [[external]]
 name = "FrameUI"
 path = "/path/to/local/frameui"            # include in cross-repo analysis
+
+[[architecture.layers]]
+name = "ui"
+patterns = ["AppUI*", "Features/*/View*"]
+
+[[architecture.layers]]
+name = "infra"
+patterns = ["Networking*", "Persistence*"]
+
+[[architecture.deny]]
+from = "infra"
+to = "ui"
+reason = "Infrastructure must not depend on UI."
 
 [[classifiers]]
 pattern = "FirebaseFirestore.*setData"

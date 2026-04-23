@@ -558,6 +558,69 @@ fn repo_smells_no_cache_bypasses_graph_and_query_caches() {
 }
 
 #[test]
+fn repo_arch_reports_configured_layer_violations() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+    std::fs::write(
+        dir.path().join("main.rs"),
+        "mod infra;\nmod ui;\nfn main() { infra::load(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("infra.rs"),
+        "pub fn load() { crate::ui::render(); }\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("ui.rs"), "pub fn render() {}\n").unwrap();
+    std::fs::write(
+        dir.path().join("grapha.toml"),
+        r#"
+[[architecture.layers]]
+name = "ui"
+patterns = ["ui.rs"]
+
+[[architecture.layers]]
+name = "infra"
+patterns = ["infra.rs"]
+
+[[architecture.deny]]
+from = "infra"
+to = "ui"
+reason = "Infrastructure must not depend on UI."
+"#,
+    )
+    .unwrap();
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let output = grapha()
+        .args(["repo", "arch", "-p", dir.path().to_str().unwrap()])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: Value = serde_json::from_slice(&output).unwrap();
+
+    assert_eq!(parsed["configured"], true);
+    assert_eq!(parsed["total_violations"], 1);
+    assert_eq!(parsed["violations"][0]["source_layer"], "infra");
+    assert_eq!(parsed["violations"][0]["target_layer"], "ui");
+    assert_eq!(
+        parsed["violations"][0]["reason"],
+        "Infrastructure must not depend on UI."
+    );
+}
+
+#[test]
 fn symbol_search_includes_id_by_default() {
     let dir = tempfile::tempdir().unwrap();
     let store_dir = dir.path().join(".grapha");

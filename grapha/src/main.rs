@@ -499,6 +499,12 @@ enum RepoCommands {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
     },
+    /// Check configured architecture dependency rules
+    Arch {
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
     /// Detect code smells across the graph (god types, deep nesting, wide invalidation, etc.)
     Smells {
         /// Filter to a specific module
