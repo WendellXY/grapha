@@ -63,13 +63,22 @@ Evidence:
 - Fixture: `grapha/tests/fixtures/quality/`
 - Run command: `cargo test -p grapha --test quality_benchmark -- --ignored --nocapture`
 
+3. **Repo-origin metadata** — done
+   Nodes and edges now carry optional `repo` identity. The pipeline stamps primary and external repositories, namespaces external symbol IDs to avoid collisions, persists repo metadata in SQLite schema v7, and exposes repo filtering/projection in symbol search plus MCP/API search.
+
+Evidence:
+
+- Graph model and normalization: `grapha-core/src/graph.rs`, `grapha-core/src/normalize.rs`
+- Pipeline stamping: `grapha/src/app/pipeline.rs`
+- Persistence: `grapha/src/store/sqlite/schema.rs`, `grapha/src/store/sqlite/read.rs`, `grapha/src/store/sqlite/write.rs`, `grapha/src/store/sqlite/compat.rs`
+- Search/API/MCP surface: `grapha/src/search.rs`, `grapha/src/main.rs`, `grapha/src/app/query.rs`, `grapha/src/serve/api.rs`, `grapha/src/mcp/handler.rs`
+- Public docs: `README.md`
+- Tests: repo config parsing, external-ID namespacing, search `--repo` filtering, SQLite repo round-trip
+
 ### Remaining
 
 2. **Persistent history**
    Add an event/history store for commit, build, test, deploy, and incident-like records, linked back to files, modules, and symbols.
-
-3. **Repo-origin metadata**
-   Stamp nodes and edges with repo identity for multi-repo graphs so external repos can be queried explicitly without relying on absolute paths.
 
 4. **Brief agent output expansion**
    Extend compact `--format brief` output beyond the first `context`/`arch` slice to additional high-use commands such as `impact`, `trace`, and `smells`.

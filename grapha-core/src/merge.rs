@@ -526,6 +526,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         }
     }
 
@@ -560,6 +561,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
             imports: vec![],
         };
@@ -582,6 +584,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
             imports: vec![],
         };
@@ -610,6 +613,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 }],
                 imports: vec![],
             },
@@ -670,6 +674,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 }],
                 imports: vec![],
             },
@@ -686,6 +691,7 @@ mod tests {
                         condition: None,
                         async_boundary: None,
                         provenance: Vec::new(),
+                        repo: None,
                     },
                     Edge {
                         source: "room::KRoomPage::chatRoomFragViewPanel".to_string(),
@@ -697,6 +703,7 @@ mod tests {
                         condition: None,
                         async_boundary: None,
                         provenance: Vec::new(),
+                        repo: None,
                     },
                 ],
                 imports: vec![],
@@ -731,6 +738,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
             imports: vec![],
         }]);
@@ -761,6 +769,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
             imports: vec![],
         }]);
@@ -793,6 +802,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "sqlite.rs::impl_SqliteStore".to_string(),
@@ -804,6 +814,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "sqlite.rs::impl_SqliteStore::open".to_string(),
@@ -815,6 +826,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
             imports: vec![],

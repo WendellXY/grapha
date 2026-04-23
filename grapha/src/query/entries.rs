@@ -91,6 +91,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         }
     }
 
@@ -111,6 +112,7 @@ mod tests {
             doc_comment: None,
             module: module.map(str::to_string),
             snippet: None,
+            repo: None,
         }
     }
 

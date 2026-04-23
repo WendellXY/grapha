@@ -1534,6 +1534,7 @@ mod tests {
             doc_comment: None,
             module: Some("Share".to_string()),
             snippet: None,
+            repo: None,
         };
         usage
             .metadata
@@ -1562,6 +1563,7 @@ mod tests {
             doc_comment: None,
             module: Some("AppUI".to_string()),
             snippet: None,
+            repo: None,
         };
         l10n_wrapper
             .metadata
@@ -1588,6 +1590,7 @@ mod tests {
             doc_comment: None,
             module: Some("AppUI".to_string()),
             snippet: None,
+            repo: None,
         };
         resource_wrapper
             .metadata
@@ -1649,6 +1652,7 @@ mod tests {
             doc_comment: None,
             module: Some("Room".to_string()),
             snippet: None,
+            repo: None,
         };
         usage
             .metadata
@@ -1676,6 +1680,7 @@ mod tests {
             doc_comment: None,
             module: Some("AppUI".to_string()),
             snippet: None,
+            repo: None,
         };
         l10n_wrapper
             .metadata
@@ -1700,6 +1705,7 @@ mod tests {
             doc_comment: None,
             module: Some("AppUI".to_string()),
             snippet: None,
+            repo: None,
         };
         resource_wrapper
             .metadata
@@ -1762,6 +1768,7 @@ mod tests {
             doc_comment: None,
             module: Some("Share".to_string()),
             snippet: None,
+            repo: None,
         };
         usage
             .metadata
@@ -1791,6 +1798,7 @@ mod tests {
             doc_comment: None,
             module: Some("AppUI".to_string()),
             snippet: None,
+            repo: None,
         };
         search_empty_wrapper
             .metadata
@@ -1817,6 +1825,7 @@ mod tests {
             doc_comment: None,
             module: Some("AppUI".to_string()),
             snippet: None,
+            repo: None,
         };
         list_empty_wrapper
             .metadata
@@ -1897,6 +1906,7 @@ mod tests {
             doc_comment: None,
             module: Some("Tournament".to_string()),
             snippet: None,
+            repo: None,
         };
         usage
             .metadata
@@ -1959,6 +1969,7 @@ mod tests {
             doc_comment: None,
             module: Some("Store".to_string()),
             snippet: None,
+            repo: None,
         };
         usage
             .metadata
@@ -2023,6 +2034,7 @@ mod tests {
             doc_comment: None,
             module: Some("Home".to_string()),
             snippet: None,
+            repo: None,
         };
         usage
             .metadata

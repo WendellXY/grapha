@@ -95,6 +95,7 @@ pub struct SearchParams {
     pub limit: usize,
     pub kind: Option<String>,
     pub module: Option<String>,
+    pub repo: Option<String>,
     pub file: Option<String>,
     pub role: Option<String>,
     #[serde(default)]
@@ -121,6 +122,7 @@ pub async fn get_search(
     let options = crate::search::SearchOptions {
         kind: params.kind,
         module: params.module,
+        repo: params.repo,
         file_glob: params.file,
         role: params.role,
         fuzzy: params.fuzzy,
@@ -181,6 +183,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("App".into()),
                     snippet: Some("fn main() { helper(); }".into()),
+                    repo: None,
                 },
                 Node {
                     id: "app::helper".into(),
@@ -198,6 +201,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("Core".into()),
                     snippet: Some("fn helper() {}".into()),
+                    repo: None,
                 },
             ],
             edges: vec![Edge {
@@ -210,6 +214,7 @@ mod tests {
                 condition: None,
                 async_boundary: Some(false),
                 provenance: Vec::new(),
+                repo: None,
             }],
         };
         let dir = tempdir().unwrap();
@@ -234,6 +239,7 @@ mod tests {
                 limit: 10,
                 kind: Some("function".into()),
                 module: Some("App".into()),
+                repo: None,
                 file: Some("main.rs".into()),
                 role: Some("entry_point".into()),
                 fuzzy: false,

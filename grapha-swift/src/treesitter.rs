@@ -1033,6 +1033,7 @@ struct ContentView: View {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         });
         result.nodes.push(Node {
             id: "s:ContentView".into(),
@@ -1050,6 +1051,7 @@ struct ContentView: View {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         });
         result.nodes.push(Node {
             id: "s:ContentView.body".into(),
@@ -1067,6 +1069,7 @@ struct ContentView: View {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         });
 
         enrich_swiftui_structure(source, Path::new("test.swift"), &mut result).unwrap();
@@ -1142,6 +1145,7 @@ extension RoomPage {
             doc_comment: None,
             module: Some("Room".into()),
             snippet: None,
+            repo: None,
         });
         result.nodes.push(Node {
             id: "s:4Room0A4PageV17centerContentViewQrvp".into(),
@@ -1159,6 +1163,7 @@ extension RoomPage {
             doc_comment: None,
             module: Some("Room".into()),
             snippet: None,
+            repo: None,
         });
         result.edges.push(Edge {
             source: "s:4Room0A4PageV17centerContentViewQrvp".into(),
@@ -1170,6 +1175,7 @@ extension RoomPage {
             condition: None,
             async_boundary: None,
             provenance: Vec::new(),
+            repo: None,
         });
 
         enrich_swiftui_structure(source, Path::new("RoomPage.swift"), &mut result).unwrap();
@@ -1279,6 +1285,7 @@ class GameManager {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         });
         result.nodes.push(Node {
             id: "s:GameManager.bootstrapGame".into(),
@@ -1296,6 +1303,7 @@ class GameManager {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         });
         result.nodes.push(Node {
             id: "s:GameManager.score".into(),
@@ -1313,6 +1321,7 @@ class GameManager {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         });
 
         enrich_doc_comments(source, &mut result).unwrap();

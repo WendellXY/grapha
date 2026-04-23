@@ -229,6 +229,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "api::fetch_data".to_string(),
@@ -246,6 +247,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "util::helper".to_string(),
@@ -263,6 +265,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![
@@ -276,6 +279,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "src::caller".to_string(),
@@ -287,6 +291,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "src::caller".to_string(),
@@ -298,6 +303,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         }

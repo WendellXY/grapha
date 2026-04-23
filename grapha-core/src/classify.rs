@@ -242,6 +242,7 @@ mod tests {
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             }],
             edges: vec![Edge {
                 source: "src::caller".to_string(),
@@ -253,6 +254,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
         };
         let classifier = CompositeClassifier::new(vec![Box::new(AlwaysMatch {

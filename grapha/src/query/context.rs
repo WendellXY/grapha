@@ -330,6 +330,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "a.rs::helper".into(),
@@ -347,6 +348,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![Edge {
@@ -359,6 +361,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
         }
     }
@@ -394,6 +397,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         };
 
         let graph = Graph {
@@ -425,6 +429,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::RoomPage::canShowGameRoom".into(),
@@ -436,6 +441,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };
@@ -478,6 +484,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body".into(),
@@ -495,6 +502,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -512,6 +520,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body::view:Text@4:12".into(),
@@ -529,6 +538,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body::view:Row@5:12".into(),
@@ -546,6 +556,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![
@@ -559,6 +570,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::ContentView::body".into(),
@@ -570,6 +582,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -581,6 +594,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -592,6 +606,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };
@@ -640,6 +655,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body".into(),
@@ -657,6 +673,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -674,6 +691,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body::view:panel@4:12".into(),
@@ -691,6 +709,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::ContentView::panel".into(),
@@ -708,6 +727,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::ContentView::panel::view:Text@19:8".into(),
@@ -725,6 +745,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::ContentView::helper@5:12".into(),
@@ -742,6 +763,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::ContentView::helper".into(),
@@ -759,6 +781,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::ContentView::helper::view:Image@23:8".into(),
@@ -776,6 +799,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::ContentView::body::view:Row@6:12".into(),
@@ -793,6 +817,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view.swift::Row".into(),
@@ -810,6 +835,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![
@@ -823,6 +849,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::ContentView::body".into(),
@@ -834,6 +861,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -845,6 +873,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -856,6 +885,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:VStack@3:8".into(),
@@ -867,6 +897,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::ContentView::panel".into(),
@@ -878,6 +909,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::ContentView::helper".into(),
@@ -889,6 +921,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:panel@4:12".into(),
@@ -900,6 +933,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::ContentView::helper@5:12".into(),
@@ -911,6 +945,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::ContentView::body::view:Row@6:12".into(),
@@ -922,6 +957,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };
@@ -968,6 +1004,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         };
 
         let graph = Graph {
@@ -995,6 +1032,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "m.swift::Mutex".into(),
@@ -1006,6 +1044,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "m.swift::Mutex".into(),
@@ -1017,6 +1056,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 // External caller → member
                 Edge {
@@ -1029,6 +1069,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "caller.swift::initMutex".into(),
@@ -1040,6 +1081,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 // Internal call within the type (should NOT appear as a caller)
                 Edge {
@@ -1052,6 +1094,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };
@@ -1092,6 +1135,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         };
 
         let graph = Graph {
@@ -1113,6 +1157,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "m.swift::Type".into(),
@@ -1124,6 +1169,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 // caller calls BOTH members — should appear only once
                 Edge {
@@ -1136,6 +1182,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "c.swift::caller".into(),
@@ -1147,6 +1194,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };

@@ -1082,6 +1082,7 @@ mod tests {
             doc_comment: None,
             module: Some("App".into()),
             snippet: None,
+            repo: None,
         }
     }
 
@@ -1108,6 +1109,7 @@ mod tests {
             condition: None,
             async_boundary: None,
             provenance: Vec::new(),
+            repo: None,
         }
     }
 
@@ -1537,6 +1539,7 @@ mod tests {
                         signature: None,
                         role: None,
                         snippet: None,
+                        repo: None,
                     },
                     terminal_kind: "network".to_string(),
                     path: vec!["fetchUserInfo".to_string(), "requestGetUser".to_string()],
@@ -1561,6 +1564,7 @@ mod tests {
                         signature: None,
                         role: None,
                         snippet: None,
+                        repo: None,
                     },
                     terminal_kind: "persistence".to_string(),
                     path: vec!["fetchUserInfo".to_string(), "uid".to_string()],
@@ -1587,6 +1591,7 @@ mod tests {
                 signature: None,
                 role: None,
                 snippet: None,
+                repo: None,
             },
         };
 
@@ -1613,6 +1618,7 @@ mod tests {
                     signature: None,
                     role: None,
                     snippet: None,
+                    repo: None,
                 },
                 terminal_kind: "network".to_string(),
                 path: vec!["fetchUserInfo".to_string(), "requestGetUser".to_string()],
@@ -1630,6 +1636,7 @@ mod tests {
                         signature: None,
                         role: None,
                         snippet: None,
+                        repo: None,
                     },
                     reason: "request_leaf".to_string(),
                     snippet: "func requestGetUser() {}".to_string(),
@@ -1654,6 +1661,7 @@ mod tests {
                 signature: None,
                 role: None,
                 snippet: None,
+                repo: None,
             },
         };
 
@@ -1796,6 +1804,7 @@ mod tests {
                     signature: None,
                     role: None,
                     snippet: None,
+                    repo: None,
                 },
                 terminal_kind: "network".to_string(),
                 path: vec![
@@ -1825,6 +1834,7 @@ mod tests {
                     signature: None,
                     role: None,
                     snippet: None,
+                    repo: None,
                 },
                 terminal_kind: "network".to_string(),
                 path: vec![
@@ -1864,6 +1874,7 @@ mod tests {
                     signature: None,
                     role: None,
                     snippet: None,
+                    repo: None,
                 },
                 terminal_kind: "network".to_string(),
                 path: vec![
@@ -1892,6 +1903,7 @@ mod tests {
                     signature: None,
                     role: None,
                     snippet: None,
+                    repo: None,
                 },
                 terminal_kind: "network".to_string(),
                 path: vec![

@@ -216,6 +216,8 @@ pub struct SemanticSymbol {
     pub module: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub synthetic_kind: Option<String>,
 }
@@ -261,6 +263,7 @@ impl SemanticSymbol {
             doc_comment: node.doc_comment,
             module: node.module,
             snippet: node.snippet,
+            repo: node.repo,
             synthetic_kind,
         };
 
@@ -302,6 +305,7 @@ impl SemanticSymbol {
             doc_comment: self.doc_comment,
             module: self.module,
             snippet: self.snippet,
+            repo: self.repo,
         }
     }
 }
@@ -467,6 +471,8 @@ pub struct SemanticRelation {
     pub async_boundary: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provenance: Vec<EdgeProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal_kind: Option<TerminalKind>,
 }
@@ -488,6 +494,7 @@ impl SemanticRelation {
             condition: edge.condition,
             async_boundary: edge.async_boundary,
             provenance: edge.provenance,
+            repo: edge.repo,
             terminal_kind: None,
         }
     }
@@ -503,6 +510,7 @@ impl SemanticRelation {
             condition: self.condition,
             async_boundary: self.async_boundary,
             provenance: self.provenance,
+            repo: self.repo,
         }
     }
 }
@@ -641,6 +649,7 @@ mod tests {
                 doc_comment: None,
                 module: Some("Demo".to_string()),
                 snippet: None,
+                repo: None,
             }],
             edges: Vec::new(),
             imports: Vec::new(),
@@ -706,6 +715,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
             synthetic_kind: None,
         });
         document.relations.push(SemanticRelation {
@@ -718,6 +728,7 @@ mod tests {
             condition: None,
             async_boundary: None,
             provenance: Vec::new(),
+            repo: None,
             terminal_kind: Some(TerminalKind::Network),
         });
 
@@ -747,6 +758,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
             synthetic_kind: None,
         });
         document.relations.push(SemanticRelation {
@@ -759,6 +771,7 @@ mod tests {
             condition: None,
             async_boundary: None,
             provenance: Vec::new(),
+            repo: None,
             terminal_kind: None,
         });
 
@@ -795,6 +808,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
             synthetic_kind: None,
         });
         document.relations.push(SemanticRelation {
@@ -807,6 +821,7 @@ mod tests {
             condition: None,
             async_boundary: None,
             provenance: Vec::new(),
+            repo: None,
             terminal_kind: Some(TerminalKind::Network),
         });
 

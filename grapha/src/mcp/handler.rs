@@ -22,7 +22,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
             name: "search_symbols".to_string(),
-            description: "Search for symbols by name, kind, module, file, or role. Returns matching symbols with relevance scores.".to_string(),
+            description: "Search for symbols by name, kind, module, repo, file, or role. Returns matching symbols with relevance scores.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -42,6 +42,10 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                     "module": {
                         "type": "string",
                         "description": "Filter by module name"
+                    },
+                    "repo": {
+                        "type": "string",
+                        "description": "Filter by repo name"
                     },
                     "file": {
                         "type": "string",
@@ -420,6 +424,10 @@ fn handle_search_symbols(state: &McpState, arguments: &Value) -> Value {
             .map(String::from),
         module: arguments
             .get("module")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        repo: arguments
+            .get("repo")
             .and_then(|v| v.as_str())
             .map(String::from),
         file_glob: arguments
@@ -1011,6 +1019,7 @@ mod tests {
                 doc_comment: None,
                 module: Some("App".to_string()),
                 snippet: None,
+                repo: None,
             }
         }
 
@@ -1025,6 +1034,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: vec![],
+                repo: None,
             }
         }
 

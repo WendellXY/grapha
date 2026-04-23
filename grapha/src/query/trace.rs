@@ -380,6 +380,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         }
     }
 
@@ -394,6 +395,7 @@ mod tests {
             condition: None,
             async_boundary: None,
             provenance: Vec::new(),
+            repo: None,
         }
     }
 
@@ -500,6 +502,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "body::view:VStack@1:0".into(),
@@ -517,6 +520,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 make_node(
                     "db_save",
@@ -625,6 +629,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "room_body".into(),
@@ -642,6 +647,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "room_share".into(),
@@ -659,6 +665,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 make_node(
                     "save_terminal",
@@ -714,6 +721,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "room_body".into(),
@@ -731,6 +739,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![Edge {
@@ -743,6 +752,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
         };
 
@@ -777,6 +787,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("Room".into()),
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "room_body".into(),
@@ -794,6 +805,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("Room".into()),
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "room_body_getter".into(),
@@ -811,6 +823,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("Room".into()),
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "room_share".into(),
@@ -828,6 +841,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("Room".into()),
                     snippet: None,
+                    repo: None,
                 },
                 make_node(
                     "cache_terminal",
@@ -847,6 +861,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "room_share".into(),
@@ -858,6 +873,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "room_view".into(),
@@ -869,6 +885,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 {
                     let mut e = make_edge("room_share", "cache_terminal", EdgeKind::Reads);

@@ -638,6 +638,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         }
     }
 
@@ -665,6 +666,7 @@ mod tests {
             condition: None,
             async_boundary: None,
             provenance: vec![],
+            repo: None,
         }
     }
 

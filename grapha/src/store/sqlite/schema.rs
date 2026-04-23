@@ -2,7 +2,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use grapha_core::graph::Graph;
 
-pub(super) const STORE_SCHEMA_VERSION: &str = "6";
+pub(super) const STORE_SCHEMA_VERSION: &str = "7";
 pub(super) const BINARY_PROVENANCE_SCHEMA_VERSION: &str = "5";
 
 pub(super) fn create_tables(conn: &Connection) -> anyhow::Result<()> {
@@ -26,7 +26,8 @@ pub(super) fn create_tables(conn: &Connection) -> anyhow::Result<()> {
             signature  TEXT,
             doc_comment TEXT,
             module     TEXT,
-            snippet    TEXT
+            snippet    TEXT,
+            repo       TEXT
         );
         CREATE TABLE IF NOT EXISTS edges (
             edge_id    TEXT PRIMARY KEY,
@@ -38,7 +39,8 @@ pub(super) fn create_tables(conn: &Connection) -> anyhow::Result<()> {
             operation  TEXT,
             condition  TEXT,
             async_boundary INTEGER,
-            provenance BLOB NOT NULL
+            provenance BLOB NOT NULL,
+            repo       TEXT
         );",
     )?;
     Ok(())
@@ -110,7 +112,8 @@ pub(super) fn create_bulk_load_tables(conn: &Connection) -> anyhow::Result<()> {
             signature  TEXT,
             doc_comment TEXT,
             module     TEXT,
-            snippet    TEXT
+            snippet    TEXT,
+            repo       TEXT
         );
         CREATE TABLE edges (
             edge_id    TEXT NOT NULL,
@@ -122,7 +125,8 @@ pub(super) fn create_bulk_load_tables(conn: &Connection) -> anyhow::Result<()> {
             operation  TEXT,
             condition  TEXT,
             async_boundary INTEGER,
-            provenance BLOB NOT NULL
+            provenance BLOB NOT NULL,
+            repo       TEXT
         );",
     )?;
     Ok(())

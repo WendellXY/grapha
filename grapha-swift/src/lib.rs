@@ -671,6 +671,7 @@ mod plugin_tests {
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             }],
             edges: vec![Edge {
                 source: "s:4main7package18PackageDescription0C0Cvg".to_string(),
@@ -689,6 +690,7 @@ mod plugin_tests {
                     },
                     symbol_id: "s:4main7package18PackageDescription0C0Cvg".to_string(),
                 }],
+                repo: None,
             }],
             imports: vec![],
         };

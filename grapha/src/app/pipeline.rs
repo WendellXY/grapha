@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -19,19 +20,42 @@ fn builtin_registry() -> anyhow::Result<grapha_core::LanguageRegistry> {
     Ok(registry)
 }
 
-fn extraction_cache_key(path: &Path) -> String {
-    path.to_string_lossy().to_string()
+#[derive(Clone)]
+struct IndexedInputFile {
+    path: PathBuf,
+    repo_name: String,
+    context: grapha_core::ProjectContext,
+}
+
+fn default_repo_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("local")
+        .to_string()
+}
+
+fn primary_repo_name(path: &Path, cfg: &config::GraphaConfig) -> String {
+    cfg.repo
+        .name
+        .clone()
+        .unwrap_or_else(|| default_repo_name(path))
+}
+
+fn extraction_cache_key(repo_name: &str, path: &Path) -> String {
+    format!("{repo_name}\0{}", path.to_string_lossy())
 }
 
 fn make_extraction_cache_entry(
     file: &Path,
+    repo_name: &str,
     file_context: &grapha_core::FileContext,
     config_fingerprint: &str,
     result: &grapha_core::ExtractionResult,
 ) -> Option<(String, cache::ExtractionCacheEntry)> {
     let stamp = cache::FileStamp::from_path(file)?;
     Some((
-        extraction_cache_key(&file_context.relative_path),
+        extraction_cache_key(repo_name, &file_context.relative_path),
         cache::ExtractionCacheEntry {
             stamp,
             module_name: file_context.module_name.clone(),
@@ -39,6 +63,51 @@ fn make_extraction_cache_entry(
             result: result.clone(),
         },
     ))
+}
+
+fn repo_scoped_id(repo_name: &str, id: &str) -> String {
+    format!("{repo_name}::{id}")
+}
+
+fn stamp_repo(
+    mut result: grapha_core::ExtractionResult,
+    repo_name: &str,
+    namespace_ids: bool,
+) -> grapha_core::ExtractionResult {
+    let repo = repo_name.to_string();
+    let id_map = namespace_ids.then(|| {
+        result
+            .nodes
+            .iter()
+            .map(|node| (node.id.clone(), repo_scoped_id(repo_name, &node.id)))
+            .collect::<HashMap<_, _>>()
+    });
+
+    for node in &mut result.nodes {
+        if let Some(id_map) = &id_map
+            && let Some(scoped_id) = id_map.get(&node.id)
+        {
+            node.id = scoped_id.clone();
+        }
+        node.repo = Some(repo.clone());
+    }
+    for edge in &mut result.edges {
+        if let Some(id_map) = &id_map {
+            if let Some(scoped_source) = id_map.get(&edge.source) {
+                edge.source = scoped_source.clone();
+            }
+            if let Some(scoped_target) = id_map.get(&edge.target) {
+                edge.target = scoped_target.clone();
+            }
+            for provenance in &mut edge.provenance {
+                if let Some(scoped_symbol_id) = id_map.get(&provenance.symbol_id) {
+                    provenance.symbol_id = scoped_symbol_id.clone();
+                }
+            }
+        }
+        edge.repo = Some(repo.clone());
+    }
+    result
 }
 
 fn apply_config_classifier_semantics(
@@ -82,6 +151,7 @@ pub(crate) fn run_pipeline(
     let cfg = config::load_config(path);
     let config_fingerprint = cfg.extraction_cache_fingerprint();
     project_context.index_store_enabled = cfg.swift.index_store;
+    let primary_repo = primary_repo_name(&project_context.project_root, &cfg);
 
     let (files, _) = std::thread::scope(|scope| {
         let files_handle = scope.spawn(|| {
@@ -95,7 +165,15 @@ pub(crate) fn run_pipeline(
         Ok::<_, anyhow::Error>((files, ()))
     })?;
 
-    let mut external_files: Vec<PathBuf> = Vec::new();
+    let mut indexed_files: Vec<IndexedInputFile> = files
+        .into_iter()
+        .map(|file| IndexedInputFile {
+            path: file,
+            repo_name: primary_repo.clone(),
+            context: project_context.clone(),
+        })
+        .collect();
+    let primary_file_count = indexed_files.len();
     let mut external_repo_count = 0usize;
     for ext in &cfg.external {
         let ext_path = Path::new(&ext.path);
@@ -108,9 +186,15 @@ pub(crate) fn run_pipeline(
             }
             continue;
         }
+        let mut ext_context = grapha_core::project_context(ext_path);
+        ext_context.index_store_enabled = cfg.swift.index_store;
         match grapha_core::pipeline::discover_files(ext_path, &registry) {
             Ok(ext_discovered) => {
-                external_files.extend(ext_discovered);
+                indexed_files.extend(ext_discovered.into_iter().map(|file| IndexedInputFile {
+                    path: file,
+                    repo_name: ext.name.clone(),
+                    context: ext_context.clone(),
+                }));
                 external_repo_count += 1;
             }
             Err(e) => {
@@ -124,19 +208,16 @@ pub(crate) fn run_pipeline(
         }
     }
 
-    let external_file_count = external_files.len();
-    let all_files: Vec<PathBuf> = files.into_iter().chain(external_files).collect();
+    let external_file_count = indexed_files.len().saturating_sub(primary_file_count);
 
     if verbose {
         let msg = if external_file_count > 0 {
             format!(
                 "discovered {} files + {} external ({} repos)",
-                all_files.len() - external_file_count,
-                external_file_count,
-                external_repo_count
+                primary_file_count, external_file_count, external_repo_count
             )
         } else {
-            format!("discovered {} files", all_files.len())
+            format!("discovered {} files", indexed_files.len())
         };
         progress::done(&msg, t);
         if let Some(store) = grapha_swift::index_store_path(&project_context.project_root) {
@@ -161,8 +242,8 @@ pub(crate) fn run_pipeline(
     }
 
     let t = Instant::now();
-    let pb = if verbose && all_files.len() > 1 {
-        Some(progress::bar(all_files.len() as u64, "extracting"))
+    let pb = if verbose && indexed_files.len() > 1 {
+        Some(progress::bar(indexed_files.len() as u64, "extracting"))
     } else {
         None
     };
@@ -183,14 +264,15 @@ pub(crate) fn run_pipeline(
     let t_max_single_file_ns = AtomicU64::new(0);
     let extraction_cache_entries = Mutex::new(std::collections::HashMap::new());
 
-    let results: Vec<_> = all_files
+    let results: Vec<_> = indexed_files
         .par_iter()
-        .filter_map(|file| {
+        .filter_map(|input| {
+            let file = &input.path;
             let t_file_start = Instant::now();
             let t_fc = Instant::now();
-            let file_context = grapha_core::file_context(&project_context, &module_map, file);
+            let file_context = grapha_core::file_context(&input.context, &module_map, file);
             t_file_context_ns.fetch_add(t_fc.elapsed().as_nanos() as u64, Ordering::Relaxed);
-            let cache_key = extraction_cache_key(&file_context.relative_path);
+            let cache_key = extraction_cache_key(&input.repo_name, &file_context.relative_path);
             if let Some(existing_cache) = existing_extraction_cache
                 && let Some(entry) = existing_cache.get(&cache_key)
                 && entry.module_name.as_deref() == file_context.module_name.as_deref()
@@ -240,7 +322,11 @@ pub(crate) fn run_pipeline(
                 Ok(mut document) => {
                     extracted.fetch_add(1, Ordering::Relaxed);
                     apply_config_classifier_semantics(&mut document, &cfg.classifiers);
-                    let mut result = grapha_core::lower_semantics(document);
+                    let mut result = stamp_repo(
+                        grapha_core::lower_semantics(document),
+                        &input.repo_name,
+                        input.repo_name != primary_repo,
+                    );
                     let t2 = Instant::now();
                     if result
                         .nodes
@@ -263,6 +349,7 @@ pub(crate) fn run_pipeline(
                     t_snippet_ns.fetch_add(t2.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     if let Some((key, entry)) = make_extraction_cache_entry(
                         file,
+                        &input.repo_name,
                         &file_context,
                         &config_fingerprint,
                         &result,
@@ -449,8 +536,12 @@ pub(crate) fn handle_analyze(
 
 #[cfg(test)]
 mod tests {
-    use super::run_pipeline;
-    use grapha_core::graph::{EdgeKind, FlowDirection, NodeKind, NodeRole, TerminalKind};
+    use super::{run_pipeline, stamp_repo};
+    use grapha_core::ExtractionResult;
+    use grapha_core::graph::{
+        Edge, EdgeKind, EdgeProvenance, FlowDirection, Node, NodeKind, NodeRole, Span,
+        TerminalKind, Visibility,
+    };
     use std::fs;
     use tempfile::TempDir;
 
@@ -459,6 +550,69 @@ mod tests {
         fs::create_dir_all(&src_dir).unwrap();
         fs::write(project_root.join("grapha.toml"), config).unwrap();
         fs::write(src_dir.join("main.rs"), source).unwrap();
+    }
+
+    fn test_node(id: &str) -> Node {
+        Node {
+            id: id.to_string(),
+            kind: NodeKind::Function,
+            name: id.to_string(),
+            file: "src/main.rs".into(),
+            span: Span {
+                start: [1, 0],
+                end: [1, 4],
+            },
+            visibility: Visibility::Private,
+            metadata: Default::default(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+            snippet: None,
+            repo: None,
+        }
+    }
+
+    #[test]
+    fn stamp_repo_namespaces_external_ids_and_edges() {
+        let result = ExtractionResult {
+            nodes: vec![
+                test_node("src/main.rs::load"),
+                test_node("src/main.rs::save"),
+            ],
+            edges: vec![Edge {
+                source: "src/main.rs::load".to_string(),
+                target: "src/main.rs::save".to_string(),
+                kind: EdgeKind::Calls,
+                confidence: 1.0,
+                direction: None,
+                operation: None,
+                condition: None,
+                async_boundary: None,
+                provenance: vec![EdgeProvenance {
+                    file: "src/main.rs".into(),
+                    span: Span {
+                        start: [1, 0],
+                        end: [1, 4],
+                    },
+                    symbol_id: "src/main.rs::load".to_string(),
+                }],
+                repo: None,
+            }],
+            imports: Vec::new(),
+        };
+
+        let stamped = stamp_repo(result, "shared", true);
+
+        assert_eq!(stamped.nodes[0].id, "shared::src/main.rs::load");
+        assert_eq!(stamped.nodes[0].repo.as_deref(), Some("shared"));
+        assert_eq!(stamped.edges[0].source, "shared::src/main.rs::load");
+        assert_eq!(stamped.edges[0].target, "shared::src/main.rs::save");
+        assert_eq!(stamped.edges[0].repo.as_deref(), Some("shared"));
+        assert_eq!(
+            stamped.edges[0].provenance[0].symbol_id,
+            "shared::src/main.rs::load"
+        );
     }
 
     #[test]

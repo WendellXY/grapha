@@ -443,6 +443,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         }
     }
 
@@ -477,6 +478,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: vec![],
+                    repo: None,
                 },
                 Edge {
                     source: "text".to_string(),
@@ -488,6 +490,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: vec![],
+                    repo: None,
                 },
             ],
         };
@@ -548,6 +551,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: vec![],
+                    repo: None,
                 },
                 Edge {
                     source: "text".to_string(),
@@ -559,6 +563,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: vec![],
+                    repo: None,
                 },
             ],
         };
@@ -619,6 +624,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: vec![],
+                    repo: None,
                 },
                 Edge {
                     source: "text".to_string(),
@@ -630,6 +636,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: vec![],
+                    repo: None,
                 },
             ],
         };
@@ -732,6 +739,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: vec![],
+                    repo: None,
                 },
                 Edge {
                     source: "body".to_string(),
@@ -743,6 +751,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: vec![],
+                    repo: None,
                 },
                 Edge {
                     source: "body".to_string(),
@@ -754,6 +763,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: vec![],
+                    repo: None,
                 },
                 Edge {
                     source: "text_primary_a".to_string(),
@@ -765,6 +775,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: vec![],
+                    repo: None,
                 },
                 Edge {
                     source: "text_primary_b".to_string(),
@@ -776,6 +787,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: vec![],
+                    repo: None,
                 },
                 Edge {
                     source: "text_secondary".to_string(),
@@ -787,6 +799,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: vec![],
+                    repo: None,
                 },
             ],
         };

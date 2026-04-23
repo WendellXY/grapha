@@ -183,6 +183,7 @@ pub(crate) fn handle_symbol_command(
             path,
             kind,
             module,
+            repo,
             file,
             role,
             fuzzy,
@@ -197,6 +198,7 @@ pub(crate) fn handle_symbol_command(
             let options = search::SearchOptions {
                 kind,
                 module,
+                repo,
                 file_glob: file,
                 role,
                 fuzzy,

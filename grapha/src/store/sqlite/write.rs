@@ -39,8 +39,8 @@ pub(super) fn insert_nodes(
     let sql = format!(
         "{verb} INTO nodes (id, kind, name, file,
             span_start_line, span_start_col, span_end_line, span_end_col,
-            visibility, metadata, role, signature, doc_comment, module, snippet)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)"
+            visibility, metadata, role, signature, doc_comment, module, snippet, repo)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)"
     );
     let mut stmt = tx.prepare_cached(&sql)?;
     let empty_meta = "{}".to_string();
@@ -72,6 +72,7 @@ pub(super) fn insert_nodes(
             node.doc_comment,
             node.module,
             node.snippet,
+            node.repo,
         ])?;
     }
     Ok(())
@@ -89,8 +90,8 @@ pub(super) fn insert_edges<'a>(
     };
     let sql = format!(
         "{verb} INTO edges (edge_id, source, target, kind, confidence,
-            direction, operation, condition, async_boundary, provenance)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
+            direction, operation, condition, async_boundary, provenance, repo)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)"
     );
     let mut stmt = tx.prepare_cached(&sql)?;
     for (edge_id, edge) in edges {
@@ -108,6 +109,7 @@ pub(super) fn insert_edges<'a>(
             edge.condition,
             async_boundary_int,
             provenance,
+            edge.repo,
         ])?;
     }
     Ok(())

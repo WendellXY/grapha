@@ -16,7 +16,7 @@ pub(super) fn load_filtered(
     schema::create_tables(&conn)?;
 
     let version = load_version(&conn)?;
-    let nodes = load_nodes(&conn, metadata_key_prefix)?;
+    let nodes = load_nodes(&conn, schema_version.as_deref(), metadata_key_prefix)?;
     let (edge_where, edge_kind_params) = build_edge_where(edge_kinds);
     let edges = compat::load_edges(
         &conn,
@@ -42,30 +42,36 @@ pub(super) fn load_version(conn: &Connection) -> anyhow::Result<String> {
 
 pub(super) fn load_nodes(
     conn: &Connection,
+    schema_version: Option<&str>,
     metadata_key_prefix: Option<&str>,
 ) -> anyhow::Result<Vec<Node>> {
     let mut nodes = Vec::new();
+    let repo_expr = if schema_version == Some(schema::STORE_SCHEMA_VERSION) {
+        "repo"
+    } else {
+        "NULL"
+    };
 
     if let Some(prefix) = metadata_key_prefix {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT id, kind, name, file,
                     span_start_line, span_start_col, span_end_line, span_end_col,
                     visibility,
-                    CASE WHEN instr(metadata, ?1) > 0 THEN metadata ELSE '{}' END,
-                    role, NULL, NULL, module, NULL
+                    CASE WHEN instr(metadata, ?1) > 0 THEN metadata ELSE '{{}}' END,
+                    role, NULL, NULL, module, NULL, {repo_expr}
              FROM nodes",
-        )?;
+        ))?;
         let mut rows = stmt.query(params![prefix])?;
         while let Some(row) = rows.next()? {
             nodes.push(decode_node_row(row)?);
         }
     } else {
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare(&format!(
             "SELECT id, kind, name, file,
                     span_start_line, span_start_col, span_end_line, span_end_col,
-                    visibility, metadata, role, signature, doc_comment, module, snippet
+                    visibility, metadata, role, signature, doc_comment, module, snippet, {repo_expr}
              FROM nodes",
-        )?;
+        ))?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             nodes.push(decode_node_row(row)?);
@@ -128,5 +134,6 @@ fn decode_node_row(row: &rusqlite::Row<'_>) -> anyhow::Result<Node> {
         doc_comment: row.get(12)?,
         module: row.get(13)?,
         snippet: row.get(14)?,
+        repo: row.get(15)?,
     })
 }

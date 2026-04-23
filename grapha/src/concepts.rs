@@ -1548,6 +1548,7 @@ mod tests {
             doc_comment: None,
             module: Some("Gift".to_string()),
             snippet: None,
+            repo: None,
         }
     }
 
@@ -1678,6 +1679,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
         };
         let (_dir, search_index) = build_search_index(&graph);
@@ -1748,6 +1750,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
         };
         let (_dir, search_index) = build_search_index(&graph);
@@ -1862,6 +1865,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: caller.id.clone(),
@@ -1873,6 +1877,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };

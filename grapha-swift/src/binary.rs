@@ -197,6 +197,7 @@ fn read_node(chunk: &[u8], string_table: &[u8]) -> Option<Node> {
         doc_comment: None,
         module,
         snippet: None,
+        repo: None,
     })
 }
 
@@ -241,6 +242,7 @@ fn read_edge(chunk: &[u8], string_table: &[u8]) -> Option<Edge> {
         condition: None,
         async_boundary: None,
         provenance: Vec::new(),
+        repo: None,
     })
 }
 

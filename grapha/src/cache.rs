@@ -299,6 +299,7 @@ mod tests {
             doc_comment: None,
             module: Some("sample".to_string()),
             snippet: Some("fn main() {}".to_string()),
+            repo: None,
         });
         result
     }

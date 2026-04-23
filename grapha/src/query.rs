@@ -323,6 +323,8 @@ pub struct SymbolInfo {
     pub module: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -345,6 +347,8 @@ pub struct SymbolRef {
     pub module: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -367,6 +371,8 @@ pub struct SymbolTreeRef {
     pub module: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub contains: Vec<SymbolTreeRef>,
 }
@@ -389,6 +395,7 @@ impl SymbolInfo {
             signature: node.signature.clone(),
             module: node.module.clone(),
             snippet: node.snippet.clone(),
+            repo: node.repo.clone(),
         }
     }
 
@@ -412,6 +419,7 @@ impl SymbolRef {
             signature: node.signature.clone(),
             module: node.module.clone(),
             snippet: node.snippet.clone(),
+            repo: node.repo.clone(),
         }
     }
 
@@ -435,6 +443,7 @@ impl SymbolTreeRef {
             signature: node.signature.clone(),
             module: node.module.clone(),
             snippet: node.snippet.clone(),
+            repo: node.repo.clone(),
             contains,
         }
     }
@@ -469,6 +478,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         }
     }
 
@@ -619,6 +629,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
         };
         let mut graph = graph;

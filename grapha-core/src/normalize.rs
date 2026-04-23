@@ -35,6 +35,9 @@ pub fn normalize_graph(mut graph: Graph) -> Graph {
         if existing.module.is_none() {
             existing.module = incoming.module;
         }
+        if existing.repo.is_none() {
+            existing.repo = incoming.repo;
+        }
         for (key, value) in incoming.metadata {
             existing.metadata.entry(key).or_insert(value);
         }
@@ -87,6 +90,7 @@ pub fn edge_fingerprint(edge: &Edge) -> String {
     hasher.write_component(edge.operation.as_deref().unwrap_or(""));
     hasher.write_component(edge.condition.as_deref().unwrap_or(""));
     hasher.write_component(bool_tag(edge.async_boundary));
+    hasher.write_component(edge.repo.as_deref().unwrap_or(""));
     // Fast hex encoding without format! allocation overhead
     let hash = hasher.finish();
     let mut buf = [0u8; 16];
@@ -193,6 +197,7 @@ mod tests {
                         },
                         symbol_id: "a".to_string(),
                     }],
+                    repo: None,
                 },
                 Edge {
                     source: "a".to_string(),
@@ -211,6 +216,7 @@ mod tests {
                         },
                         symbol_id: "a".to_string(),
                     }],
+                    repo: None,
                 },
             ],
         };
@@ -242,6 +248,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "s:RoomPage.centerContentView".to_string(),
@@ -259,6 +266,7 @@ mod tests {
                     doc_comment: Some("helper".to_string()),
                     module: Some("Room".to_string()),
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![],
@@ -297,6 +305,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "AppDelegate".to_string(),
@@ -314,6 +323,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![],
@@ -336,6 +346,7 @@ mod tests {
             condition: None,
             async_boundary: None,
             provenance: Vec::new(),
+            repo: None,
         };
         let mut changed = base.clone();
         changed.direction = Some(FlowDirection::Read);
@@ -355,6 +366,7 @@ mod tests {
             condition: None,
             async_boundary: None,
             provenance: Vec::new(),
+            repo: None,
         };
         let mut changed = base.clone();
         changed.confidence = 0.9;
@@ -392,6 +404,7 @@ mod tests {
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             }],
             edges: vec![],
         };

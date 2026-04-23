@@ -141,6 +141,7 @@ fn emit_contains_edge(
             condition: None,
             async_boundary: None,
             provenance: node_edge_provenance(file, edge_node, pid),
+            repo: None,
         });
     }
 }
@@ -197,6 +198,7 @@ fn extract_struct_or_class(
         doc_comment: None,
         module: None,
         snippet: None,
+        repo: None,
     });
 
     // Walk the class_body for nested declarations
@@ -297,6 +299,7 @@ fn extract_property_as_entry_point(
         doc_comment: None,
         module: None,
         snippet: None,
+        repo: None,
     });
 
     // Scan property body for calls (same as extract_property)
@@ -362,6 +365,7 @@ fn extract_function_with_entry_hint(
         doc_comment,
         module: None,
         snippet: None,
+        repo: None,
     });
 
     // Walk function body for call expressions.
@@ -426,6 +430,7 @@ fn extract_enum(
         doc_comment: None,
         module: None,
         snippet: None,
+        repo: None,
     });
 
     // Extract enum entries from enum_class_body
@@ -464,6 +469,7 @@ fn extract_enum_entries(
                 condition: None,
                 async_boundary: None,
                 provenance: node_edge_provenance(file, child, parent_id),
+                repo: None,
             });
 
             result.nodes.push(Node {
@@ -479,6 +485,7 @@ fn extract_enum_entries(
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             });
         }
     }
@@ -517,6 +524,7 @@ fn extract_extension(
         doc_comment: None,
         module: None,
         snippet: None,
+        repo: None,
     });
 
     // Walk the class_body for nested declarations
@@ -562,6 +570,7 @@ fn extract_protocol(
         doc_comment: None,
         module: None,
         snippet: None,
+        repo: None,
     });
 
     // Walk the protocol_body for method declarations
@@ -616,6 +625,7 @@ fn extract_function(
         doc_comment,
         module: None,
         snippet: None,
+        repo: None,
     });
 
     // Walk function body for call expressions.
@@ -685,6 +695,7 @@ fn extract_property(
         doc_comment: None,
         module: None,
         snippet: None,
+        repo: None,
     });
 
     // Scan property body for calls via tree-sitter AST
@@ -752,6 +763,7 @@ fn extract_calls_from_text(
             condition: None,
             async_boundary: None,
             provenance: edge_provenance(file, span, caller_id),
+            repo: None,
         });
     }
 
@@ -780,6 +792,7 @@ fn extract_calls_from_text(
                 condition: None,
                 async_boundary: None,
                 provenance: edge_provenance(file, span, caller_id),
+                repo: None,
             });
         }
     }
@@ -819,6 +832,7 @@ fn extract_typealias(
         doc_comment: None,
         module: None,
         snippet: None,
+        repo: None,
     });
 }
 
@@ -853,6 +867,7 @@ fn extract_import(
                 condition: None,
                 async_boundary: None,
                 provenance: node_edge_provenance(file, node, file),
+                repo: None,
             });
         }
     }
@@ -1148,6 +1163,7 @@ fn extract_inheritance_edges(
             condition: None,
             async_boundary: None,
             provenance: node_edge_provenance(file, child, type_id),
+            repo: None,
         });
     }
 }
@@ -1196,6 +1212,7 @@ fn extract_calls(
             condition,
             async_boundary,
             provenance: node_edge_provenance(file, node, caller_id),
+            repo: None,
         });
     }
 
@@ -1221,6 +1238,7 @@ fn extract_calls(
                 condition,
                 async_boundary,
                 provenance: node_edge_provenance(file, node, caller_id),
+                repo: None,
             });
         }
     }
@@ -1257,6 +1275,7 @@ fn extract_calls(
                 condition,
                 async_boundary: None,
                 provenance: node_edge_provenance(file, node, caller_id),
+                repo: None,
             });
         }
     }

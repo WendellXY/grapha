@@ -259,6 +259,7 @@ fn apply_localization_reference(
                 span: usage_span.clone(),
                 symbol_id: usage_id.to_string(),
             }],
+            repo: None,
         });
     }
 }
@@ -318,6 +319,7 @@ fn emit_localization_usage_node(
         doc_comment: None,
         module: None,
         snippet: None,
+        repo: None,
     });
     context.emit_edge(Edge {
         source: parent_id.to_string(),
@@ -333,6 +335,7 @@ fn emit_localization_usage_node(
             span: span.clone(),
             symbol_id: parent_id.to_string(),
         }],
+        repo: None,
     });
     id
 }

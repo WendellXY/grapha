@@ -28,9 +28,48 @@ pub(super) fn load_edges(
     edge_where: &str,
     edge_kind_params: &[&'static str],
 ) -> anyhow::Result<Vec<Edge>> {
+    if schema_version == Some(STORE_SCHEMA_VERSION) {
+        let sql = format!(
+            "SELECT source, target, kind, confidence,
+                    direction, operation, condition, async_boundary, provenance, repo
+             FROM edges{edge_where}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = if edge_kind_params.is_empty() {
+            stmt.query([])?
+        } else {
+            stmt.query(params_from_iter(edge_kind_params.iter().copied()))?
+        };
+
+        let mut edges = Vec::new();
+        while let Some(row) = rows.next()? {
+            let kind_str: String = row.get(2)?;
+            let kind: EdgeKind = str_to_enum(&kind_str)
+                .map_err(|e| anyhow::anyhow!("invalid edge kind '{kind_str}': {e}"))?;
+            let direction = row
+                .get::<_, Option<String>>(4)?
+                .map(|s| str_to_enum(&s))
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("invalid flow direction: {e}"))?;
+            edges.push(Edge {
+                source: row.get(0)?,
+                target: row.get(1)?,
+                kind,
+                confidence: row.get(3)?,
+                direction,
+                operation: row.get(5)?,
+                condition: row.get(6)?,
+                async_boundary: row.get::<_, Option<i64>>(7)?.map(|v| v != 0),
+                provenance: deserialize_provenance(&row.get::<_, Vec<u8>>(8)?)?,
+                repo: row.get(9)?,
+            });
+        }
+        return Ok(edges);
+    }
+
     if matches!(
         schema_version,
-        Some(STORE_SCHEMA_VERSION) | Some(BINARY_PROVENANCE_SCHEMA_VERSION)
+        Some("6") | Some(BINARY_PROVENANCE_SCHEMA_VERSION)
     ) {
         let sql = format!(
             "SELECT source, target, kind, confidence,
@@ -64,6 +103,7 @@ pub(super) fn load_edges(
                 condition: row.get(6)?,
                 async_boundary: row.get::<_, Option<i64>>(7)?.map(|v| v != 0),
                 provenance: deserialize_provenance(&row.get::<_, Vec<u8>>(8)?)?,
+                repo: None,
             });
         }
         return Ok(edges);
@@ -102,6 +142,7 @@ pub(super) fn load_edges(
                 condition: row.get(6)?,
                 async_boundary: row.get::<_, Option<i64>>(7)?.map(|v| v != 0),
                 provenance: serde_json::from_str(&row.get::<_, String>(8)?)?,
+                repo: None,
             });
         }
         return Ok(edges);
@@ -139,6 +180,7 @@ pub(super) fn load_edges(
             condition: row.get(6)?,
             async_boundary: row.get::<_, Option<i64>>(7)?.map(|v| v != 0),
             provenance: Vec::new(),
+            repo: None,
         });
     }
     Ok(edges)

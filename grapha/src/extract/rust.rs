@@ -78,6 +78,7 @@ fn walk_node(
                         condition: None,
                         async_boundary: None,
                         provenance: edge_provenance(file, node, pid),
+                        repo: None,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -121,6 +122,7 @@ fn walk_node(
                         condition: None,
                         async_boundary: None,
                         provenance: edge_provenance(file, node, pid),
+                        repo: None,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -148,6 +150,7 @@ fn walk_node(
                         condition: None,
                         async_boundary: None,
                         provenance: edge_provenance(file, node, pid),
+                        repo: None,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -181,6 +184,7 @@ fn walk_node(
                         condition: None,
                         async_boundary: None,
                         provenance: edge_provenance(file, node, pid),
+                        repo: None,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -222,6 +226,7 @@ fn walk_node(
                         condition: None,
                         async_boundary: None,
                         provenance: edge_provenance(file, node, pid),
+                        repo: None,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -263,6 +268,7 @@ fn walk_node(
                         condition: None,
                         async_boundary: None,
                         provenance: edge_provenance(file, node, pid),
+                        repo: None,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -283,6 +289,7 @@ fn walk_node(
                             condition: None,
                             async_boundary: None,
                             provenance: edge_provenance(file, bounds, &node_id),
+                            repo: None,
                         });
                     }
                 }
@@ -307,6 +314,7 @@ fn walk_node(
                         condition: None,
                         async_boundary: None,
                         provenance: edge_provenance(file, node, pid),
+                        repo: None,
                     });
                 }
                 let node_id = graph_node.id.clone();
@@ -331,6 +339,7 @@ fn walk_node(
                         condition: None,
                         async_boundary: None,
                         provenance: edge_provenance(file, trait_node, &node_id),
+                        repo: None,
                     });
                 }
 
@@ -362,6 +371,7 @@ fn walk_node(
                         condition: None,
                         async_boundary: None,
                         provenance: edge_provenance(file, node, pid),
+                        repo: None,
                     });
                 }
                 let mod_name = graph_node.name.clone();
@@ -422,6 +432,7 @@ fn walk_node(
                     condition: None,
                     async_boundary: None,
                     provenance: edge_provenance(file, node, file),
+                    repo: None,
                 });
             }
         }
@@ -731,6 +742,7 @@ fn extract_function(
         doc_comment,
         module: None,
         snippet: None,
+        repo: None,
     })
 }
 
@@ -940,6 +952,7 @@ fn push_type_ref_edges(
             condition: None,
             async_boundary: None,
             provenance: edge_provenance(file, type_node, source_id),
+            repo: None,
         });
     }
 }
@@ -980,6 +993,7 @@ fn extract_named_item(
         doc_comment: None,
         module: None,
         snippet: None,
+        repo: None,
     })
 }
 
@@ -1023,6 +1037,7 @@ fn extract_impl_item(
         doc_comment: None,
         module: None,
         snippet: None,
+        repo: None,
     })
 }
 
@@ -1072,6 +1087,7 @@ fn extract_constant(
         doc_comment: extract_doc_comment(node, source),
         module: None,
         snippet: None,
+        repo: None,
     })
 }
 
@@ -1109,6 +1125,7 @@ fn extract_type_alias(
         doc_comment: extract_doc_comment(node, source),
         module: None,
         snippet: None,
+        repo: None,
     })
 }
 
@@ -1143,6 +1160,7 @@ fn extract_struct_fields(
                 condition: None,
                 async_boundary: None,
                 provenance: edge_provenance(file, child, parent_id),
+                repo: None,
             });
 
             result.nodes.push(Node {
@@ -1161,6 +1179,7 @@ fn extract_struct_fields(
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             });
         }
     }
@@ -1222,6 +1241,7 @@ fn extract_calls(
             condition,
             async_boundary,
             provenance: edge_provenance(file, node, caller_id),
+            repo: None,
         });
     }
 
@@ -1259,6 +1279,7 @@ fn extract_reads_and_writes(
                     condition: find_enclosing_condition(node, source),
                     async_boundary: detect_async_boundary(node, source),
                     provenance: provenance.clone(),
+                    repo: None,
                 });
                 if node.kind() == "compound_assignment_expr" {
                     result.edges.push(Edge {
@@ -1271,6 +1292,7 @@ fn extract_reads_and_writes(
                         condition: find_enclosing_condition(node, source),
                         async_boundary: detect_async_boundary(node, source),
                         provenance,
+                        repo: None,
                     });
                 }
             }
@@ -1293,6 +1315,7 @@ fn extract_reads_and_writes(
                     condition: find_enclosing_condition(node, source),
                     async_boundary: detect_async_boundary(node, source),
                     provenance: edge_provenance(file, node, caller_id),
+                    repo: None,
                 });
             }
         }
@@ -1313,6 +1336,7 @@ fn extract_reads_and_writes(
                     condition: find_enclosing_condition(node, source),
                     async_boundary: detect_async_boundary(node, source),
                     provenance: edge_provenance(file, node, caller_id),
+                    repo: None,
                 });
             }
         }
@@ -1436,6 +1460,7 @@ fn extract_enum_variants(
                 condition: None,
                 async_boundary: None,
                 provenance: edge_provenance(file, child, parent_id),
+                repo: None,
             });
 
             result.nodes.push(Node {
@@ -1454,6 +1479,7 @@ fn extract_enum_variants(
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             });
         }
     }

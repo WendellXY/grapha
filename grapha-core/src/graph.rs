@@ -106,6 +106,8 @@ pub struct Node {
     pub module: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -124,6 +126,8 @@ pub struct Edge {
     pub async_boundary: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provenance: Vec<EdgeProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -208,6 +212,7 @@ mod tests {
             condition: None,
             async_boundary: None,
             provenance: Vec::new(),
+            repo: None,
         };
         let json = serde_json::to_string(&edge).unwrap();
         assert!(json.contains("\"confidence\":0.95"));
@@ -262,6 +267,7 @@ mod tests {
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             }],
             edges: vec![Edge {
                 source: "src/main.rs::main".to_string(),
@@ -273,6 +279,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
         };
         let json = serde_json::to_string(&graph).unwrap();
@@ -392,6 +399,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         };
         let json = serde_json::to_string(&node).unwrap();
         assert!(!json.contains("role"));
@@ -418,6 +426,7 @@ mod tests {
             doc_comment: Some("Does foo things".to_string()),
             module: Some("my_module".to_string()),
             snippet: None,
+            repo: None,
         };
         let json = serde_json::to_string(&node).unwrap();
         let deserialized: Node = serde_json::from_str(&json).unwrap();
@@ -440,6 +449,7 @@ mod tests {
             condition: None,
             async_boundary: None,
             provenance: Vec::new(),
+            repo: None,
         };
         let json = serde_json::to_string(&edge).unwrap();
         assert!(!json.contains("direction"));
@@ -468,6 +478,7 @@ mod tests {
                 },
                 symbol_id: "main.rs::main".to_string(),
             }],
+            repo: None,
         };
         let json = serde_json::to_string(&edge).unwrap();
         let deserialized: Edge = serde_json::from_str(&json).unwrap();
@@ -501,6 +512,7 @@ mod tests {
                 doc_comment: Some("Handles HTTP requests".to_string()),
                 module: Some("api".to_string()),
                 snippet: None,
+                repo: None,
             }],
             edges: vec![Edge {
                 source: "api::handler".to_string(),
@@ -519,6 +531,7 @@ mod tests {
                     },
                     symbol_id: "api::handler".to_string(),
                 }],
+                repo: None,
             }],
         };
         let json = serde_json::to_string(&graph).unwrap();

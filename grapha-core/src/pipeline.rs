@@ -191,6 +191,7 @@ mod tests {
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             });
             Ok(result)
         }
@@ -264,6 +265,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         };
         let result = ExtractionResult {
             nodes: vec![node],
@@ -277,6 +279,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
             imports: Vec::new(),
         };

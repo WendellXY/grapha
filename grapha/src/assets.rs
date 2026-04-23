@@ -536,6 +536,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         };
         node.metadata
             .insert(META_ASSET_REF_KIND.to_string(), "image".to_string());

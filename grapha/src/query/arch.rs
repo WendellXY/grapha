@@ -250,6 +250,7 @@ mod tests {
             doc_comment: None,
             module: Some(module.to_string()),
             snippet: None,
+            repo: None,
         }
     }
 
@@ -264,6 +265,7 @@ mod tests {
             condition: None,
             async_boundary: None,
             provenance: Vec::new(),
+            repo: None,
         }
     }
 

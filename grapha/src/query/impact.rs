@@ -278,6 +278,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         };
         Graph {
             version: "0.1.0".to_string(),
@@ -293,6 +294,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "b".into(),
@@ -304,6 +306,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "c".into(),
@@ -315,6 +318,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         }
@@ -361,6 +365,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         };
 
         let graph = Graph {
@@ -381,6 +386,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "view.swift::RoomPage::body".into(),
@@ -392,6 +398,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };
@@ -447,6 +454,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         };
         let graph = Graph {
             version: "0.1.0".to_string(),
@@ -462,6 +470,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "alpha".into(),
@@ -473,6 +482,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };
@@ -505,6 +515,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         };
         let graph = Graph {
             version: "0.1.0".to_string(),
@@ -520,6 +531,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "alpha".into(),
@@ -531,6 +543,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };
@@ -558,6 +571,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         };
 
         let graph = Graph {
@@ -580,6 +594,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "Mutex".into(),
@@ -591,6 +606,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "useMutex".into(),
@@ -602,6 +618,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "app".into(),
@@ -613,6 +630,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };
@@ -649,6 +667,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "body::view:Row@10:12".into(),
@@ -666,6 +685,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![Edge {
@@ -678,6 +698,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
         };
 
@@ -712,6 +733,7 @@ mod tests {
                 doc_comment: None,
                 module: module.map(str::to_string),
                 snippet: None,
+                repo: None,
             }
         };
 
@@ -758,6 +780,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "direct_b".into(),
@@ -769,6 +792,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "indirect".into(),
@@ -780,6 +804,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };

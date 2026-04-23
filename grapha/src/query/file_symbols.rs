@@ -87,6 +87,7 @@ mod tests {
             doc_comment: None,
             module: Some("Room".into()),
             snippet: None,
+            repo: None,
         }
     }
 

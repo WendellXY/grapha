@@ -260,6 +260,7 @@ mod tests {
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: Some("app".to_string()),
             }],
             edges: vec![Edge {
                 source: "test.rs::main".to_string(),
@@ -278,6 +279,7 @@ mod tests {
                     },
                     symbol_id: "test.rs::main".to_string(),
                 }],
+                repo: Some("app".to_string()),
             }],
         };
 
@@ -294,6 +296,8 @@ mod tests {
         assert_eq!(loaded.edges.len(), 1);
         assert_eq!(loaded.edges[0].confidence, 0.85);
         assert_eq!(loaded.edges[0].provenance, graph.edges[0].provenance);
+        assert_eq!(loaded.nodes[0].repo.as_deref(), Some("app"));
+        assert_eq!(loaded.edges[0].repo.as_deref(), Some("app"));
     }
 
     #[test]
@@ -321,6 +325,7 @@ mod tests {
                     doc_comment: Some("Handles incoming requests".to_string()),
                     module: Some("api".to_string()),
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "db::query".to_string(),
@@ -340,6 +345,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("db".to_string()),
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "internal::helper".to_string(),
@@ -357,6 +363,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![
@@ -377,6 +384,7 @@ mod tests {
                         },
                         symbol_id: "api::handler".to_string(),
                     }],
+                    repo: None,
                 },
                 Edge {
                     source: "api::handler".to_string(),
@@ -388,6 +396,7 @@ mod tests {
                     condition: None,
                     async_boundary: Some(false),
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "api::handler".to_string(),
@@ -399,6 +408,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };
@@ -505,6 +515,7 @@ mod tests {
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             }],
             edges: vec![],
         };
@@ -542,6 +553,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "b".to_string(),
@@ -559,6 +571,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![Edge {
@@ -571,6 +584,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
         };
         store.save(&previous).unwrap();
@@ -597,6 +611,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![
@@ -610,6 +625,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "a".to_string(),
@@ -621,6 +637,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };
@@ -716,6 +733,7 @@ mod tests {
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             }],
             edges: vec![],
         };
@@ -926,6 +944,7 @@ mod tests {
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             }],
             edges: vec![],
         };
@@ -962,6 +981,7 @@ mod tests {
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             }],
             edges: vec![Edge {
                 source: "main".to_string(),
@@ -973,6 +993,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             }],
         };
 
@@ -1045,6 +1066,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("mod".to_string()),
                     snippet,
+                    repo: None,
                 }
             })
             .collect();
@@ -1059,6 +1081,7 @@ mod tests {
                 condition: None,
                 async_boundary: None,
                 provenance: Vec::new(),
+                repo: None,
             })
             .collect();
 
@@ -1137,6 +1160,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: Some("fn a() {\n    println!(\"hello\");\n}".to_string()),
+                    repo: None,
                 },
                 Node {
                     id: "b".to_string(),
@@ -1154,6 +1178,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![],
@@ -1196,6 +1221,7 @@ mod tests {
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             }],
             edges: vec![
                 Edge {
@@ -1208,6 +1234,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "a".to_string(),
@@ -1219,6 +1246,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "b".to_string(),
@@ -1230,6 +1258,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };
@@ -1280,6 +1309,7 @@ mod tests {
                 doc_comment: None,
                 module: None,
                 snippet: None,
+                repo: None,
             }],
             edges: vec![
                 Edge {
@@ -1292,6 +1322,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "a".to_string(),
@@ -1303,6 +1334,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };
@@ -1342,6 +1374,7 @@ mod tests {
                     doc_comment: Some("A doc comment".to_string()),
                     module: Some("App".to_string()),
                     snippet: Some("Text(\"Hello\")".to_string()),
+                    repo: None,
                 },
                 Node {
                     id: "b".to_string(),
@@ -1359,6 +1392,7 @@ mod tests {
                     doc_comment: Some("Main view".to_string()),
                     module: Some("App".to_string()),
                     snippet: Some("struct ContentView: View { ... }".to_string()),
+                    repo: None,
                 },
             ],
             edges: Vec::new(),

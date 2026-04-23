@@ -25,6 +25,8 @@ pub struct SearchResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
 }
 
@@ -32,6 +34,7 @@ pub struct SearchResult {
 pub struct SearchOptions {
     pub kind: Option<String>,
     pub module: Option<String>,
+    pub repo: Option<String>,
     pub file_glob: Option<String>,
     pub role: Option<String>,
     pub fuzzy: bool,
@@ -77,6 +80,8 @@ struct SearchFields {
     file: tantivy::schema::Field,
     module: tantivy::schema::Field,
     module_lower: tantivy::schema::Field,
+    repo: Option<tantivy::schema::Field>,
+    repo_lower: Option<tantivy::schema::Field>,
     visibility: tantivy::schema::Field,
     role: tantivy::schema::Field,
 }
@@ -94,6 +99,8 @@ fn schema() -> (Schema, SearchFields) {
     let module = schema_builder.add_text_field("module", STRING | STORED);
     // Lowercased module for case-insensitive filtering
     let module_lower = schema_builder.add_text_field("module_lower", STRING);
+    let repo = schema_builder.add_text_field("repo", STRING | STORED);
+    let repo_lower = schema_builder.add_text_field("repo_lower", STRING);
     let visibility = schema_builder.add_text_field("visibility", STRING | STORED);
     let role = schema_builder.add_text_field("role", STRING | STORED);
     (
@@ -108,6 +115,8 @@ fn schema() -> (Schema, SearchFields) {
             file,
             module,
             module_lower,
+            repo: Some(repo),
+            repo_lower: Some(repo_lower),
             visibility,
             role,
         },
@@ -145,6 +154,15 @@ fn node_document(fields: SearchFields, node: &Node, locator: &str) -> Result<Tan
         fields.visibility => visibility_str,
         fields.role => role_to_string(&node.role),
     );
+    if let Some(repo_field) = fields.repo {
+        document.add_text(repo_field, node.repo.as_deref().unwrap_or(""));
+    }
+    if let Some(repo_lower_field) = fields.repo_lower {
+        document.add_text(
+            repo_lower_field,
+            &node.repo.as_deref().unwrap_or("").to_lowercase(),
+        );
+    }
     if let Some(search_terms_field) = fields.search_terms {
         document.add_text(
             search_terms_field,
@@ -222,6 +240,10 @@ pub fn sync_index(
             return Ok(full_stats);
         }
     };
+    if fields.repo.is_none() || fields.repo_lower.is_none() {
+        rebuild_index_impl(graph, index_path)?;
+        return Ok(full_stats);
+    }
 
     let mut writer = index_writer(&index)?;
     let locators = SymbolLocatorIndex::new(graph);
@@ -260,6 +282,8 @@ fn resolve_fields(index: &Index) -> Result<SearchFields> {
         file: schema.get_field("file")?,
         module: schema.get_field("module")?,
         module_lower: schema.get_field("module_lower")?,
+        repo: schema.get_field("repo").ok(),
+        repo_lower: schema.get_field("repo_lower").ok(),
         visibility: schema.get_field("visibility")?,
         role: schema.get_field("role")?,
     })
@@ -545,6 +569,16 @@ pub fn search_filtered(
             Box::new(TermQuery::new(term, IndexRecordOption::Basic)),
         ));
     }
+    if let Some(ref repo_filter) = options.repo {
+        let Some(repo_lower_field) = fields.repo_lower else {
+            return Ok(Vec::new());
+        };
+        let term = Term::from_field_text(repo_lower_field, &repo_filter.to_lowercase());
+        clauses.push((
+            Occur::Must,
+            Box::new(TermQuery::new(term, IndexRecordOption::Basic)),
+        ));
+    }
     if let Some(ref role_filter) = options.role {
         let term = Term::from_field_text(fields.role, role_filter);
         clauses.push((
@@ -600,6 +634,7 @@ pub fn search_filtered(
             continue;
         }
         let module_val = get_str(fields.module);
+        let repo_val = fields.repo.map(|field| get_str(field)).unwrap_or_default();
         let role_val = get_str(fields.role);
         let result = SearchResult {
             id: get_str(fields.id),
@@ -612,6 +647,11 @@ pub fn search_filtered(
                 None
             } else {
                 Some(module_val)
+            },
+            repo: if repo_val.is_empty() {
+                None
+            } else {
+                Some(repo_val)
             },
             role: if role_val.is_empty() {
                 None
@@ -695,6 +735,8 @@ pub struct SearchOutputResult {
     pub locator: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub span: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -822,6 +864,11 @@ pub fn project_results(
                 } else {
                     None
                 },
+                repo: if fields.repo {
+                    result.repo.clone()
+                } else {
+                    None
+                },
                 span: if fields.span {
                     details.map(|details| node_span_string(details.node))
                 } else {
@@ -894,6 +941,7 @@ mod tests {
             doc_comment: None,
             module: None,
             snippet: None,
+            repo: None,
         };
         Graph {
             version: "0.1.0".to_string(),
@@ -933,6 +981,7 @@ mod tests {
             doc_comment: None,
             module: module.map(String::from),
             snippet: None,
+            repo: None,
         };
         Graph {
             version: "0.1.0".to_string(),
@@ -995,6 +1044,7 @@ mod tests {
             doc_comment: None,
             module: Some("ModuleExport".into()),
             snippet: None,
+            repo: None,
         };
 
         Graph {
@@ -1060,6 +1110,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![],
@@ -1133,6 +1184,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("AppUI".into()),
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "AppUI/Sources/AppResource/Generated/Strings.generated.swift::L10n::roomShareNoFriedns".into(),
@@ -1150,6 +1202,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("AppUI".into()),
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![],
@@ -1192,6 +1245,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("ModuleExport".into()),
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "other".into(),
@@ -1209,6 +1263,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("Other".into()),
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![],
@@ -1252,6 +1307,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("App".into()),
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "functiongetter:body".into(),
@@ -1269,6 +1325,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("App".into()),
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "view".into(),
@@ -1286,6 +1343,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("App".into()),
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![],
@@ -1329,6 +1387,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("App".into()),
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "private".into(),
@@ -1346,6 +1405,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("App".into()),
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![],
@@ -1389,6 +1449,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("App".into()),
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "real".into(),
@@ -1406,6 +1467,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("ModuleExport".into()),
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![],
@@ -1449,6 +1511,83 @@ mod tests {
         for r in &results {
             assert_eq!(r.module.as_deref(), Some("Core"));
         }
+    }
+
+    #[test]
+    fn filter_by_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut graph = make_rich_test_graph();
+        graph.nodes[0].repo = Some("app".into());
+        graph.nodes[1].repo = Some("app".into());
+        graph.nodes[2].repo = Some("shared".into());
+        graph.nodes[3].repo = Some("shared".into());
+        let index = build_index(&graph, dir.path()).unwrap();
+        let options = SearchOptions {
+            repo: Some("shared".into()),
+            ..Default::default()
+        };
+
+        let results = search_filtered(&index, "config", 10, &options).unwrap();
+
+        assert!(!results.is_empty());
+        for result in &results {
+            assert_eq!(result.repo.as_deref(), Some("shared"));
+        }
+    }
+
+    #[test]
+    fn sync_index_rebuilds_legacy_index_without_repo_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut schema_builder = Schema::builder();
+        let id = schema_builder.add_text_field("id", STRING | STORED);
+        let locator = schema_builder.add_text_field("locator", TEXT | STORED);
+        let name = schema_builder.add_text_field("name", TEXT | STORED);
+        let name_lower = schema_builder.add_text_field("name_lower", STRING);
+        schema_builder.add_text_field("search_terms", TEXT);
+        let kind = schema_builder.add_text_field("kind", STRING | STORED);
+        let file = schema_builder.add_text_field("file", TEXT | STORED);
+        let module = schema_builder.add_text_field("module", STRING | STORED);
+        let module_lower = schema_builder.add_text_field("module_lower", STRING);
+        let visibility = schema_builder.add_text_field("visibility", STRING | STORED);
+        let role = schema_builder.add_text_field("role", STRING | STORED);
+        let index = Index::create_in_dir(dir.path(), schema_builder.build()).unwrap();
+        let mut writer = index.writer(50_000_000).unwrap();
+        writer
+            .add_document(tantivy::doc!(
+                id => "legacy",
+                locator => "legacy",
+                name => "Config",
+                name_lower => "config",
+                kind => "struct",
+                file => "Config.swift",
+                module => "Core",
+                module_lower => "core",
+                visibility => "public",
+                role => "internal",
+            ))
+            .unwrap();
+        writer.commit().unwrap();
+
+        let mut graph = make_rich_test_graph();
+        for node in &mut graph.nodes {
+            node.repo = Some("shared".into());
+        }
+
+        let stats = sync_index(Some(&graph), &graph, dir.path(), false, None).unwrap();
+        assert_eq!(stats.mode, SyncMode::FullRebuild);
+
+        let rebuilt = Index::open_in_dir(dir.path()).unwrap();
+        let options = SearchOptions {
+            repo: Some("shared".into()),
+            ..Default::default()
+        };
+        let results = search_filtered(&rebuilt, "Config", 10, &options).unwrap();
+        assert!(!results.is_empty());
+        assert!(
+            results
+                .iter()
+                .all(|result| result.repo.as_deref() == Some("shared"))
+        );
     }
 
     #[test]
@@ -1593,6 +1732,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("App".into()),
                     snippet: Some("fn main() { helper(); }".into()),
+                    repo: None,
                 },
                 Node {
                     id: "app::helper".into(),
@@ -1610,6 +1750,7 @@ mod tests {
                     doc_comment: None,
                     module: Some("App".into()),
                     snippet: Some("fn helper() {}".into()),
+                    repo: None,
                 },
             ],
             edges: vec![Edge {
@@ -1622,6 +1763,7 @@ mod tests {
                 condition: None,
                 async_boundary: Some(false),
                 provenance: Vec::new(),
+                repo: None,
             }],
         };
         let results = vec![SearchResult {
@@ -1632,13 +1774,14 @@ mod tests {
             file: "src/main.rs".into(),
             score: 1.0,
             module: Some("App".into()),
+            repo: Some("app".into()),
             role: Some("entry_point".into()),
         }];
 
         let projected = project_results(
             &results,
             Some(&graph),
-            FieldSet::parse("id,signature,role,snippet"),
+            FieldSet::parse("id,repo,signature,role,snippet"),
             true,
         );
 
@@ -1647,6 +1790,7 @@ mod tests {
         assert_eq!(result.name, "main");
         assert_eq!(result.kind, "function");
         assert_eq!(result.id.as_deref(), Some("app::main"));
+        assert_eq!(result.repo.as_deref(), Some("app"));
         assert_eq!(result.signature.as_deref(), Some("fn main()"));
         assert_eq!(result.role.as_deref(), Some("entry_point"));
         assert_eq!(result.snippet.as_deref(), Some("fn main() { helper(); }"));

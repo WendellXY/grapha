@@ -117,6 +117,7 @@ fn emit_swiftui_node(
         doc_comment: None,
         module: None,
         snippet: None,
+        repo: None,
     });
     context.emit_edge(Edge {
         source: parent_id.to_string(),
@@ -128,6 +129,7 @@ fn emit_swiftui_node(
         condition: None,
         async_boundary: None,
         provenance: node_edge_provenance(file, node, parent_id),
+        repo: None,
     });
     id
 }
@@ -266,6 +268,7 @@ fn emit_dependency_read(
         condition: find_enclosing_swift_condition(node, source),
         async_boundary: None,
         provenance: node_edge_provenance(file, node, owner_id),
+        repo: None,
     });
 }
 
@@ -439,6 +442,7 @@ fn emit_swiftui_view_reference(
             condition: None,
             async_boundary: None,
             provenance: node_edge_provenance(file, node, &view_id),
+            repo: None,
         });
     }
     Some(view_id)
@@ -480,6 +484,7 @@ fn emit_swiftui_call_reference(
         condition: None,
         async_boundary: None,
         provenance: node_edge_provenance(file, node, &view_id),
+        repo: None,
     });
     for lambda in structural_call_suffix_lambda_children(node, source) {
         let _ = extract_swiftui_structure(
@@ -865,6 +870,7 @@ fn extract_swiftui_structure(
                         condition: None,
                         async_boundary: None,
                         provenance: node_edge_provenance(file, node, &view_id),
+                        repo: None,
                     });
                 }
                 for lambda in structural_call_suffix_lambda_children(node, source) {

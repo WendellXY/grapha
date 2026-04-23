@@ -31,6 +31,7 @@ impl RenderOptions {
                 id: false,
                 locator: false,
                 module: false,
+                repo: false,
                 span: false,
                 snippet: false,
                 visibility: false,
@@ -48,6 +49,7 @@ impl RenderOptions {
                 id: false,
                 locator: false,
                 module: false,
+                repo: false,
                 span: false,
                 snippet: false,
                 visibility: false,
@@ -278,6 +280,9 @@ fn symbol_info_details(symbol: &SymbolInfo, options: RenderOptions) -> Vec<TreeN
     if fields.module {
         push_detail(&mut children, "module", symbol.module.clone(), options);
     }
+    if fields.repo {
+        push_detail(&mut children, "repo", symbol.repo.clone(), options);
+    }
     if fields.span {
         push_detail(
             &mut children,
@@ -332,6 +337,9 @@ fn symbol_ref_details(symbol: &SymbolRef, options: RenderOptions) -> Vec<TreeNod
     if fields.module {
         push_detail(&mut children, "module", symbol.module.clone(), options);
     }
+    if fields.repo {
+        push_detail(&mut children, "repo", symbol.repo.clone(), options);
+    }
     if fields.span {
         push_detail(&mut children, "span", symbol.span.map(format_span), options);
     }
@@ -380,6 +388,9 @@ fn symbol_tree_ref_details(symbol: &SymbolTreeRef, options: RenderOptions) -> Ve
     }
     if fields.module {
         push_detail(&mut children, "module", symbol.module.clone(), options);
+    }
+    if fields.repo {
+        push_detail(&mut children, "repo", symbol.repo.clone(), options);
     }
     if fields.span {
         push_detail(&mut children, "span", symbol.span.map(format_span), options);
@@ -1610,6 +1621,7 @@ mod tests {
             signature: None,
             module: None,
             snippet: None,
+            repo: None,
         }
     }
 
@@ -1626,6 +1638,7 @@ mod tests {
             signature: None,
             module: None,
             snippet: None,
+            repo: None,
         }
     }
 
@@ -1684,6 +1697,7 @@ mod tests {
                 signature: None,
                 module: None,
                 snippet: None,
+                repo: None,
                 contains: vec![
                     SymbolTreeRef {
                         id: "ContentView.swift::body::Text".into(),
@@ -1697,6 +1711,7 @@ mod tests {
                         signature: None,
                         module: None,
                         snippet: None,
+                        repo: None,
                         contains: Vec::new(),
                     },
                     SymbolTreeRef {
@@ -1711,6 +1726,7 @@ mod tests {
                         signature: None,
                         module: None,
                         snippet: None,
+                        repo: None,
                         contains: Vec::new(),
                     },
                 ],

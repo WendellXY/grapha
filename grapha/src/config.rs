@@ -54,7 +54,15 @@ pub struct ExternalRepo {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+pub struct RepoConfig {
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct GraphaConfig {
+    #[serde(default)]
+    pub repo: RepoConfig,
     #[serde(default)]
     pub swift: SwiftConfig,
     #[serde(default)]
@@ -93,12 +101,14 @@ impl GraphaConfig {
     pub fn index_input_fingerprint(&self) -> String {
         #[derive(Serialize)]
         struct IndexInputFingerprint<'a> {
+            repo_name: &'a Option<String>,
             swift_index_store: bool,
             classifiers: &'a [ClassifierRule],
             external: &'a [ExternalRepo],
         }
 
         serde_json::to_string(&IndexInputFingerprint {
+            repo_name: &self.repo.name,
             swift_index_store: self.swift.index_store,
             classifiers: &self.classifiers,
             external: &self.external,
@@ -242,6 +252,16 @@ path = "/path/to/framenetwork"
     }
 
     #[test]
+    fn parse_repo_name() {
+        let toml_str = r#"
+[repo]
+name = "MobileApp"
+"#;
+        let config: GraphaConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.repo.name.as_deref(), Some("MobileApp"));
+    }
+
+    #[test]
     fn parse_architecture_rules() {
         let toml_str = r#"
 [[architecture.layers]]
@@ -340,6 +360,29 @@ path = "../shared"
         )
         .unwrap();
         let config_b: GraphaConfig = toml::from_str("").unwrap();
+
+        assert_ne!(
+            config_a.index_input_fingerprint(),
+            config_b.index_input_fingerprint()
+        );
+    }
+
+    #[test]
+    fn index_input_fingerprint_tracks_repo_name() {
+        let config_a: GraphaConfig = toml::from_str(
+            r#"
+[repo]
+name = "AppA"
+"#,
+        )
+        .unwrap();
+        let config_b: GraphaConfig = toml::from_str(
+            r#"
+[repo]
+name = "AppB"
+"#,
+        )
+        .unwrap();
 
         assert_ne!(
             config_a.index_input_fingerprint(),

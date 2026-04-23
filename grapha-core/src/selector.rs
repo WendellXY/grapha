@@ -241,6 +241,7 @@ mod tests {
             doc_comment: None,
             module: Some("Demo".to_string()),
             snippet: None,
+            repo: None,
             synthetic_kind: Some("swiftui_view".to_string()),
         }
     }
@@ -259,6 +260,7 @@ mod tests {
             condition: None,
             async_boundary: None,
             provenance: Vec::new(),
+            repo: None,
             terminal_kind: Some(TerminalKind::Network),
         });
 
@@ -301,6 +303,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
                 Node {
                     id: "callee".to_string(),
@@ -318,6 +321,7 @@ mod tests {
                     doc_comment: None,
                     module: None,
                     snippet: None,
+                    repo: None,
                 },
             ],
             edges: vec![
@@ -331,6 +335,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
                 Edge {
                     source: "caller".to_string(),
@@ -342,6 +347,7 @@ mod tests {
                     condition: None,
                     async_boundary: None,
                     provenance: Vec::new(),
+                    repo: None,
                 },
             ],
         };

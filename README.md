@@ -62,6 +62,7 @@ grapha repo status
 # Search symbols
 grapha symbol search "ViewModel" --kind struct --context --fields full
 grapha symbol search "send" --kind function --module Room --fuzzy --declarations-only
+grapha symbol search "ProfileAPI" --repo FrameUI --fields file,repo,locator
 
 # 360° context — callers, callees, reads, implements
 grapha symbol context RoomPage --format tree
@@ -149,11 +150,11 @@ Add to `.mcp.json`:
 ### Symbols
 
 ```bash
-grapha symbol search "query" [--limit N] [--kind K] [--module M] [--file GLOB] [--role R]
+grapha symbol search "query" [--limit N] [--kind K] [--module M] [--repo R] [--file GLOB] [--role ROLE]
 grapha symbol search "query" [--fuzzy] [--exact-name] [--declarations-only] [--public-only]
-grapha symbol search "query" [--context] [--fields file,id,module,snippet]
+grapha symbol search "query" [--context] [--fields file,id,module,repo,snippet]
 grapha symbol context <symbol> [--format json|tree|brief] [--fields full]
-grapha symbol impact <symbol> [--depth N] [--format json|tree] [--fields file,module]
+grapha symbol impact <symbol> [--depth N] [--format json|tree] [--fields file,module,repo]
 grapha symbol complexity <symbol>          # property/method/dependency counts, severity
 grapha symbol file <path>                  # list declarations in a file
 ```
@@ -211,11 +212,14 @@ grapha concept prune                       # drop bindings to missing symbols
 Optional `grapha.toml` at project root:
 
 ```toml
+[repo]
+name = "MobileApp"                         # defaults to the project directory name
+
 [swift]
 index_store = true                         # false → tree-sitter only
 
 [output]
-default_fields = ["file", "module"]
+default_fields = ["file", "module", "repo"]
 
 [[external]]
 name = "FrameUI"

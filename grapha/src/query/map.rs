@@ -83,6 +83,7 @@ mod tests {
             doc_comment: None,
             module: module.map(String::from),
             snippet: None,
+            repo: None,
         }
     }
 
