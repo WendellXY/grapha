@@ -221,6 +221,10 @@ pub(crate) fn load_catalog_index_from_store(
     Ok(LocalizationCatalogIndex::from_records(snapshot.records))
 }
 
+pub(crate) fn snapshot_exists(store_dir: &Path) -> bool {
+    catalog_snapshot_path(store_dir).exists()
+}
+
 fn build_catalog_snapshot(
     root: &Path,
 ) -> anyhow::Result<(LocalizationSnapshot, Vec<LocalizationSnapshotWarning>)> {

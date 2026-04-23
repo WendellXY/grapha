@@ -24,7 +24,7 @@ pub struct OutputConfig {
     pub default_fields: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ExternalRepo {
     pub name: String,
     pub path: String,
@@ -61,6 +61,22 @@ impl GraphaConfig {
         serde_json::to_string(&ExtractionCacheFingerprint {
             swift_index_store: self.swift.index_store,
             classifiers: &self.classifiers,
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn index_input_fingerprint(&self) -> String {
+        #[derive(Serialize)]
+        struct IndexInputFingerprint<'a> {
+            swift_index_store: bool,
+            classifiers: &'a [ClassifierRule],
+            external: &'a [ExternalRepo],
+        }
+
+        serde_json::to_string(&IndexInputFingerprint {
+            swift_index_store: self.swift.index_store,
+            classifiers: &self.classifiers,
+            external: &self.external,
         })
         .unwrap_or_default()
     }
@@ -246,6 +262,24 @@ operation = "PUBLISH"
         assert_ne!(
             config_a.extraction_cache_fingerprint(),
             config_c.extraction_cache_fingerprint()
+        );
+    }
+
+    #[test]
+    fn index_input_fingerprint_tracks_external_repos() {
+        let config_a: GraphaConfig = toml::from_str(
+            r#"
+[[external]]
+name = "Shared"
+path = "../shared"
+"#,
+        )
+        .unwrap();
+        let config_b: GraphaConfig = toml::from_str("").unwrap();
+
+        assert_ne!(
+            config_a.index_input_fingerprint(),
+            config_b.index_input_fingerprint()
         );
     }
 }

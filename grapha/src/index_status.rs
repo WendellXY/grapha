@@ -7,7 +7,9 @@ use anyhow::Context;
 use git2::{DiffOptions, Oid, Repository, StatusOptions};
 use serde::{Deserialize, Serialize};
 
-use crate::cache::FileStamp;
+use crate::cache::{self, FileStamp};
+use crate::config::GraphaConfig;
+use crate::{assets, localization};
 
 const INDEX_STATUS_FILENAME: &str = "index_status.json";
 const INDEX_STATUS_VERSION: u32 = 1;
@@ -33,6 +35,12 @@ struct IndexStatusSnapshot {
     grapha_version: String,
     node_count: usize,
     edge_count: usize,
+    #[serde(default)]
+    binary_stamp: Option<FileStamp>,
+    #[serde(default)]
+    config_fingerprint: String,
+    #[serde(default)]
+    index_store_path: Option<String>,
     repo: Option<IndexedRepoState>,
 }
 
@@ -164,6 +172,20 @@ fn capture_repo_state(project_root: &Path) -> anyhow::Result<Option<IndexedRepoS
 
 fn status_path(store_dir: &Path) -> PathBuf {
     store_dir.join(INDEX_STATUS_FILENAME)
+}
+
+fn required_index_artifacts_exist(store_dir: &Path) -> bool {
+    store_dir.join("grapha.db").is_file()
+        && store_dir.join("search_index").is_dir()
+        && localization::snapshot_exists(store_dir)
+        && assets::snapshot_exists(store_dir)
+}
+
+fn current_index_store_path(project_root: &Path, config: &GraphaConfig) -> Option<String> {
+    if !config.swift.index_store {
+        return None;
+    }
+    grapha_swift::refresh_index_store(project_root).map(|path| normalize_repo_path(&path))
 }
 
 fn save_snapshot(store_dir: &Path, snapshot: &IndexStatusSnapshot) -> anyhow::Result<()> {
@@ -340,6 +362,7 @@ pub fn save_index_status(
     store_dir: &Path,
     node_count: usize,
     edge_count: usize,
+    config: &GraphaConfig,
 ) -> anyhow::Result<()> {
     let snapshot = IndexStatusSnapshot {
         version: INDEX_STATUS_VERSION,
@@ -347,9 +370,54 @@ pub fn save_index_status(
         grapha_version: env!("CARGO_PKG_VERSION").to_string(),
         node_count,
         edge_count,
+        binary_stamp: cache::current_binary_stamp(),
+        config_fingerprint: config.index_input_fingerprint(),
+        index_store_path: current_index_store_path(project_root, config),
         repo: capture_repo_state(project_root)?,
     };
     save_snapshot(store_dir, &snapshot)
+}
+
+pub fn can_skip_index(
+    project_root: &Path,
+    store_dir: &Path,
+    config: &GraphaConfig,
+) -> anyhow::Result<Option<IndexStatus>> {
+    if !config.external.is_empty() || !required_index_artifacts_exist(store_dir) {
+        return Ok(None);
+    }
+
+    let snapshot = match load_snapshot(store_dir) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            if status_path(store_dir).exists() {
+                return Err(error);
+            }
+            return Ok(None);
+        }
+    };
+
+    let status = compute_status(snapshot.clone(), project_root)?;
+    if !status.freshness_tracking_available || status.may_be_stale {
+        return Ok(None);
+    }
+
+    let Some(current_binary_stamp) = cache::current_binary_stamp() else {
+        return Ok(None);
+    };
+    if snapshot.binary_stamp != Some(current_binary_stamp) {
+        return Ok(None);
+    }
+
+    if snapshot.config_fingerprint != config.index_input_fingerprint() {
+        return Ok(None);
+    }
+
+    if snapshot.index_store_path != current_index_store_path(project_root, config) {
+        return Ok(None);
+    }
+
+    Ok(Some(status))
 }
 
 pub fn load_index_status(project_root: &Path, store_dir: &Path) -> anyhow::Result<IndexStatus> {
@@ -368,6 +436,7 @@ pub fn load_index_status(project_root: &Path, store_dir: &Path) -> anyhow::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::GraphaConfig;
     use git2::{IndexAddOption, Signature};
     use std::time::Duration;
     use tempfile::tempdir;
@@ -392,6 +461,21 @@ mod tests {
         Ok(())
     }
 
+    fn seed_index_artifacts(store_dir: &Path) {
+        fs::create_dir_all(store_dir.join("search_index")).unwrap();
+        fs::write(store_dir.join("grapha.db"), "").unwrap();
+        fs::write(
+            store_dir.join("localization.json"),
+            r#"{"version":"1","records":[]}"#,
+        )
+        .unwrap();
+        fs::write(
+            store_dir.join("assets.json"),
+            r#"{"version":"1","records":[]}"#,
+        )
+        .unwrap();
+    }
+
     #[test]
     fn status_reports_clean_repo_as_fresh() {
         let dir = tempdir().unwrap();
@@ -400,7 +484,7 @@ mod tests {
         commit_all(&repo, "initial").unwrap();
 
         let store_dir = dir.path().join(".grapha");
-        save_index_status(dir.path(), &store_dir, 1, 0).unwrap();
+        save_index_status(dir.path(), &store_dir, 1, 0, &GraphaConfig::default()).unwrap();
 
         let status = load_index_status(dir.path(), &store_dir).unwrap();
         assert!(status.freshness_tracking_available);
@@ -417,7 +501,7 @@ mod tests {
         commit_all(&repo, "initial").unwrap();
 
         let store_dir = dir.path().join(".grapha");
-        save_index_status(dir.path(), &store_dir, 1, 0).unwrap();
+        save_index_status(dir.path(), &store_dir, 1, 0, &GraphaConfig::default()).unwrap();
         std::thread::sleep(Duration::from_millis(10));
         fs::write(&source, "fn main() { println!(\"hi\"); }\n").unwrap();
 
@@ -443,7 +527,7 @@ mod tests {
 
         fs::write(&source, "fn main() { println!(\"indexed\"); }\n").unwrap();
         let store_dir = dir.path().join(".grapha");
-        save_index_status(dir.path(), &store_dir, 1, 0).unwrap();
+        save_index_status(dir.path(), &store_dir, 1, 0, &GraphaConfig::default()).unwrap();
 
         let status = load_index_status(dir.path(), &store_dir).unwrap();
         assert!(!status.may_be_stale);
@@ -453,5 +537,99 @@ mod tests {
         let stale = load_index_status(dir.path(), &store_dir).unwrap();
         assert!(stale.may_be_stale);
         assert_eq!(stale.changed_file_count_since_index, 1);
+    }
+
+    #[test]
+    fn can_skip_index_when_repo_and_inputs_match() {
+        let dir = tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        fs::write(dir.path().join("src.rs"), "fn main() {}\n").unwrap();
+        commit_all(&repo, "initial").unwrap();
+
+        let store_dir = dir.path().join(".grapha");
+        seed_index_artifacts(&store_dir);
+        let config = GraphaConfig::default();
+        save_index_status(dir.path(), &store_dir, 1, 0, &config).unwrap();
+
+        let status = can_skip_index(dir.path(), &store_dir, &config).unwrap();
+        assert!(
+            status.is_some(),
+            "matching inputs should allow a fast-path skip"
+        );
+    }
+
+    #[test]
+    fn can_skip_index_rejects_config_changes() {
+        let dir = tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        fs::write(dir.path().join("src.rs"), "fn main() {}\n").unwrap();
+        commit_all(&repo, "initial").unwrap();
+
+        let store_dir = dir.path().join(".grapha");
+        seed_index_artifacts(&store_dir);
+        let indexed_config = GraphaConfig::default();
+        save_index_status(dir.path(), &store_dir, 1, 0, &indexed_config).unwrap();
+
+        let changed_config: GraphaConfig = toml::from_str(
+            r#"
+[[classifiers]]
+pattern = "URLSession"
+terminal = "network"
+direction = "read"
+operation = "HTTP"
+"#,
+        )
+        .unwrap();
+
+        let status = can_skip_index(dir.path(), &store_dir, &changed_config).unwrap();
+        assert!(
+            status.is_none(),
+            "config changes must invalidate the fast path"
+        );
+    }
+
+    #[test]
+    fn can_skip_index_requires_complete_artifacts() {
+        let dir = tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        fs::write(dir.path().join("src.rs"), "fn main() {}\n").unwrap();
+        commit_all(&repo, "initial").unwrap();
+
+        let store_dir = dir.path().join(".grapha");
+        fs::create_dir_all(&store_dir).unwrap();
+        let config = GraphaConfig::default();
+        save_index_status(dir.path(), &store_dir, 1, 0, &config).unwrap();
+
+        let status = can_skip_index(dir.path(), &store_dir, &config).unwrap();
+        assert!(
+            status.is_none(),
+            "missing artifacts should fall back to full indexing"
+        );
+    }
+
+    #[test]
+    fn can_skip_index_is_disabled_for_external_repos() {
+        let dir = tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        fs::write(dir.path().join("src.rs"), "fn main() {}\n").unwrap();
+        commit_all(&repo, "initial").unwrap();
+
+        let store_dir = dir.path().join(".grapha");
+        seed_index_artifacts(&store_dir);
+        let config: GraphaConfig = toml::from_str(
+            r#"
+[[external]]
+name = "Shared"
+path = "/tmp/shared"
+"#,
+        )
+        .unwrap();
+        save_index_status(dir.path(), &store_dir, 1, 0, &config).unwrap();
+
+        let status = can_skip_index(dir.path(), &store_dir, &config).unwrap();
+        assert!(
+            status.is_none(),
+            "externals keep the fast path conservative"
+        );
     }
 }

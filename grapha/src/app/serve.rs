@@ -56,6 +56,7 @@ fn run_mcp_server_with_optional_watch(
                                                 &store_path,
                                                 graph.nodes.len(),
                                                 graph.edges.len(),
+                                                &crate::config::load_config(&project_path),
                                             ) {
                                                 eprintln!(
                                                     "watch: failed to save index status: {e}"

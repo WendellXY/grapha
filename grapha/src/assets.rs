@@ -314,6 +314,10 @@ pub(crate) fn load_asset_index_from_store(store_dir: &Path) -> anyhow::Result<As
     Ok(AssetCatalogIndex::from_records(snapshot.records))
 }
 
+pub(crate) fn snapshot_exists(store_dir: &Path) -> bool {
+    snapshot_path(store_dir).exists()
+}
+
 // ---------------------------------------------------------------------------
 // Query: find usages in graph
 // ---------------------------------------------------------------------------

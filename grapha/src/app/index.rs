@@ -129,6 +129,32 @@ pub(crate) fn handle_index(
 ) -> anyhow::Result<()> {
     let total_start = Instant::now();
     let store_path = store_dir.unwrap_or_else(|| path.join(".grapha"));
+    let config = crate::config::load_config(&path);
+
+    if !full_rebuild {
+        match index_status::can_skip_index(&path, &store_path, &config) {
+            Ok(Some(status)) => {
+                progress::done_elapsed(
+                    "index is up to date, skipping rebuild",
+                    total_start.elapsed(),
+                );
+                progress::summary(&format!(
+                    "\n  {} nodes, {} edges indexed in {:.1}s",
+                    status.node_count,
+                    status.edge_count,
+                    total_start.elapsed().as_secs_f64(),
+                ));
+                return Ok(());
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!(
+                    "  \x1b[33m!\x1b[0m failed to evaluate no-op fast path, falling back to full index: {error}"
+                );
+            }
+        }
+    }
+
     let extraction_cache = cache::ExtractionCache::new(&store_path);
     let previous_extraction_cache = if full_rebuild {
         None
@@ -199,7 +225,13 @@ pub(crate) fn handle_index(
         extraction_cache
             .save_entries(&pipeline.extraction_cache_entries)
             .with_context(|| "failed to save extraction cache".to_string())?;
-        index_status::save_index_status(&path, &store_path, graph.nodes.len(), graph.edges.len())?;
+        index_status::save_index_status(
+            &path,
+            &store_path,
+            graph.nodes.len(),
+            graph.edges.len(),
+            &config,
+        )?;
 
         eprintln!("  \x1b[32m✓\x1b[0m no graph changes detected, skipping store and search sync");
         progress::done_elapsed(
@@ -301,7 +333,13 @@ pub(crate) fn handle_index(
     extraction_cache
         .save_entries(&pipeline.extraction_cache_entries)
         .with_context(|| "failed to save extraction cache".to_string())?;
-    index_status::save_index_status(&path, &store_path, graph.nodes.len(), graph.edges.len())?;
+    index_status::save_index_status(
+        &path,
+        &store_path,
+        graph.nodes.len(),
+        graph.edges.len(),
+        &config,
+    )?;
 
     progress::done_elapsed(
         &format!(

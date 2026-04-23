@@ -179,7 +179,7 @@ impl ExtractionCache {
     }
 }
 
-fn current_binary_stamp() -> Option<FileStamp> {
+pub(crate) fn current_binary_stamp() -> Option<FileStamp> {
     let executable = std::env::current_exe().ok()?;
     FileStamp::from_path(&executable)
 }
