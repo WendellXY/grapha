@@ -85,10 +85,17 @@ Evidence:
 - Public docs: `README.md`
 - Tests: history store filtering plus `grapha repo history add/list` integration round-trip
 
-### Remaining
+4. **Brief agent output expansion** — done
+   Extended compact `--format brief` output to high-use graph-navigation commands. `symbol impact`, forward/reverse `flow trace`, and `repo smells` now have command-specific brief renderers and cache `repo smells` results by output format.
 
-4. **Brief agent output expansion**
-   Extend compact `--format brief` output beyond the first `context`/`arch` slice to additional high-use commands such as `impact`, `trace`, and `smells`.
+Evidence:
+
+- CLI wiring: `grapha/src/main.rs`, `grapha/src/app/query.rs`
+- Brief renderers: `grapha/src/render.rs`
+- Public docs: `README.md`
+- Tests: `trace_brief_format_works`, `impact_brief_format_works`, and `repo_smells_brief_format_works`
+
+### Remaining
 
 6. **Optional inferred enrichment**
    Add opt-in LLM or heuristic enrichment for module summaries, ownership, and doc-code links. Store these as inferred metadata with confidence.

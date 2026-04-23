@@ -12,8 +12,8 @@ use crate::query::{
     dataflow::DataflowEdgeKind, dataflow::DataflowNode, dataflow::DataflowNodeKind,
     dataflow::DataflowResult, entries::EntriesResult, impact::ImpactResult, impact::ImpactTreeNode,
     localize::LocalizeResult, origin::OriginPath, origin::OriginResult, origin::OriginSnippet,
-    reverse::AffectedEntry, reverse::ReverseResult, trace::Flow, trace::TraceResult,
-    usages::UsagesResult,
+    reverse::AffectedEntry, reverse::ReverseResult, smells::SmellsResult, trace::Flow,
+    trace::TraceResult, usages::UsagesResult,
 };
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1187,6 +1187,48 @@ pub fn render_trace_with_options(result: &TraceResult, options: RenderOptions) -
     render_tree(&root)
 }
 
+pub fn render_trace_brief_with_options(result: &TraceResult, options: RenderOptions) -> String {
+    let options = brief_options(options);
+    let mut lines = vec![
+        format!("trace: {}", format_symbol_ref(&result.entry_ref, options)),
+        format!(
+            "summary: flows={}, reads={}, writes={}, async_crossings={}",
+            result.summary.total_flows,
+            result.summary.reads,
+            result.summary.writes,
+            result.summary.async_crossings
+        ),
+        format!("requested_symbol: {}", result.requested_symbol),
+        format!("traced_roots: {}", result.traced_roots.join(", ")),
+        format!("fallback_used: {}", result.fallback_used),
+    ];
+    if let Some(hint) = result.hint.as_deref() {
+        lines.push(format!("hint: {hint}"));
+    }
+    if !result.flows.is_empty() {
+        lines.push(format!("flows({}):", result.flows.len()));
+        lines.extend(result.flows.iter().map(format_trace_flow_brief));
+    }
+    lines.join("\n")
+}
+
+fn format_trace_flow_brief(flow: &Flow) -> String {
+    let mut line = format!("- {}", flow.path.join(" -> "));
+    if let Some(terminal) = &flow.terminal {
+        line.push_str(&format!(
+            " [terminal:{} {} {}]",
+            terminal.kind, terminal.direction, terminal.operation
+        ));
+    }
+    if !flow.conditions.is_empty() {
+        line.push_str(&format!(" conditions={}", flow.conditions.join("; ")));
+    }
+    if !flow.async_boundaries.is_empty() {
+        line.push_str(&format!(" async={}", flow.async_boundaries.join("; ")));
+    }
+    line
+}
+
 fn dataflow_edge_kind_label(kind: DataflowEdgeKind) -> &'static str {
     match kind {
         DataflowEdgeKind::Call => "call",
@@ -1394,6 +1436,29 @@ pub fn render_reverse_with_options(result: &ReverseResult, options: RenderOption
     render_tree(&root)
 }
 
+pub fn render_reverse_brief_with_options(result: &ReverseResult, options: RenderOptions) -> String {
+    let options = brief_options(options);
+    let mut lines = vec![
+        format!(
+            "reverse: {}",
+            format_symbol_ref(&result.target_ref, options)
+        ),
+        format!("affected_entries: {}", result.total_entries),
+    ];
+    if !result.affected_entries.is_empty() {
+        lines.push("entries:".to_string());
+        lines.extend(result.affected_entries.iter().map(|entry| {
+            format!(
+                "- {} distance={} path={}",
+                format_symbol_ref(&entry.entry, options),
+                entry.distance,
+                entry.path.join(" -> ")
+            )
+        }));
+    }
+    lines.join("\n")
+}
+
 fn origin_leaf_label(origin: &OriginPath, options: RenderOptions) -> String {
     let palette = Palette::new(options);
     format!(
@@ -1566,6 +1631,82 @@ pub fn render_impact_with_options(result: &ImpactResult, options: RenderOptions)
     );
 
     render_tree(&root)
+}
+
+pub fn render_impact_brief_with_options(result: &ImpactResult, options: RenderOptions) -> String {
+    let options = brief_options(options);
+    let mut lines = vec![
+        format!("impact: {}", format_symbol_ref(&result.source_ref, options)),
+        format!(
+            "summary: total={}, depth_1={}, depth_2={}, depth_3_plus={}",
+            result.total_affected,
+            result.depth_1.len(),
+            result.depth_2.len(),
+            result.depth_3_plus.len()
+        ),
+        format!(
+            "direct: dependents={}, files={}, modules={}, public={}, internal={}",
+            result.summary.direct_dependent_count,
+            result.summary.direct_file_count,
+            result.summary.direct_module_count,
+            result.summary.public_dependent_count,
+            result.summary.internal_dependent_count
+        ),
+    ];
+
+    if let Some(section) = format_brief_section("depth_1", &result.depth_1, options) {
+        lines.push(section);
+    }
+    if let Some(section) = format_brief_section("depth_2", &result.depth_2, options) {
+        lines.push(section);
+    }
+    if let Some(section) = format_brief_section("depth_3_plus", &result.depth_3_plus, options) {
+        lines.push(section);
+    }
+
+    lines.join("\n")
+}
+
+pub fn render_smells_brief_with_options(result: &SmellsResult) -> String {
+    let mut severity_parts = ["critical", "warning"]
+        .into_iter()
+        .filter_map(|severity| {
+            result
+                .by_severity
+                .get(severity)
+                .map(|count| format!("{severity}={count}"))
+        })
+        .collect::<Vec<_>>();
+    let mut other = result
+        .by_severity
+        .iter()
+        .filter(|(severity, _)| !matches!(severity.as_str(), "critical" | "warning"))
+        .map(|(severity, count)| format!("{severity}={count}"))
+        .collect::<Vec<_>>();
+    other.sort();
+    severity_parts.extend(other);
+
+    let mut lines = vec![format!(
+        "smells: total={}{}",
+        result.total,
+        if severity_parts.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", severity_parts.join(", "))
+        }
+    )];
+    lines.extend(result.smells.iter().map(|smell| {
+        format!(
+            "- [{}] {}: {} - {} (metric={} threshold={})",
+            smell.severity,
+            smell.kind,
+            format_symbol_ref(&smell.symbol, RenderOptions::plain()),
+            smell.message,
+            smell.metric_value,
+            smell.threshold
+        )
+    }));
+    lines.join("\n")
 }
 
 #[cfg(test)]

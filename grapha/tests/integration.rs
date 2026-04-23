@@ -450,6 +450,40 @@ fn repo_smells_file_scope_limits_results_to_matching_file() {
 }
 
 #[test]
+fn repo_smells_brief_format_works() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+    write_repo_smells_scope_fixture(dir.path());
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    grapha()
+        .args([
+            "repo",
+            "smells",
+            "--file",
+            "main.rs",
+            "--format",
+            "brief",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("smells: total="))
+        .stdout(predicate::str::contains("hot [function]"))
+        .stdout(predicate::str::contains("\"smells\"").not());
+}
+
+#[test]
 fn repo_smells_symbol_scope_limits_results_to_symbol_neighborhood() {
     let dir = tempfile::tempdir().unwrap();
     let store_dir = dir.path().join(".grapha");

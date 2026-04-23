@@ -58,6 +58,13 @@ enum QueryOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum BriefOutputFormat {
+    Json,
+    Tree,
+    Brief,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum ContextOutputFormat {
     Json,
     Tree,
@@ -68,6 +75,21 @@ enum ContextOutputFormat {
 enum RepoArchOutputFormat {
     Json,
     Brief,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum RepoSmellsOutputFormat {
+    Json,
+    Brief,
+}
+
+impl RepoSmellsOutputFormat {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Brief => "brief",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -272,8 +294,8 @@ enum SymbolCommands {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
         /// Output format
-        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
-        format: QueryOutputFormat,
+        #[arg(long, value_enum, default_value_t = BriefOutputFormat::Json)]
+        format: BriefOutputFormat,
         /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
@@ -312,8 +334,8 @@ enum FlowCommands {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
         /// Output format
-        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
-        format: QueryOutputFormat,
+        #[arg(long, value_enum, default_value_t = BriefOutputFormat::Json)]
+        format: BriefOutputFormat,
         /// Fields to display in tree output (comma-separated: file; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
@@ -560,6 +582,9 @@ enum RepoCommands {
         /// Bypass both cached graph loads and cached smell results
         #[arg(long)]
         no_cache: bool,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = RepoSmellsOutputFormat::Json)]
+        format: RepoSmellsOutputFormat,
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,

@@ -6,9 +6,10 @@ use anyhow::{anyhow, bail};
 use serde::Serialize;
 
 use crate::{
-    AssetCommands, ColorMode, ConceptCommands, ContextOutputFormat, FlowCommands, L10nCommands,
-    OriginTerminalFilter, QueryOutputFormat, RepoArchOutputFormat, SymbolCommands, assets, cache,
-    changes, concepts, config, fields, history, localization, query, render, search,
+    AssetCommands, BriefOutputFormat, ColorMode, ConceptCommands, ContextOutputFormat,
+    FlowCommands, L10nCommands, OriginTerminalFilter, QueryOutputFormat, RepoArchOutputFormat,
+    RepoSmellsOutputFormat, SymbolCommands, assets, cache, changes, concepts, config, fields,
+    history, localization, query, render, search,
 };
 
 use super::index::{
@@ -105,7 +106,12 @@ fn print_json<T: Serialize>(value: &T) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn repo_smells_cache_key(module: Option<&str>, file: Option<&str>, symbol: Option<&str>) -> String {
+fn repo_smells_cache_key(
+    module: Option<&str>,
+    file: Option<&str>,
+    symbol: Option<&str>,
+    format: RepoSmellsOutputFormat,
+) -> String {
     let (scope, value) = if let Some(module) = module {
         ("module", module)
     } else if let Some(file) = file {
@@ -116,7 +122,7 @@ fn repo_smells_cache_key(module: Option<&str>, file: Option<&str>, symbol: Optio
         ("all", "")
     };
 
-    query_cache_key(&["repo", "smells", scope, value])
+    query_cache_key(&["repo", "smells", format.as_str(), scope, value])
 }
 
 fn print_query_result<T, R>(
@@ -273,14 +279,28 @@ pub(crate) fn handle_symbol_command(
         } => {
             let field_set = resolve_field_set(&fields, &path);
             let render_options = render_options.with_fields(field_set);
-            handle_resolved_graph_query(
-                &path,
-                format,
-                render_options,
+            let graph = load_graph(&path)?;
+            let result = resolve_query_result(
+                query::impact::query_impact(&graph, &symbol, depth),
                 "symbol",
-                |graph| query::impact::query_impact(graph, &symbol, depth),
-                render::render_impact_with_options,
-            )
+            )?;
+            match format {
+                BriefOutputFormat::Json => print_json(&result),
+                BriefOutputFormat::Tree => {
+                    println!(
+                        "{}",
+                        render::render_impact_with_options(&result, render_options)
+                    );
+                    Ok(())
+                }
+                BriefOutputFormat::Brief => {
+                    println!(
+                        "{}",
+                        render::render_impact_brief_with_options(&result, render_options)
+                    );
+                    Ok(())
+                }
+            }
         }
         SymbolCommands::Complexity { symbol, path } => {
             let graph = load_graph(&path)?;
@@ -314,25 +334,53 @@ pub(crate) fn handle_flow_command(
         } => match direction {
             crate::TraceDirection::Forward => {
                 let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
-                handle_resolved_graph_query(
-                    &path,
-                    format,
-                    render_options,
+                let graph = load_graph(&path)?;
+                let result = resolve_query_result(
+                    query::trace::query_trace(&graph, &symbol, depth.unwrap_or(10)),
                     "symbol",
-                    |graph| query::trace::query_trace(graph, &symbol, depth.unwrap_or(10)),
-                    render::render_trace_with_options,
-                )
+                )?;
+                match format {
+                    BriefOutputFormat::Json => print_json(&result),
+                    BriefOutputFormat::Tree => {
+                        println!(
+                            "{}",
+                            render::render_trace_with_options(&result, render_options)
+                        );
+                        Ok(())
+                    }
+                    BriefOutputFormat::Brief => {
+                        println!(
+                            "{}",
+                            render::render_trace_brief_with_options(&result, render_options)
+                        );
+                        Ok(())
+                    }
+                }
             }
             crate::TraceDirection::Reverse => {
                 let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
-                handle_resolved_graph_query(
-                    &path,
-                    format,
-                    render_options,
+                let graph = load_graph(&path)?;
+                let result = resolve_query_result(
+                    query::reverse::query_reverse(&graph, &symbol, depth),
                     "symbol",
-                    |graph| query::reverse::query_reverse(graph, &symbol, depth),
-                    render::render_reverse_with_options,
-                )
+                )?;
+                match format {
+                    BriefOutputFormat::Json => print_json(&result),
+                    BriefOutputFormat::Tree => {
+                        println!(
+                            "{}",
+                            render::render_reverse_with_options(&result, render_options)
+                        );
+                        Ok(())
+                    }
+                    BriefOutputFormat::Brief => {
+                        println!(
+                            "{}",
+                            render::render_reverse_brief_with_options(&result, render_options)
+                        );
+                        Ok(())
+                    }
+                }
             }
         },
         FlowCommands::Graph {
@@ -692,6 +740,7 @@ pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Resul
             file,
             symbol,
             no_cache,
+            format,
             path,
         } => {
             let selected_scope_count = usize::from(module.is_some())
@@ -704,8 +753,12 @@ pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Resul
             let store_dir = path.join(".grapha");
             let db_path = store_dir.join("grapha.db");
             let query_cache = cache::QueryCache::new(&store_dir);
-            let cache_key =
-                repo_smells_cache_key(module.as_deref(), file.as_deref(), symbol.as_deref());
+            let cache_key = repo_smells_cache_key(
+                module.as_deref(),
+                file.as_deref(),
+                symbol.as_deref(),
+                format,
+            );
 
             if !no_cache && let Some(cached) = query_cache.get(&cache_key, &db_path) {
                 print!("{cached}");
@@ -729,10 +782,19 @@ pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Resul
                 query::smells::detect_smells(&graph)
             };
 
+            let output = match format {
+                RepoSmellsOutputFormat::Json => {
+                    format!("{}\n", serde_json::to_string_pretty(&result)?)
+                }
+                RepoSmellsOutputFormat::Brief => {
+                    format!("{}\n", render::render_smells_brief_with_options(&result))
+                }
+            };
+
             if no_cache {
-                print_json(&result)
+                print!("{output}");
+                Ok(())
             } else {
-                let output = format!("{}\n", serde_json::to_string_pretty(&result)?);
                 print!("{output}");
                 let _ = query_cache.put(&cache_key, &db_path, &output);
                 Ok(())

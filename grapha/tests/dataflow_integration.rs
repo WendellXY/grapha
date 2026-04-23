@@ -461,6 +461,29 @@ fn trace_tree_format_works() {
 }
 
 #[test]
+fn trace_brief_format_works() {
+    let dir = index_temp_project("fn main() { helper(); }\nfn helper() {}\n");
+
+    grapha()
+        .args([
+            "flow",
+            "trace",
+            "main",
+            "-p",
+            dir.path().to_str().unwrap(),
+            "--format",
+            "brief",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("trace: main [function] (main.rs)"))
+        .stdout(predicate::str::contains(
+            "summary: flows=0, reads=0, writes=0, async_crossings=0",
+        ))
+        .stdout(predicate::str::contains("requested_symbol: main"));
+}
+
+#[test]
 fn flow_trace_swiftui_view_falls_back_to_body_or_actions() {
     let dir = tempfile::tempdir().unwrap();
     let store_dir = dir.path().join(".grapha");
@@ -587,6 +610,34 @@ fn impact_tree_format_works() {
         .stdout(predicate::str::contains("dependents (1)"))
         .stdout(predicate::str::contains("main [function] (main.rs)"))
         .stdout(predicate::str::contains("└──"))
+        .stdout(predicate::str::contains("\"source\"").not());
+}
+
+#[test]
+fn impact_brief_format_works() {
+    let dir = index_temp_project("fn main() { helper(); }\nfn helper() {}\n");
+
+    grapha()
+        .args([
+            "symbol",
+            "impact",
+            "helper",
+            "-p",
+            dir.path().to_str().unwrap(),
+            "--format",
+            "brief",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "impact: helper [function] (main.rs)",
+        ))
+        .stdout(predicate::str::contains(
+            "summary: total=1, depth_1=1, depth_2=0, depth_3_plus=0",
+        ))
+        .stdout(predicate::str::contains(
+            "depth_1(1): main [function] (main.rs)",
+        ))
         .stdout(predicate::str::contains("\"source\"").not());
 }
 

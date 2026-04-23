@@ -154,7 +154,7 @@ grapha symbol search "query" [--limit N] [--kind K] [--module M] [--repo R] [--f
 grapha symbol search "query" [--fuzzy] [--exact-name] [--declarations-only] [--public-only]
 grapha symbol search "query" [--context] [--fields file,id,module,repo,snippet]
 grapha symbol context <symbol> [--format json|tree|brief] [--fields full]
-grapha symbol impact <symbol> [--depth N] [--format json|tree] [--fields file,module,repo]
+grapha symbol impact <symbol> [--depth N] [--format json|tree|brief] [--fields file,module,repo]
 grapha symbol complexity <symbol>          # property/method/dependency counts, severity
 grapha symbol file <path>                  # list declarations in a file
 ```
@@ -162,7 +162,7 @@ grapha symbol file <path>                  # list declarations in a file
 ### Dataflow
 
 ```bash
-grapha flow trace <symbol> [--direction forward|reverse] [--depth N] [--format json|tree]
+grapha flow trace <symbol> [--direction forward|reverse] [--depth N] [--format json|tree|brief]
 grapha flow graph <symbol> [--depth N] [--format json|tree]       # semantic effect graph
 grapha flow origin <symbol> [--terminal-kind network|persistence|cache|event|keychain|search]
 grapha flow entries [--module M] [--file PATH] [--limit N] [--format json|tree]
@@ -172,7 +172,7 @@ grapha flow entries [--module M] [--file PATH] [--limit N] [--format json|tree]
 
 ```bash
 grapha repo status                         # index freshness and snapshot metadata
-grapha repo smells [--module M | --file PATH | --symbol QUERY] [--no-cache]
+grapha repo smells [--module M | --file PATH | --symbol QUERY] [--format json|brief] [--no-cache]
 grapha repo modules                        # per-module metrics
 grapha repo map [--module M]               # file/symbol overview
 grapha repo changes [unstaged|staged|all|REF]
