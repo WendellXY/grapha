@@ -57,6 +57,19 @@ enum QueryOutputFormat {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ContextOutputFormat {
+    Json,
+    Tree,
+    Brief,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum RepoArchOutputFormat {
+    Json,
+    Brief,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum TraceDirection {
     Forward,
     Reverse,
@@ -217,8 +230,8 @@ enum SymbolCommands {
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
         /// Output format
-        #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
-        format: QueryOutputFormat,
+        #[arg(long, value_enum, default_value_t = ContextOutputFormat::Json)]
+        format: ContextOutputFormat,
         /// Fields to display (comma-separated: file,id,locator,module,span,snippet,visibility,signature,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
@@ -504,6 +517,9 @@ enum RepoCommands {
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
+        /// Output format
+        #[arg(long, value_enum, default_value_t = RepoArchOutputFormat::Json)]
+        format: RepoArchOutputFormat,
     },
     /// Detect code smells across the graph (god types, deep nesting, wide invalidation, etc.)
     Smells {

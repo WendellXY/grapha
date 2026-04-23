@@ -65,6 +65,7 @@ grapha symbol search "send" --kind function --module Room --fuzzy --declarations
 
 # 360° context — callers, callees, reads, implements
 grapha symbol context RoomPage --format tree
+grapha symbol context RoomPage --format brief
 
 # Impact analysis — what breaks if this changes?
 grapha symbol impact GiftPanelViewModel --depth 2 --format tree
@@ -90,7 +91,7 @@ grapha repo smells --symbol RoomPageCenterContentView --no-cache
 grapha repo modules
 
 # Architecture guard — configured layer dependency rules
-grapha repo arch
+grapha repo arch --format brief
 
 # Business concept lookup
 grapha concept search "送礼横幅" --format tree
@@ -151,7 +152,7 @@ Add to `.mcp.json`:
 grapha symbol search "query" [--limit N] [--kind K] [--module M] [--file GLOB] [--role R]
 grapha symbol search "query" [--fuzzy] [--exact-name] [--declarations-only] [--public-only]
 grapha symbol search "query" [--context] [--fields file,id,module,snippet]
-grapha symbol context <symbol> [--format json|tree] [--fields full]
+grapha symbol context <symbol> [--format json|tree|brief] [--fields full]
 grapha symbol impact <symbol> [--depth N] [--format json|tree] [--fields file,module]
 grapha symbol complexity <symbol>          # property/method/dependency counts, severity
 grapha symbol file <path>                  # list declarations in a file
@@ -174,7 +175,7 @@ grapha repo smells [--module M | --file PATH | --symbol QUERY] [--no-cache]
 grapha repo modules                        # per-module metrics
 grapha repo map [--module M]               # file/symbol overview
 grapha repo changes [unstaged|staged|all|REF]
-grapha repo arch                           # configured architecture rule violations
+grapha repo arch [--format json|brief]     # configured architecture rule violations
 ```
 
 ### Indexing & Serving

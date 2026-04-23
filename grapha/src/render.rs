@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use grapha_core::graph::{NodeKind, NodeRole, Visibility};
+use grapha_core::graph::{EdgeKind, NodeKind, NodeRole, Visibility};
 
 use crate::concepts::{
     ConceptBindingView, ConceptEvidence, ConceptSearchResult, ConceptShowResult,
 };
 use crate::fields::FieldSet;
+use crate::query::arch::{ArchitectureResult, ArchitectureViolation};
 use crate::query::{
     ContextResult, SymbolInfo, SymbolRef, SymbolTreeRef, dataflow::DataflowEdge,
     dataflow::DataflowEdgeKind, dataflow::DataflowNode, dataflow::DataflowNodeKind,
@@ -618,6 +619,74 @@ fn reverse_leaf_label(entry: &AffectedEntry, options: RenderOptions) -> String {
     label
 }
 
+fn brief_options(options: RenderOptions) -> RenderOptions {
+    RenderOptions {
+        color_enabled: false,
+        fields: options.fields,
+    }
+}
+
+fn format_brief_symbol_ref(symbol: &SymbolRef, options: RenderOptions) -> String {
+    format_symbol_ref(symbol, options)
+}
+
+fn format_brief_symbol_list(symbols: &[SymbolRef], options: RenderOptions) -> String {
+    symbols
+        .iter()
+        .map(|symbol| format_brief_symbol_ref(symbol, options))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn format_brief_section(
+    label: &str,
+    symbols: &[SymbolRef],
+    options: RenderOptions,
+) -> Option<String> {
+    if symbols.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "{label}({}): {}",
+            symbols.len(),
+            format_brief_symbol_list(symbols, options)
+        ))
+    }
+}
+
+fn edge_kind_label(kind: EdgeKind) -> &'static str {
+    match kind {
+        EdgeKind::Calls => "calls",
+        EdgeKind::Uses => "uses",
+        EdgeKind::Implements => "implements",
+        EdgeKind::Contains => "contains",
+        EdgeKind::TypeRef => "type_ref",
+        EdgeKind::Inherits => "inherits",
+        EdgeKind::Reads => "reads",
+        EdgeKind::Writes => "writes",
+        EdgeKind::Publishes => "publishes",
+        EdgeKind::Subscribes => "subscribes",
+    }
+}
+
+fn format_architecture_violation(violation: &ArchitectureViolation) -> String {
+    let kind = edge_kind_label(violation.edge_kind);
+    let options = RenderOptions::plain();
+    let mut line = format!(
+        "violation: {} -> {} [{} {:.2}] source={} target={}",
+        violation.source_layer,
+        violation.target_layer,
+        kind,
+        violation.confidence,
+        format_brief_symbol_ref(&violation.source, options),
+        format_brief_symbol_ref(&violation.target, options),
+    );
+    if let Some(reason) = violation.reason.as_deref() {
+        line.push_str(&format!(" reason={reason}"));
+    }
+    line
+}
+
 pub fn render_context_with_options(result: &ContextResult, options: RenderOptions) -> String {
     let mut children = Vec::new();
 
@@ -649,6 +718,37 @@ pub fn render_context_with_options(result: &ContextResult, options: RenderOption
     push_symbol_section(&mut children, "type_refs", &result.type_refs, options);
 
     render_tree(&symbol_info_node(&result.symbol, children, options))
+}
+
+pub fn render_context_brief_with_options(result: &ContextResult, options: RenderOptions) -> String {
+    let options = brief_options(options);
+    let mut lines = vec![format!(
+        "symbol: {}",
+        format_symbol_info(&result.symbol, options)
+    )];
+
+    let sections = [
+        format_brief_section("callers", &result.callers, options),
+        format_brief_section("callees", &result.callees, options),
+        format_brief_section("reads", &result.reads, options),
+        format_brief_section("read_by", &result.read_by, options),
+        format_brief_section(
+            "invalidation_sources",
+            &result.invalidation_sources,
+            options,
+        ),
+        format_brief_section("contains", &result.contains, options),
+        format_brief_section("contained_by", &result.contained_by, options),
+        format_brief_section("implementors", &result.implementors, options),
+        format_brief_section("implements", &result.implements, options),
+        format_brief_section("type_refs", &result.type_refs, options),
+    ];
+
+    for section in sections.into_iter().flatten() {
+        lines.push(section);
+    }
+
+    lines.join("\n")
 }
 
 pub fn render_entries_with_options(result: &EntriesResult, options: RenderOptions) -> String {
@@ -773,6 +873,34 @@ pub fn render_localize_with_options(result: &LocalizeResult, options: RenderOpti
         format_symbol_info(&result.symbol, options),
         children,
     ))
+}
+
+pub fn render_architecture_brief_with_options(result: &ArchitectureResult) -> String {
+    let mut lines = vec![format!(
+        "architecture: configured={} layers={} violations={}",
+        result.configured,
+        result.layers.len(),
+        result.total_violations
+    )];
+
+    for layer in &result.layers {
+        lines.push(format!(
+            "layer {}: matched={} patterns={}",
+            layer.name,
+            layer.matched_symbols,
+            layer.patterns.join(", ")
+        ));
+    }
+
+    if result.violations.is_empty() {
+        lines.push("violations: none".to_string());
+    } else {
+        for violation in &result.violations {
+            lines.push(format_architecture_violation(violation));
+        }
+    }
+
+    lines.join("\n")
 }
 
 pub fn render_usages_with_options(result: &UsagesResult, options: RenderOptions) -> String {
@@ -1436,6 +1564,7 @@ mod tests {
     use grapha_core::graph::{NodeKind, Visibility};
 
     use crate::localization::{LocalizationCatalogRecord, LocalizationReference};
+    use crate::query::arch::{ArchitectureLayerSummary, ArchitectureResult, ArchitectureViolation};
     use crate::query::{
         ContextResult, SymbolInfo, SymbolRef, SymbolTreeRef, dataflow::DataflowEdge,
         dataflow::DataflowEdgeKind, dataflow::DataflowNode, dataflow::DataflowNodeKind,
@@ -1657,6 +1786,30 @@ mod tests {
     }
 
     #[test]
+    fn context_brief_renders_compact_sections() {
+        let result = ContextResult {
+            symbol: symbol_info("helper", NodeKind::Function, "main.rs"),
+            callers: vec![symbol_ref("main", NodeKind::Function, "main.rs")],
+            callees: Vec::new(),
+            reads: vec![symbol_ref("state", NodeKind::Property, "state.rs")],
+            read_by: Vec::new(),
+            invalidation_sources: Vec::new(),
+            contains: vec![symbol_ref("inner", NodeKind::Struct, "main.rs")],
+            contains_tree: Vec::new(),
+            contained_by: vec![symbol_ref("App", NodeKind::Struct, "app.rs")],
+            implementors: Vec::new(),
+            implements: Vec::new(),
+            type_refs: Vec::new(),
+        };
+
+        let rendered = render_context_brief_with_options(&result, RenderOptions::plain());
+        assert_eq!(
+            rendered,
+            "symbol: helper [function] (main.rs)\ncallers(1): main [function] (main.rs)\nreads(1): state [property] (state.rs)\ncontains(1): inner [struct] (main.rs)\ncontained_by(1): App [struct] (app.rs)"
+        );
+    }
+
+    #[test]
     fn entries_render_as_tree() {
         let result = EntriesResult {
             entries: vec![
@@ -1842,6 +1995,34 @@ mod tests {
         assert!(rendered.contains("dependents (2)"));
         assert!(rendered.contains("alpha [function] (a.rs)"));
         assert!(rendered.contains("beta [function] (b.rs)"));
+    }
+
+    #[test]
+    fn architecture_brief_renders_summary_layers_and_violations() {
+        let result = ArchitectureResult {
+            configured: true,
+            total_violations: 1,
+            layers: vec![ArchitectureLayerSummary {
+                name: "ui".into(),
+                patterns: vec!["AppUI*".into(), "Features/*/View*".into()],
+                matched_symbols: 2,
+            }],
+            violations: vec![ArchitectureViolation {
+                source_layer: "infra".into(),
+                target_layer: "ui".into(),
+                edge_kind: EdgeKind::Calls,
+                confidence: 0.9,
+                reason: Some("Infrastructure must not depend on UI.".into()),
+                source: symbol_ref("api", NodeKind::Function, "Networking/API.swift"),
+                target: symbol_ref("view", NodeKind::Struct, "AppUI/View.swift"),
+            }],
+        };
+
+        let rendered = render_architecture_brief_with_options(&result);
+        assert_eq!(
+            rendered,
+            "architecture: configured=true layers=1 violations=1\nlayer ui: matched=2 patterns=AppUI*, Features/*/View*\nviolation: infra -> ui [calls 0.90] source=api [function] (Networking/API.swift) target=view [struct] (AppUI/View.swift) reason=Infrastructure must not depend on UI."
+        );
     }
 
     #[test]

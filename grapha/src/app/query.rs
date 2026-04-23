@@ -5,9 +5,9 @@ use anyhow::{anyhow, bail};
 use serde::Serialize;
 
 use crate::{
-    AssetCommands, ColorMode, ConceptCommands, FlowCommands, L10nCommands, OriginTerminalFilter,
-    QueryOutputFormat, SymbolCommands, assets, cache, changes, concepts, config, fields,
-    localization, query, render, search,
+    AssetCommands, ColorMode, ConceptCommands, ContextOutputFormat, FlowCommands, L10nCommands,
+    OriginTerminalFilter, QueryOutputFormat, RepoArchOutputFormat, SymbolCommands, assets, cache,
+    changes, concepts, config, fields, localization, query, render, search,
 };
 
 use super::index::{
@@ -239,14 +239,27 @@ pub(crate) fn handle_symbol_command(
         } => {
             let field_set = resolve_field_set(&fields, &path);
             let render_options = render_options.with_fields(field_set);
-            handle_resolved_graph_query(
-                &path,
-                format,
-                render_options,
-                "symbol",
-                |graph| query::context::query_context(graph, &symbol),
-                render::render_context_with_options,
-            )
+            let graph = load_graph(&path)?;
+            let result =
+                resolve_query_result(query::context::query_context(&graph, &symbol), "symbol")?;
+
+            match format {
+                ContextOutputFormat::Json => print_json(&result),
+                ContextOutputFormat::Tree => {
+                    println!(
+                        "{}",
+                        render::render_context_with_options(&result, render_options)
+                    );
+                    Ok(())
+                }
+                ContextOutputFormat::Brief => {
+                    println!(
+                        "{}",
+                        render::render_context_brief_with_options(&result, render_options)
+                    );
+                    Ok(())
+                }
+            }
         }
         SymbolCommands::Impact {
             symbol,
@@ -656,11 +669,20 @@ pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Resul
             let map = query::map::file_map(&graph, module.as_deref());
             print_json(&map)
         }
-        crate::RepoCommands::Arch { path } => {
+        crate::RepoCommands::Arch { path, format } => {
             let graph = load_graph(&path)?;
             let cfg = config::load_config(&path);
             let result = query::arch::check_architecture(&graph, &cfg.architecture);
-            print_json(&result)
+            match format {
+                RepoArchOutputFormat::Json => print_json(&result),
+                RepoArchOutputFormat::Brief => {
+                    println!(
+                        "{}",
+                        render::render_architecture_brief_with_options(&result)
+                    );
+                    Ok(())
+                }
+            }
         }
         crate::RepoCommands::Smells {
             module,
