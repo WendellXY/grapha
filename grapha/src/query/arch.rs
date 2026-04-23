@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use grapha_core::graph::{EdgeKind, Graph, Node};
 use serde::Serialize;
@@ -86,8 +86,8 @@ pub fn check_architecture(graph: &Graph, config: &ArchitectureConfig) -> Archite
             edge_kind: edge.kind,
             confidence: edge.confidence,
             reason: rule.reason.clone(),
-            source: SymbolRef::from_node(source),
-            target: SymbolRef::from_node(target),
+            source: architecture_symbol_ref(source),
+            target: architecture_symbol_ref(target),
         });
     }
 
@@ -164,6 +164,12 @@ fn is_architecture_dependency(kind: EdgeKind) -> bool {
     )
 }
 
+fn architecture_symbol_ref(node: &Node) -> SymbolRef {
+    let mut symbol = SymbolRef::from_node(node);
+    symbol.snippet = None;
+    symbol
+}
+
 fn node_matches_layer(node: &Node, layer: &ArchitectureLayer) -> bool {
     layer.patterns.iter().any(|pattern| {
         node.module
@@ -188,35 +194,35 @@ fn pattern_matches(pattern: &str, value: &str) -> bool {
 }
 
 fn wildcard_matches(pattern: &str, value: &str) -> bool {
-    let pattern: Vec<char> = pattern.chars().collect();
-    let value: Vec<char> = value.chars().collect();
-    let mut reachable: HashSet<(usize, usize)> = HashSet::from([(0, 0)]);
+    let pattern = pattern.as_bytes();
+    let value = value.as_bytes();
+    let mut pattern_idx = 0usize;
+    let mut value_idx = 0usize;
+    let mut star_idx = None;
+    let mut star_value_idx = 0usize;
 
-    for i in 0..=pattern.len() {
-        for j in 0..=value.len() {
-            if !reachable.contains(&(i, j)) || i == pattern.len() {
-                continue;
-            }
-
-            match pattern[i] {
-                '*' => {
-                    reachable.insert((i + 1, j));
-                    if j < value.len() {
-                        reachable.insert((i, j + 1));
-                    }
-                }
-                '?' if j < value.len() => {
-                    reachable.insert((i + 1, j + 1));
-                }
-                ch if j < value.len() && ch == value[j] => {
-                    reachable.insert((i + 1, j + 1));
-                }
-                _ => {}
-            }
+    while value_idx < value.len() {
+        if pattern_idx < pattern.len()
+            && (pattern[pattern_idx] == b'?' || pattern[pattern_idx] == value[value_idx])
+        {
+            pattern_idx += 1;
+            value_idx += 1;
+        } else if pattern_idx < pattern.len() && pattern[pattern_idx] == b'*' {
+            star_idx = Some(pattern_idx);
+            star_value_idx = value_idx;
+            pattern_idx += 1;
+        } else if let Some(star) = star_idx {
+            pattern_idx = star + 1;
+            star_value_idx += 1;
+            value_idx = star_value_idx;
+        } else {
+            return false;
         }
     }
 
-    reachable.contains(&(pattern.len(), value.len()))
+    pattern[pattern_idx..]
+        .iter()
+        .all(|pattern_char| *pattern_char == b'*')
 }
 
 #[cfg(test)]
@@ -341,6 +347,8 @@ mod tests {
             violation.reason.as_deref(),
             Some("Infrastructure must not depend on UI.")
         );
+        assert!(violation.source.snippet.is_none());
+        assert!(violation.target.snippet.is_none());
     }
 
     #[test]
@@ -375,5 +383,18 @@ mod tests {
 
         assert_eq!(result.total_violations, 1);
         assert_eq!(result.violations[0].edge_kind, EdgeKind::TypeRef);
+    }
+
+    #[test]
+    fn wildcard_matching_handles_suffixes_and_single_char_wildcards() {
+        assert!(pattern_matches(
+            "Features/*/View?.swift",
+            "Sources/Features/Login/View1.swift"
+        ));
+        assert!(!pattern_matches(
+            "Features/*/View?.swift",
+            "Sources/Features/Login/ViewModel.swift"
+        ));
+        assert!(pattern_matches("AppUI*", "AppUIComponents"));
     }
 }
