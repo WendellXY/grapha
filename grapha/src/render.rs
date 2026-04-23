@@ -1771,15 +1771,29 @@ pub fn render_maintenance_brief_with_options(result: &MaintenanceReport) -> Stri
         lines.push("status: ok".to_string());
         return lines.join("\n");
     }
-    lines.extend(result.checks.iter().map(|check| {
-        format!(
-            "- [{} {}] {} - {}",
-            check.severity.as_str(),
-            check.kind.as_str(),
-            check.target,
-            check.message
-        )
-    }));
+    const MAINTENANCE_BRIEF_LIMIT: usize = 50;
+
+    lines.extend(
+        result
+            .checks
+            .iter()
+            .take(MAINTENANCE_BRIEF_LIMIT)
+            .map(|check| {
+                format!(
+                    "- [{} {}] {} - {}",
+                    check.severity.as_str(),
+                    check.kind.as_str(),
+                    check.target,
+                    check.message
+                )
+            }),
+    );
+    if result.checks.len() > MAINTENANCE_BRIEF_LIMIT {
+        lines.push(format!(
+            "... {} more",
+            result.checks.len() - MAINTENANCE_BRIEF_LIMIT
+        ));
+    }
     lines.join("\n")
 }
 
