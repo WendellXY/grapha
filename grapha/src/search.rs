@@ -160,7 +160,7 @@ fn node_document(fields: SearchFields, node: &Node, locator: &str) -> Result<Tan
     if let Some(repo_lower_field) = fields.repo_lower {
         document.add_text(
             repo_lower_field,
-            &node.repo.as_deref().unwrap_or("").to_lowercase(),
+            node.repo.as_deref().unwrap_or("").to_lowercase(),
         );
     }
     if let Some(search_terms_field) = fields.search_terms {
@@ -634,7 +634,7 @@ pub fn search_filtered(
             continue;
         }
         let module_val = get_str(fields.module);
-        let repo_val = fields.repo.map(|field| get_str(field)).unwrap_or_default();
+        let repo_val = fields.repo.map(&get_str).unwrap_or_default();
         let role_val = get_str(fields.role);
         let result = SearchResult {
             id: get_str(fields.id),

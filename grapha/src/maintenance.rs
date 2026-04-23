@@ -173,10 +173,10 @@ fn check_orphan_entities(
         .collect()
 }
 
-fn check_provenance<'a>(
+fn check_provenance(
     edge: &Edge,
     provenance: &EdgeProvenance,
-    node_ids: &HashSet<&'a str>,
+    node_ids: &HashSet<&str>,
 ) -> Option<MaintenanceCheck> {
     let mut reason = None;
     if provenance.file.as_os_str().is_empty() {
