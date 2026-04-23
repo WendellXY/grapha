@@ -4,7 +4,7 @@
 
 **Blazingly fast** code intelligence that gives AI agents compiler-grade understanding of your codebase.
 
-Grapha builds a symbol-level dependency graph from source code — not by guessing with regex, but by reading the compiler's own index. For Swift, it taps directly into Xcode's pre-built index store via binary FFI for 100% type-resolved symbols, then enriches with tree-sitter for view structure, docs, and localization. For Rust, it uses tree-sitter with Cargo workspace awareness. The result is a queryable graph with confidence-scored edges, dataflow tracing, impact analysis, and code smell detection — available as both a CLI and an MCP server for AI agent integration.
+Grapha builds a symbol-level dependency graph from source code — not by guessing with regex, but by reading the compiler's own index. For Swift, it taps directly into Xcode's pre-built index store via binary FFI for 100% type-resolved symbols, then enriches with tree-sitter for view structure, docs, localization, and asset references. For Rust, it uses tree-sitter with Cargo workspace awareness. The result is a queryable graph with confidence-scored edges, dataflow tracing, impact analysis, code smell detection, and business-concept lookup — available as both a CLI and an MCP server for AI agent integration.
 
 > **1,991 Swift files — 131K nodes — 784K edges — 8.7 seconds.** Zero-copy binary FFI. Lock-free parallel extraction. No serde on the hot path.
 
@@ -18,7 +18,7 @@ Grapha builds a symbol-level dependency graph from source code — not by guessi
 | **Code quality** | Complexity analysis, smell detection, module coupling metrics |
 | **Confidence scores** | Per-edge 0.0–1.0 |
 | **Terminal classification** | Auto-detects network, persistence, cache, event, keychain, search |
-| **MCP tools** | 11 |
+| **MCP tools** | 17 |
 | **Watch mode** | File watcher with debounced incremental re-index |
 | **Recall** | Session disambiguation — ambiguous symbols auto-resolve after first use |
 
@@ -56,9 +56,12 @@ cargo install grapha
 # Index a project (incremental by default)
 grapha index .
 
+# Check index freshness
+grapha repo status
+
 # Search symbols
-grapha symbol search "ViewModel" --kind struct --context
-grapha symbol search "send" --kind function --module Room --fuzzy
+grapha symbol search "ViewModel" --kind struct --context --fields full
+grapha symbol search "send" --kind function --module Room --fuzzy --declarations-only
 
 # 360° context — callers, callees, reads, implements
 grapha symbol context RoomPage --format tree
@@ -75,23 +78,31 @@ grapha flow trace RoomPage --format tree
 # Reverse: which entry points reach this symbol?
 grapha flow trace sendGift --direction reverse
 
+# Origin tracing: which API/data source feeds this UI?
+grapha flow origin UserProfileView --terminal-kind network --format tree
+
 # Code smell detection
 grapha repo smells --module Room
 grapha repo smells --file Modules/Room/Sources/Room/View/RoomPage+Layout.swift
-grapha repo smells --symbol RoomPageCenterContentView
+grapha repo smells --symbol RoomPageCenterContentView --no-cache
 
 # Module metrics — symbol counts, coupling ratios
 grapha repo modules
+
+# Business concept lookup
+grapha concept search "送礼横幅" --format tree
+grapha concept bind "送礼横幅" --symbol GiftBannerPage --symbol GiftBannerViewModel
 
 # MCP server for AI agents (with auto-refresh)
 grapha serve --mcp --watch
 ```
 
-## MCP Server — 11 Tools for AI Agents
+## MCP Server — 17 Tools for AI Agents
 
 ```bash
 grapha serve --mcp              # JSON-RPC over stdio
 grapha serve --mcp --watch      # + auto-refresh on file changes
+grapha index . && grapha serve --mcp --watch
 ```
 
 Add to `.mcp.json`:
@@ -109,28 +120,36 @@ Add to `.mcp.json`:
 
 | Tool | What it does |
 |------|-------------|
-| `search_symbols` | BM25 search with kind/module/role/fuzzy filters |
+| `search_symbols` | BM25 search with kind/module/file/role/fuzzy filters |
+| `get_index_status` | Index timestamp, repo snapshot metadata, and stale-result hints |
 | `get_symbol_context` | 360° view: callers, callees, reads, implements, contains tree |
 | `get_impact` | BFS blast radius at configurable depth |
+| `get_file_map` | File/symbol map organized by module and directory |
 | `trace` | Forward dataflow to terminals, or reverse to entry points |
 | `get_file_symbols` | All declarations in a file, by source position |
 | `batch_context` | Context for up to 20 symbols in one call |
 | `analyze_complexity` | Structural metrics + severity rating for any type |
 | `detect_smells` | Code smell scan scoped to the repo, a module, a file, or a symbol |
 | `get_module_summary` | Per-module metrics with cross-module coupling ratio |
-| `get_file_map` | File/symbol map organized by module and directory |
+| `search_concepts` | Business concept lookup across bindings, localization, assets, and symbols |
+| `get_concept` | Stored concept aliases and bound symbols |
+| `bind_concept` | Persist confirmed concept-to-symbol mappings |
+| `add_concept_alias` | Add aliases for a concept |
+| `remove_concept` | Remove a concept from the project concept store |
 | `reload` | Hot-reload graph from disk without restarting the server |
 
-**Recall:** The MCP server remembers symbol resolutions within a session. If `helper` is ambiguous the first time, after you disambiguate with `File.swift::helper`, future bare `helper` queries resolve automatically.
+**Recall:** The MCP server remembers symbol resolutions within a session. If `helper` is ambiguous the first time, after you disambiguate with `File.swift::helper`, future bare `helper` queries resolve automatically. Use `reload` after a manual `grapha index` run when the server is not running with `--watch`.
 
 ## Commands
 
 ### Symbols
 
 ```bash
-grapha symbol search "query" [--kind K] [--module M] [--fuzzy] [--context]
-grapha symbol context <symbol> [--format tree]
-grapha symbol impact <symbol> [--depth N] [--format tree]
+grapha symbol search "query" [--limit N] [--kind K] [--module M] [--file GLOB] [--role R]
+grapha symbol search "query" [--fuzzy] [--exact-name] [--declarations-only] [--public-only]
+grapha symbol search "query" [--context] [--fields file,id,module,snippet]
+grapha symbol context <symbol> [--format json|tree] [--fields full]
+grapha symbol impact <symbol> [--depth N] [--format json|tree] [--fields file,module]
 grapha symbol complexity <symbol>          # property/method/dependency counts, severity
 grapha symbol file <path>                  # list declarations in a file
 ```
@@ -138,44 +157,47 @@ grapha symbol file <path>                  # list declarations in a file
 ### Dataflow
 
 ```bash
-grapha flow trace <symbol> [--direction forward|reverse] [--depth N]
-grapha flow graph <symbol> [--depth N]     # semantic effect graph
-grapha flow entries                        # list auto-detected entry points
+grapha flow trace <symbol> [--direction forward|reverse] [--depth N] [--format json|tree]
+grapha flow graph <symbol> [--depth N] [--format json|tree]       # semantic effect graph
+grapha flow origin <symbol> [--terminal-kind network|persistence|cache|event|keychain|search]
+grapha flow entries [--module M] [--file PATH] [--limit N] [--format json|tree]
 ```
 
 ### Repository
 
 ```bash
-grapha repo smells [--module M | --file PATH | --symbol QUERY]
+grapha repo status                         # index freshness and snapshot metadata
+grapha repo smells [--module M | --file PATH | --symbol QUERY] [--no-cache]
 grapha repo modules                        # per-module metrics
 grapha repo map [--module M]               # file/symbol overview
-grapha repo changes [scope]                # git diff → affected symbols
+grapha repo changes [unstaged|staged|all|REF]
 ```
 
 ### Indexing & Serving
 
 ```bash
-grapha index . [--full-rebuild] [--timing]
+grapha index <path> [--format sqlite|json] [--store-dir DIR] [--full-rebuild] [--timing]
 grapha analyze <path> [--compact] [--filter fn,struct]
-grapha serve [--mcp] [--watch] [--port N]
+grapha serve [-p PATH] [--mcp] [--watch] [--port N]
 ```
 
 ### Localization & Assets
 
 ```bash
-grapha l10n symbol <symbol>                # resolve l10n records from SwiftUI subtree
-grapha l10n usages <key> [--table T]       # find usage sites for a localization key
+grapha l10n symbol <symbol> [--format json|tree]
+grapha l10n usages <key> [--table T] [--format json|tree]
 grapha asset list [--unused]               # image assets from xcassets catalogs
-grapha asset usages <name>                 # find Image()/UIImage() references
+grapha asset usages <name> [--format json|tree]
 ```
 
 ### Concepts
 
 ```bash
-grapha concept search "送礼横幅"             # business concept → candidate code scopes
-grapha concept show "送礼横幅"               # inspect stored aliases and bindings
-grapha concept bind "送礼横幅" --symbol GiftBannerPage
-grapha concept alias "送礼横幅" --add "礼物 banner"
+grapha concept search "送礼横幅" [--limit N] [--format json|tree]
+grapha concept show "送礼横幅" [--format json|tree]
+grapha concept bind "送礼横幅" --symbol GiftBannerPage --symbol GiftBannerViewModel
+grapha concept alias "送礼横幅" --add "礼物 banner" --add "gift banner"
+grapha concept remove "送礼横幅"
 grapha concept prune                       # drop bindings to missing symbols
 ```
 
@@ -205,8 +227,9 @@ operation = "set"
 
 ```
 grapha-core/     Shared types (Node, Edge, Graph, ExtractionResult)
+grapha-rust/     Rust plugin and tree-sitter extractor
 grapha-swift/    Swift: index store → SwiftSyntax → tree-sitter waterfall
-grapha/          CLI, Rust extractor, query engines, MCP server, web UI
+grapha/          CLI, query engines, MCP server, web UI
 nodus/           Agent tooling package (skills, rules, commands)
 ```
 
@@ -224,7 +247,7 @@ After index store extraction, tree-sitter enriches doc comments, SwiftUI view hi
 
 ### Graph Model
 
-**14 node kinds:** function, struct, enum, trait, protocol, extension, property, field, variant, constant, type_alias, impl, module, view, branch
+**16 node kinds:** function, class, struct, enum, trait, impl, module, field, variant, property, constant, type_alias, protocol, extension, view, branch
 
 **10 edge kinds:** calls, implements, inherits, contains, type_ref, uses, reads, writes, publishes, subscribes
 
@@ -253,7 +276,7 @@ The per-language crate architecture supports adding new languages with the same 
 
 ```bash
 cargo build                    # Build all workspace crates
-cargo test                     # Run all tests (~200)
+cargo test                     # Run the workspace test suite
 cargo clippy && cargo fmt      # Lint + format
 ```
 
