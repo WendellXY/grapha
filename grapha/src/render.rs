@@ -7,6 +7,7 @@ use crate::concepts::{
 };
 use crate::fields::FieldSet;
 use crate::inferred::InferredBuildResult;
+use crate::maintenance::MaintenanceReport;
 use crate::query::arch::{ArchitectureResult, ArchitectureViolation};
 use crate::query::{
     ContextResult, SymbolInfo, SymbolRef, SymbolTreeRef, dataflow::DataflowEdge,
@@ -1746,6 +1747,39 @@ pub fn render_inferred_brief_with_options(result: &InferredBuildResult) -> Strin
     if result.records.len() > 20 {
         lines.push(format!("... {} more", result.records.len() - 20));
     }
+    lines.join("\n")
+}
+
+pub fn render_maintenance_brief_with_options(result: &MaintenanceReport) -> String {
+    let mut severity_parts = result
+        .by_severity
+        .iter()
+        .map(|(severity, count)| format!("{severity}={count}"))
+        .collect::<Vec<_>>();
+    severity_parts.sort();
+
+    let mut lines = vec![format!(
+        "doctor: total={}{}",
+        result.total,
+        if severity_parts.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", severity_parts.join(", "))
+        }
+    )];
+    if result.checks.is_empty() {
+        lines.push("status: ok".to_string());
+        return lines.join("\n");
+    }
+    lines.extend(result.checks.iter().map(|check| {
+        format!(
+            "- [{} {}] {} - {}",
+            check.severity.as_str(),
+            check.kind.as_str(),
+            check.target,
+            check.message
+        )
+    }));
     lines.join("\n")
 }
 

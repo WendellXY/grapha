@@ -178,6 +178,7 @@ grapha repo map [--module M]               # file/symbol overview
 grapha repo changes [unstaged|staged|all|REF]
 grapha repo arch [--format json|brief]     # configured architecture rule violations
 grapha repo infer [--format json|brief]    # opt-in inferred module/ownership/doc metadata
+grapha repo doctor [--format json|brief]   # graph and inferred metadata health checks
 grapha repo history add --kind test --title "cargo test" [--file PATH] [--module M] [--symbol QUERY]
 grapha repo history list [--kind test] [--file PATH] [--module M] [--symbol QUERY] [--limit N]
 ```

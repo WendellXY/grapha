@@ -8,8 +8,9 @@ use serde::Serialize;
 use crate::{
     AssetCommands, BriefOutputFormat, ColorMode, ConceptCommands, ContextOutputFormat,
     FlowCommands, L10nCommands, OriginTerminalFilter, QueryOutputFormat, RepoArchOutputFormat,
-    RepoInferenceOutputFormat, RepoSmellsOutputFormat, SymbolCommands, assets, cache, changes,
-    concepts, config, fields, history, inferred, localization, query, render, search,
+    RepoDoctorOutputFormat, RepoInferenceOutputFormat, RepoSmellsOutputFormat, SymbolCommands,
+    assets, cache, changes, concepts, config, fields, history, inferred, localization, maintenance,
+    query, render, search,
 };
 
 use super::index::{
@@ -821,6 +822,18 @@ pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Resul
                 RepoInferenceOutputFormat::Json => print_json(&result),
                 RepoInferenceOutputFormat::Brief => {
                     println!("{}", render::render_inferred_brief_with_options(&result));
+                    Ok(())
+                }
+            }
+        }
+        crate::RepoCommands::Doctor { format, path } => {
+            let graph = load_graph(&path)?;
+            let inferred = inferred::load_inferred_index(&path)?;
+            let report = maintenance::run_maintenance_checks(&graph, &inferred);
+            match format {
+                RepoDoctorOutputFormat::Json => print_json(&report),
+                RepoDoctorOutputFormat::Brief => {
+                    println!("{}", render::render_maintenance_brief_with_options(&report));
                     Ok(())
                 }
             }

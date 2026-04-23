@@ -107,10 +107,20 @@ Evidence:
 - Public docs: `README.md`
 - Tests: inferred snapshot unit tests plus `repo_infer_brief_saves_opt_in_metadata`
 
+7. **Self-maintenance checks** — done
+   Added `grapha repo doctor` for read-only graph health checks. It reports missing relations, orphan edges/entities, inconsistent edge provenance, and stale inferred links against `.grapha/inferred.json`, with JSON and compact brief output.
+
+Evidence:
+
+- Checker: `grapha/src/maintenance.rs`
+- CLI wiring: `grapha/src/main.rs`, `grapha/src/app/query.rs`
+- Brief renderer: `grapha/src/render.rs`
+- Public docs: `README.md`
+- Tests: maintenance unit tests plus `repo_doctor_brief_reports_stale_inferred_links`
+
 ### Remaining
 
-7. **Self-maintenance checks**
-   Add checks for stale inferred links, orphan entities, missing relations, and inconsistent graph provenance.
+None. All roadmap items are complete.
 
 ## Completed Slice 1: `grapha repo arch`
 

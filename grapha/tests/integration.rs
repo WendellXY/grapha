@@ -565,6 +565,59 @@ fn repo_infer_brief_saves_opt_in_metadata() {
 }
 
 #[test]
+fn repo_doctor_brief_reports_stale_inferred_links() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+    std::fs::write(dir.path().join("main.rs"), "fn main() {}\n").unwrap();
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    std::fs::write(
+        store_dir.join("inferred.json"),
+        r#"{
+  "version": "1",
+  "records": [
+    {
+      "id": "symbol:missing:doc",
+      "kind": "doc_code_link",
+      "target": {
+        "kind": "symbol",
+        "id": "missing"
+      },
+      "value": "old note",
+      "confidence": 0.7,
+      "source": "heuristic"
+    }
+  ]
+}"#,
+    )
+    .unwrap();
+
+    grapha()
+        .args([
+            "repo",
+            "doctor",
+            "--format",
+            "brief",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("doctor: total=1 warning=1"))
+        .stdout(predicate::str::contains("stale_inferred_link"))
+        .stdout(predicate::str::contains("missing"));
+}
+
+#[test]
 fn repo_smells_populates_graph_and_query_caches() {
     let dir = tempfile::tempdir().unwrap();
     let store_dir = dir.path().join(".grapha");

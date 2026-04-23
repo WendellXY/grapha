@@ -14,6 +14,7 @@ mod history;
 mod index_status;
 mod inferred;
 mod localization;
+mod maintenance;
 mod mcp;
 mod progress;
 mod query;
@@ -95,6 +96,12 @@ impl RepoSmellsOutputFormat {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 enum RepoInferenceOutputFormat {
+    Json,
+    Brief,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum RepoDoctorOutputFormat {
     Json,
     Brief,
 }
@@ -607,6 +614,15 @@ enum RepoCommands {
         /// Output format
         #[arg(long, value_enum, default_value_t = RepoInferenceOutputFormat::Json)]
         format: RepoInferenceOutputFormat,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Check graph integrity, inferred links, and relation provenance
+    Doctor {
+        /// Output format
+        #[arg(long, value_enum, default_value_t = RepoDoctorOutputFormat::Json)]
+        format: RepoDoctorOutputFormat,
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
