@@ -93,7 +93,10 @@ fn path_mtime_unix_secs(path: &Path) -> anyhow::Result<u64> {
 
 fn head_state(repo: &Repository) -> (Option<String>, Option<String>) {
     let head = repo.head().ok();
-    let head_oid = head.as_ref().and_then(|head| head.target()).map(|oid| oid.to_string());
+    let head_oid = head
+        .as_ref()
+        .and_then(|head| head.target())
+        .map(|oid| oid.to_string());
     let head_ref = head
         .as_ref()
         .and_then(|head| head.shorthand())
@@ -209,16 +212,16 @@ fn legacy_status(store_dir: &Path) -> anyhow::Result<IndexStatus> {
     })
 }
 
-fn current_dirty_file_map(repo: &Repository) -> anyhow::Result<BTreeMap<String, Option<FileStamp>>> {
+fn current_dirty_file_map(
+    repo: &Repository,
+) -> anyhow::Result<BTreeMap<String, Option<FileStamp>>> {
     Ok(dirty_repo_files(repo)?
         .into_iter()
         .map(|file| (file.path, file.stamp))
         .collect())
 }
 
-fn snapshot_dirty_file_map(
-    repo: &IndexedRepoState,
-) -> BTreeMap<String, Option<FileStamp>> {
+fn snapshot_dirty_file_map(repo: &IndexedRepoState) -> BTreeMap<String, Option<FileStamp>> {
     repo.dirty_files
         .iter()
         .map(|file| (file.path.clone(), file.stamp))
@@ -254,7 +257,10 @@ fn changed_files_between_heads(
     Ok(paths)
 }
 
-fn compute_status(snapshot: IndexStatusSnapshot, project_root: &Path) -> anyhow::Result<IndexStatus> {
+fn compute_status(
+    snapshot: IndexStatusSnapshot,
+    project_root: &Path,
+) -> anyhow::Result<IndexStatus> {
     let mut changed_files = BTreeSet::new();
     let mut freshness_tracking_available = false;
     let repo_status = match snapshot.repo.as_ref() {
@@ -262,9 +268,10 @@ fn compute_status(snapshot: IndexStatusSnapshot, project_root: &Path) -> anyhow:
             Ok(repo) => {
                 freshness_tracking_available = true;
                 let (current_head_oid, current_head_ref) = head_state(&repo);
-                if let (Some(indexed_head), Some(current_head)) =
-                    (indexed_repo.head_oid.as_deref(), current_head_oid.as_deref())
-                {
+                if let (Some(indexed_head), Some(current_head)) = (
+                    indexed_repo.head_oid.as_deref(),
+                    current_head_oid.as_deref(),
+                ) {
                     if indexed_head != current_head {
                         changed_files.extend(changed_files_between_heads(
                             &repo,

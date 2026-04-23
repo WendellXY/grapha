@@ -718,7 +718,13 @@ mod tests {
         let graph = Graph {
             version: "0.1.0".to_string(),
             nodes: vec![
-                mk("source", "source", "a.swift", Some("App"), Visibility::Public),
+                mk(
+                    "source",
+                    "source",
+                    "a.swift",
+                    Some("App"),
+                    Visibility::Public,
+                ),
                 mk(
                     "direct_a",
                     "directA",

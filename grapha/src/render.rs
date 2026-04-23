@@ -1403,7 +1403,10 @@ pub fn render_impact_with_options(result: &ImpactResult, options: RenderOptions)
                         result.summary.direct_dependent_count.to_string(),
                     ),
                     ("direct_files", result.summary.direct_file_count.to_string()),
-                    ("direct_modules", result.summary.direct_module_count.to_string()),
+                    (
+                        "direct_modules",
+                        result.summary.direct_module_count.to_string(),
+                    ),
                     (
                         "public_dependents",
                         result.summary.public_dependent_count.to_string(),

@@ -57,7 +57,9 @@ fn run_mcp_server_with_optional_watch(
                                                 graph.nodes.len(),
                                                 graph.edges.len(),
                                             ) {
-                                                eprintln!("watch: failed to save index status: {e}");
+                                                eprintln!(
+                                                    "watch: failed to save index status: {e}"
+                                                );
                                                 continue;
                                             }
                                             if state_tx.send((graph, index)).is_err() {

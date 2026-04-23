@@ -399,7 +399,7 @@ fn requires_full_rebuild_for_locators(previous: &Graph, delta: &GraphDelta<'_>) 
                 .deleted_edge_ids
                 .iter()
                 .any(|deleted| deleted == &crate::delta::edge_fingerprint(edge))
-        })
+    })
 }
 
 fn normalized_exact_name(name: &str) -> String {
@@ -566,9 +566,8 @@ pub fn search_filtered(
         .as_deref()
         .map(build_file_filter_regex)
         .transpose()?;
-    let requires_full_candidate_scan = file_filter.is_some()
-        || options.exact_name
-        || options.declarations_only;
+    let requires_full_candidate_scan =
+        file_filter.is_some() || options.exact_name || options.declarations_only;
     let candidate_limit = if requires_full_candidate_scan {
         searcher.search(&final_query, &Count)?
     } else {
@@ -1415,7 +1414,10 @@ mod tests {
 
         let results = search(&index, "UserNameView", 10).unwrap();
 
-        assert_eq!(results.first().map(|result| result.kind.as_str()), Some("struct"));
+        assert_eq!(
+            results.first().map(|result| result.kind.as_str()),
+            Some("struct")
+        );
     }
 
     #[test]

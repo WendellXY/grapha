@@ -1,7 +1,7 @@
 pub mod api;
 
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::Router;
 use axum::response::Html;
