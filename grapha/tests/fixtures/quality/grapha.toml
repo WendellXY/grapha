@@ -1,0 +1,12 @@
+[[architecture.layers]]
+name = "ui"
+patterns = ["ui.rs"]
+
+[[architecture.layers]]
+name = "infra"
+patterns = ["controller.rs", "repository.rs", "service.rs"]
+
+[[architecture.deny]]
+from = "infra"
+to = "ui"
+reason = "Infrastructure must not depend on UI."
