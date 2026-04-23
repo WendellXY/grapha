@@ -41,6 +41,8 @@ struct IndexStatusSnapshot {
     config_fingerprint: String,
     #[serde(default)]
     index_store_path: Option<String>,
+    #[serde(default)]
+    index_store_stamp: Option<FileStamp>,
     repo: Option<IndexedRepoState>,
 }
 
@@ -69,10 +71,34 @@ pub struct IndexStatus {
     pub may_be_stale: bool,
     pub freshness_tracking_available: bool,
     pub changed_file_count_since_index: usize,
+    pub changed_input_file_count_since_index: usize,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub changed_input_files_since_index: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<RepoStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct IndexInputKinds {
+    graph: bool,
+    localization: bool,
+    assets: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct IndexWorkPlan {
+    pub status: IndexStatus,
+    pub rebuild_graph: bool,
+    pub rebuild_localization: bool,
+    pub rebuild_assets: bool,
+}
+
+impl IndexWorkPlan {
+    pub fn is_noop(&self) -> bool {
+        !self.rebuild_graph && !self.rebuild_localization && !self.rebuild_assets
+    }
 }
 
 fn normalize_repo_path(path: &Path) -> String {
@@ -89,6 +115,85 @@ fn current_unix_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn classify_index_input(path: &str) -> IndexInputKinds {
+    let path = Path::new(path);
+    let file_name = path.file_name().and_then(|value| value.to_str());
+
+    if file_name == Some("grapha.toml") {
+        return IndexInputKinds {
+            graph: true,
+            localization: false,
+            assets: false,
+        };
+    }
+
+    if file_name == Some("langcodec.toml") {
+        return IndexInputKinds {
+            graph: false,
+            localization: true,
+            assets: false,
+        };
+    }
+
+    if file_name == Some("Package.swift") || file_name == Some("Cargo.toml") {
+        return IndexInputKinds {
+            graph: true,
+            localization: false,
+            assets: false,
+        };
+    }
+
+    if path.components().any(|component| {
+        component.as_os_str().to_str().is_some_and(|segment| {
+            segment.ends_with(".xcodeproj") || segment.ends_with(".xcworkspace")
+        })
+    }) {
+        return IndexInputKinds {
+            graph: true,
+            localization: false,
+            assets: false,
+        };
+    }
+
+    if path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .is_some_and(|segment| segment.ends_with(".xcassets"))
+    }) {
+        return IndexInputKinds {
+            graph: false,
+            localization: false,
+            assets: true,
+        };
+    }
+
+    match path.extension().and_then(|value| value.to_str()) {
+        Some("swift") | Some("rs") => IndexInputKinds {
+            graph: true,
+            localization: false,
+            assets: false,
+        },
+        Some("xcstrings") | Some("strings") => IndexInputKinds {
+            graph: false,
+            localization: true,
+            assets: false,
+        },
+        _ => IndexInputKinds::default(),
+    }
+}
+
+fn collect_changed_input_files(changed_files: &BTreeSet<String>) -> Vec<String> {
+    changed_files
+        .iter()
+        .filter(|path| {
+            let kinds = classify_index_input(path);
+            kinds.graph || kinds.localization || kinds.assets
+        })
+        .cloned()
+        .collect()
 }
 
 fn path_mtime_unix_secs(path: &Path) -> anyhow::Result<u64> {
@@ -181,11 +286,71 @@ fn required_index_artifacts_exist(store_dir: &Path) -> bool {
         && assets::snapshot_exists(store_dir)
 }
 
-fn current_index_store_path(project_root: &Path, config: &GraphaConfig) -> Option<String> {
+fn current_index_store_info(
+    project_root: &Path,
+    config: &GraphaConfig,
+) -> (Option<String>, Option<FileStamp>) {
     if !config.swift.index_store {
-        return None;
+        return (None, None);
     }
-    grapha_swift::refresh_index_store(project_root).map(|path| normalize_repo_path(&path))
+
+    let path = grapha_swift::refresh_index_store(project_root);
+    let stamp = path.as_deref().and_then(FileStamp::from_path);
+    let path = path.map(|path| normalize_repo_path(&path));
+    (path, stamp)
+}
+
+fn snapshot_index_store_compatible(
+    snapshot: &IndexStatusSnapshot,
+    project_root: &Path,
+    config: &GraphaConfig,
+) -> bool {
+    if !config.swift.index_store {
+        return snapshot.index_store_path.is_none();
+    }
+
+    if let Some(snapshot_path) = snapshot.index_store_path.as_deref() {
+        let current_stamp = FileStamp::from_path(Path::new(snapshot_path));
+        if current_stamp == snapshot.index_store_stamp && current_stamp.is_some() {
+            return true;
+        }
+    }
+
+    let (current_path, current_stamp) = current_index_store_info(project_root, config);
+    current_path == snapshot.index_store_path && current_stamp == snapshot.index_store_stamp
+}
+
+fn legacy_snapshot_compatible(
+    snapshot: &IndexStatusSnapshot,
+    project_root: &Path,
+    store_dir: &Path,
+    config: &GraphaConfig,
+) -> bool {
+    if snapshot.grapha_version != env!("CARGO_PKG_VERSION") {
+        return false;
+    }
+
+    let cache = crate::cache::ExtractionCache::new(store_dir);
+    let Ok(entries) = cache.load_entries() else {
+        return false;
+    };
+    if entries.is_empty() {
+        return false;
+    }
+
+    let expected_fingerprint = config.extraction_cache_fingerprint();
+    if entries
+        .values()
+        .any(|entry| entry.config_fingerprint != expected_fingerprint)
+    {
+        return false;
+    }
+
+    if config.swift.index_store {
+        current_index_store_info(project_root, config).0.is_some()
+    } else {
+        true
+    }
 }
 
 fn save_snapshot(store_dir: &Path, snapshot: &IndexStatusSnapshot) -> anyhow::Result<()> {
@@ -227,6 +392,8 @@ fn legacy_status(store_dir: &Path) -> anyhow::Result<IndexStatus> {
         may_be_stale: false,
         freshness_tracking_available: false,
         changed_file_count_since_index: 0,
+        changed_input_file_count_since_index: 0,
+        changed_input_files_since_index: Vec::new(),
         repo: None,
         note: Some(
             "reindex with the current Grapha build to enable freshness tracking".to_string(),
@@ -344,14 +511,18 @@ fn compute_status(
         None
     };
 
+    let changed_input_files = collect_changed_input_files(&changed_files);
+
     Ok(IndexStatus {
         indexed_at_unix_secs: snapshot.indexed_at_unix_secs,
         grapha_version: snapshot.grapha_version,
         node_count: snapshot.node_count,
         edge_count: snapshot.edge_count,
-        may_be_stale: freshness_tracking_available && !changed_files.is_empty(),
+        may_be_stale: freshness_tracking_available && !changed_input_files.is_empty(),
         freshness_tracking_available,
         changed_file_count_since_index: changed_files.len(),
+        changed_input_file_count_since_index: changed_input_files.len(),
+        changed_input_files_since_index: changed_input_files,
         repo: repo_status,
         note,
     })
@@ -364,6 +535,7 @@ pub fn save_index_status(
     edge_count: usize,
     config: &GraphaConfig,
 ) -> anyhow::Result<()> {
+    let (index_store_path, index_store_stamp) = current_index_store_info(project_root, config);
     let snapshot = IndexStatusSnapshot {
         version: INDEX_STATUS_VERSION,
         indexed_at_unix_secs: current_unix_secs(),
@@ -372,17 +544,18 @@ pub fn save_index_status(
         edge_count,
         binary_stamp: cache::current_binary_stamp(),
         config_fingerprint: config.index_input_fingerprint(),
-        index_store_path: current_index_store_path(project_root, config),
+        index_store_path,
+        index_store_stamp,
         repo: capture_repo_state(project_root)?,
     };
     save_snapshot(store_dir, &snapshot)
 }
 
-pub fn can_skip_index(
+pub fn plan_index_work(
     project_root: &Path,
     store_dir: &Path,
     config: &GraphaConfig,
-) -> anyhow::Result<Option<IndexStatus>> {
+) -> anyhow::Result<Option<IndexWorkPlan>> {
     if !config.external.is_empty() || !required_index_artifacts_exist(store_dir) {
         return Ok(None);
     }
@@ -398,26 +571,43 @@ pub fn can_skip_index(
     };
 
     let status = compute_status(snapshot.clone(), project_root)?;
-    if !status.freshness_tracking_available || status.may_be_stale {
+    if !status.freshness_tracking_available {
         return Ok(None);
     }
 
-    let Some(current_binary_stamp) = cache::current_binary_stamp() else {
-        return Ok(None);
+    let has_current_metadata =
+        snapshot.binary_stamp.is_some() && !snapshot.config_fingerprint.is_empty();
+    let compatible = if has_current_metadata {
+        let Some(current_binary_stamp) = cache::current_binary_stamp() else {
+            return Ok(None);
+        };
+        snapshot.binary_stamp == Some(current_binary_stamp)
+            && snapshot.config_fingerprint == config.index_input_fingerprint()
+            && snapshot_index_store_compatible(&snapshot, project_root, config)
+    } else {
+        legacy_snapshot_compatible(&snapshot, project_root, store_dir, config)
     };
-    if snapshot.binary_stamp != Some(current_binary_stamp) {
+
+    if !compatible {
         return Ok(None);
     }
 
-    if snapshot.config_fingerprint != config.index_input_fingerprint() {
-        return Ok(None);
+    let mut rebuild_graph = false;
+    let mut rebuild_localization = false;
+    let mut rebuild_assets = false;
+    for path in &status.changed_input_files_since_index {
+        let kinds = classify_index_input(path);
+        rebuild_graph |= kinds.graph;
+        rebuild_localization |= kinds.localization;
+        rebuild_assets |= kinds.assets;
     }
 
-    if snapshot.index_store_path != current_index_store_path(project_root, config) {
-        return Ok(None);
-    }
-
-    Ok(Some(status))
+    Ok(Some(IndexWorkPlan {
+        status,
+        rebuild_graph,
+        rebuild_localization,
+        rebuild_assets,
+    }))
 }
 
 pub fn load_index_status(project_root: &Path, store_dir: &Path) -> anyhow::Result<IndexStatus> {
@@ -490,6 +680,7 @@ mod tests {
         assert!(status.freshness_tracking_available);
         assert!(!status.may_be_stale);
         assert_eq!(status.changed_file_count_since_index, 0);
+        assert_eq!(status.changed_input_file_count_since_index, 0);
     }
 
     #[test]
@@ -508,6 +699,7 @@ mod tests {
         let status = load_index_status(dir.path(), &store_dir).unwrap();
         assert!(status.may_be_stale);
         assert_eq!(status.changed_file_count_since_index, 1);
+        assert_eq!(status.changed_input_file_count_since_index, 1);
         assert!(
             status
                 .repo
@@ -537,10 +729,11 @@ mod tests {
         let stale = load_index_status(dir.path(), &store_dir).unwrap();
         assert!(stale.may_be_stale);
         assert_eq!(stale.changed_file_count_since_index, 1);
+        assert_eq!(stale.changed_input_file_count_since_index, 1);
     }
 
     #[test]
-    fn can_skip_index_when_repo_and_inputs_match() {
+    fn plan_index_work_skips_when_repo_and_inputs_match() {
         let dir = tempdir().unwrap();
         let repo = Repository::init(dir.path()).unwrap();
         fs::write(dir.path().join("src.rs"), "fn main() {}\n").unwrap();
@@ -551,15 +744,17 @@ mod tests {
         let config = GraphaConfig::default();
         save_index_status(dir.path(), &store_dir, 1, 0, &config).unwrap();
 
-        let status = can_skip_index(dir.path(), &store_dir, &config).unwrap();
+        let plan = plan_index_work(dir.path(), &store_dir, &config)
+            .unwrap()
+            .unwrap();
         assert!(
-            status.is_some(),
+            plan.is_noop(),
             "matching inputs should allow a fast-path skip"
         );
     }
 
     #[test]
-    fn can_skip_index_rejects_config_changes() {
+    fn plan_index_work_rejects_config_changes() {
         let dir = tempdir().unwrap();
         let repo = Repository::init(dir.path()).unwrap();
         fs::write(dir.path().join("src.rs"), "fn main() {}\n").unwrap();
@@ -577,11 +772,11 @@ pattern = "URLSession"
 terminal = "network"
 direction = "read"
 operation = "HTTP"
-"#,
+        "#,
         )
         .unwrap();
 
-        let status = can_skip_index(dir.path(), &store_dir, &changed_config).unwrap();
+        let status = plan_index_work(dir.path(), &store_dir, &changed_config).unwrap();
         assert!(
             status.is_none(),
             "config changes must invalidate the fast path"
@@ -589,7 +784,7 @@ operation = "HTTP"
     }
 
     #[test]
-    fn can_skip_index_requires_complete_artifacts() {
+    fn plan_index_work_requires_complete_artifacts() {
         let dir = tempdir().unwrap();
         let repo = Repository::init(dir.path()).unwrap();
         fs::write(dir.path().join("src.rs"), "fn main() {}\n").unwrap();
@@ -600,7 +795,7 @@ operation = "HTTP"
         let config = GraphaConfig::default();
         save_index_status(dir.path(), &store_dir, 1, 0, &config).unwrap();
 
-        let status = can_skip_index(dir.path(), &store_dir, &config).unwrap();
+        let status = plan_index_work(dir.path(), &store_dir, &config).unwrap();
         assert!(
             status.is_none(),
             "missing artifacts should fall back to full indexing"
@@ -608,7 +803,7 @@ operation = "HTTP"
     }
 
     #[test]
-    fn can_skip_index_is_disabled_for_external_repos() {
+    fn plan_index_work_is_disabled_for_external_repos() {
         let dir = tempdir().unwrap();
         let repo = Repository::init(dir.path()).unwrap();
         fs::write(dir.path().join("src.rs"), "fn main() {}\n").unwrap();
@@ -626,10 +821,61 @@ path = "/tmp/shared"
         .unwrap();
         save_index_status(dir.path(), &store_dir, 1, 0, &config).unwrap();
 
-        let status = can_skip_index(dir.path(), &store_dir, &config).unwrap();
+        let status = plan_index_work(dir.path(), &store_dir, &config).unwrap();
         assert!(
             status.is_none(),
             "externals keep the fast path conservative"
         );
+    }
+
+    #[test]
+    fn status_ignores_docs_only_changes_for_staleness() {
+        let dir = tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        fs::write(dir.path().join("src.rs"), "fn main() {}\n").unwrap();
+        fs::write(dir.path().join("README.md"), "hello\n").unwrap();
+        commit_all(&repo, "initial").unwrap();
+
+        let store_dir = dir.path().join(".grapha");
+        save_index_status(dir.path(), &store_dir, 1, 0, &GraphaConfig::default()).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        fs::write(dir.path().join("README.md"), "updated\n").unwrap();
+
+        let status = load_index_status(dir.path(), &store_dir).unwrap();
+        assert!(!status.may_be_stale);
+        assert_eq!(status.changed_file_count_since_index, 1);
+        assert_eq!(status.changed_input_file_count_since_index, 0);
+    }
+
+    #[test]
+    fn plan_index_work_rebuilds_only_localization_for_catalog_changes() {
+        let dir = tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        fs::write(dir.path().join("src.rs"), "fn main() {}\n").unwrap();
+        fs::write(
+            dir.path().join("Localizable.xcstrings"),
+            r#"{"sourceLanguage":"en","strings":{}}"#,
+        )
+        .unwrap();
+        commit_all(&repo, "initial").unwrap();
+
+        let store_dir = dir.path().join(".grapha");
+        seed_index_artifacts(&store_dir);
+        let config = GraphaConfig::default();
+        save_index_status(dir.path(), &store_dir, 1, 0, &config).unwrap();
+        std::thread::sleep(Duration::from_millis(10));
+        fs::write(
+            dir.path().join("Localizable.xcstrings"),
+            r#"{"sourceLanguage":"en","strings":{"hello":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Hello"}}}}}}"#,
+        )
+        .unwrap();
+
+        let plan = plan_index_work(dir.path(), &store_dir, &config)
+            .unwrap()
+            .unwrap();
+        assert!(!plan.is_noop());
+        assert!(!plan.rebuild_graph);
+        assert!(plan.rebuild_localization);
+        assert!(!plan.rebuild_assets);
     }
 }

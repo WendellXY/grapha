@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 
@@ -88,6 +88,87 @@ fn build_store(format: &str, store_path: &Path) -> anyhow::Result<Box<dyn store:
     })
 }
 
+type TimedLocalizationSnapshot = Option<(Duration, localization::LocalizationSnapshotBuildStats)>;
+type TimedAssetSnapshot = Option<(Duration, assets::AssetSnapshotBuildStats)>;
+
+fn run_requested_snapshots(
+    index_root: &Path,
+    store_path: &Path,
+    rebuild_localization: bool,
+    rebuild_assets: bool,
+) -> anyhow::Result<(TimedLocalizationSnapshot, TimedAssetSnapshot)> {
+    std::thread::scope(|scope| {
+        let localization_handle = rebuild_localization.then(|| {
+            scope.spawn(|| {
+                let t = Instant::now();
+                let stats = localization::build_and_save_catalog_snapshot(index_root, store_path)?;
+                Ok::<_, anyhow::Error>((t.elapsed(), stats))
+            })
+        });
+
+        let assets_handle = rebuild_assets.then(|| {
+            scope.spawn(|| {
+                let t = Instant::now();
+                let stats = assets::build_and_save_snapshot(index_root, store_path)?;
+                Ok::<_, anyhow::Error>((t.elapsed(), stats))
+            })
+        });
+
+        let localization = match localization_handle {
+            Some(handle) => Some(handle.join().expect("localization thread panicked")?),
+            None => None,
+        };
+        let assets = match assets_handle {
+            Some(handle) => Some(handle.join().expect("assets thread panicked")?),
+            None => None,
+        };
+        Ok::<_, anyhow::Error>((localization, assets))
+    })
+}
+
+fn print_snapshot_progress(localization: TimedLocalizationSnapshot, assets: TimedAssetSnapshot) {
+    if let Some((localize_elapsed, localize_stats)) = localization {
+        progress::done_elapsed(
+            &format!(
+                "saved localization snapshot ({} records)",
+                localize_stats.record_count
+            ),
+            localize_elapsed,
+        );
+        for warning in &localize_stats.warnings {
+            eprintln!(
+                "  \x1b[33m!\x1b[0m skipped invalid localization catalog {}: {}",
+                warning.catalog_file, warning.reason
+            );
+        }
+    }
+
+    if let Some((assets_elapsed, assets_stats)) = assets {
+        progress::done_elapsed(
+            &format!(
+                "saved asset snapshot ({} images)",
+                assets_stats.record_count
+            ),
+            assets_elapsed,
+        );
+        for warning in &assets_stats.warnings {
+            eprintln!(
+                "  \x1b[33m!\x1b[0m skipped invalid asset catalog {}: {}",
+                warning.catalog_path, warning.reason
+            );
+        }
+    }
+}
+
+fn print_index_summary(node_count: usize, edge_count: usize, total_start: Instant) {
+    progress::summary(&format!(
+        "\n  {} nodes, {} edges indexed in {:.1}s",
+        node_count,
+        edge_count,
+        total_start.elapsed().as_secs_f64(),
+    ));
+}
+
 fn load_existing_graph(
     format: &str,
     store_path: &Path,
@@ -130,21 +211,27 @@ pub(crate) fn handle_index(
     let total_start = Instant::now();
     let store_path = store_dir.unwrap_or_else(|| path.join(".grapha"));
     let config = crate::config::load_config(&path);
+    let mut work_plan = None;
 
     if !full_rebuild {
-        match index_status::can_skip_index(&path, &store_path, &config) {
-            Ok(Some(status)) => {
+        match index_status::plan_index_work(&path, &store_path, &config) {
+            Ok(Some(plan)) if plan.is_noop() => {
+                index_status::save_index_status(
+                    &path,
+                    &store_path,
+                    plan.status.node_count,
+                    plan.status.edge_count,
+                    &config,
+                )?;
                 progress::done_elapsed(
                     "index is up to date, skipping rebuild",
                     total_start.elapsed(),
                 );
-                progress::summary(&format!(
-                    "\n  {} nodes, {} edges indexed in {:.1}s",
-                    status.node_count,
-                    status.edge_count,
-                    total_start.elapsed().as_secs_f64(),
-                ));
+                print_index_summary(plan.status.node_count, plan.status.edge_count, total_start);
                 return Ok(());
+            }
+            Ok(Some(plan)) => {
+                work_plan = Some(plan);
             }
             Ok(None) => {}
             Err(error) => {
@@ -169,6 +256,30 @@ pub(crate) fn handle_index(
             }
         }
     };
+
+    if let Some(plan) = work_plan.as_ref()
+        && !plan.rebuild_graph
+    {
+        let snapshot_result = run_requested_snapshots(
+            &path,
+            &store_path,
+            plan.rebuild_localization,
+            plan.rebuild_assets,
+        )?;
+        index_status::save_index_status(
+            &path,
+            &store_path,
+            plan.status.node_count,
+            plan.status.edge_count,
+            &config,
+        )?;
+
+        eprintln!("  \x1b[32m✓\x1b[0m graph is up to date, skipping graph and search rebuild");
+        print_snapshot_progress(snapshot_result.0, snapshot_result.1);
+        print_index_summary(plan.status.node_count, plan.status.edge_count, total_start);
+        return Ok(());
+    }
+
     let pipeline = crate::app::pipeline::run_pipeline(
         &path,
         true,
@@ -198,29 +309,22 @@ pub(crate) fn handle_index(
 
     let search_index_path = store_path.join("search_index");
     let index_root = path.clone();
+    let rebuild_localization = work_plan
+        .as_ref()
+        .map(|plan| plan.rebuild_localization)
+        .unwrap_or(true);
+    let rebuild_assets = work_plan
+        .as_ref()
+        .map(|plan| plan.rebuild_assets)
+        .unwrap_or(true);
 
     if graph_unchanged {
-        let snapshot_result = std::thread::scope(|scope| {
-            let localization_handle = scope.spawn(|| {
-                let t = Instant::now();
-                let stats =
-                    localization::build_and_save_catalog_snapshot(&index_root, &store_path)?;
-                Ok::<_, anyhow::Error>((t.elapsed(), stats))
-            });
-
-            let assets_handle = scope.spawn(|| {
-                let t = Instant::now();
-                let stats = assets::build_and_save_snapshot(&index_root, &store_path)?;
-                Ok::<_, anyhow::Error>((t.elapsed(), stats))
-            });
-
-            let localization = localization_handle
-                .join()
-                .expect("localization thread panicked")?;
-            let assets = assets_handle.join().expect("assets thread panicked")?;
-            Ok::<_, anyhow::Error>((localization, assets))
-        });
-        let ((localize_elapsed, localize_stats), (assets_elapsed, assets_stats)) = snapshot_result?;
+        let snapshot_result = run_requested_snapshots(
+            &index_root,
+            &store_path,
+            rebuild_localization,
+            rebuild_assets,
+        )?;
 
         extraction_cache
             .save_entries(&pipeline.extraction_cache_entries)
@@ -234,39 +338,8 @@ pub(crate) fn handle_index(
         )?;
 
         eprintln!("  \x1b[32m✓\x1b[0m no graph changes detected, skipping store and search sync");
-        progress::done_elapsed(
-            &format!(
-                "saved localization snapshot ({} records)",
-                localize_stats.record_count
-            ),
-            localize_elapsed,
-        );
-        for warning in &localize_stats.warnings {
-            eprintln!(
-                "  \x1b[33m!\x1b[0m skipped invalid localization catalog {}: {}",
-                warning.catalog_file, warning.reason
-            );
-        }
-        progress::done_elapsed(
-            &format!(
-                "saved asset snapshot ({} images)",
-                assets_stats.record_count
-            ),
-            assets_elapsed,
-        );
-        for warning in &assets_stats.warnings {
-            eprintln!(
-                "  \x1b[33m!\x1b[0m skipped invalid asset catalog {}: {}",
-                warning.catalog_path, warning.reason
-            );
-        }
-
-        progress::summary(&format!(
-            "\n  {} nodes, {} edges indexed in {:.1}s",
-            graph.nodes.len(),
-            graph.edges.len(),
-            total_start.elapsed().as_secs_f64(),
-        ));
+        print_snapshot_progress(snapshot_result.0, snapshot_result.1);
+        print_index_summary(graph.nodes.len(), graph.edges.len(), total_start);
 
         return Ok(());
     }
@@ -301,31 +374,40 @@ pub(crate) fn handle_index(
             Ok::<_, anyhow::Error>((t.elapsed(), stats))
         });
 
-        let localization_handle = scope.spawn(|| {
-            let t = Instant::now();
-            let stats = localization::build_and_save_catalog_snapshot(&index_root, &store_path)?;
-            Ok::<_, anyhow::Error>((t.elapsed(), stats))
+        let localization_handle = rebuild_localization.then(|| {
+            scope.spawn(|| {
+                let t = Instant::now();
+                let stats =
+                    localization::build_and_save_catalog_snapshot(&index_root, &store_path)?;
+                Ok::<_, anyhow::Error>((t.elapsed(), stats))
+            })
         });
 
-        let assets_handle = scope.spawn(|| {
-            let t = Instant::now();
-            let stats = assets::build_and_save_snapshot(&index_root, &store_path)?;
-            Ok::<_, anyhow::Error>((t.elapsed(), stats))
+        let assets_handle = rebuild_assets.then(|| {
+            scope.spawn(|| {
+                let t = Instant::now();
+                let stats = assets::build_and_save_snapshot(&index_root, &store_path)?;
+                Ok::<_, anyhow::Error>((t.elapsed(), stats))
+            })
         });
 
         let save = save_handle.join().expect("save thread panicked")?;
         let search = search_handle.join().expect("search thread panicked")?;
-        let localization = localization_handle
-            .join()
-            .expect("localization thread panicked")?;
-        let assets = assets_handle.join().expect("assets thread panicked")?;
+        let localization = match localization_handle {
+            Some(handle) => Some(handle.join().expect("localization thread panicked")?),
+            None => None,
+        };
+        let assets = match assets_handle {
+            Some(handle) => Some(handle.join().expect("assets thread panicked")?),
+            None => None,
+        };
         Ok::<_, anyhow::Error>((save, search, localization, assets))
     });
     let (
         (save_elapsed, save_stats),
         (search_elapsed, search_stats),
-        (localize_elapsed, localize_stats),
-        (assets_elapsed, assets_stats),
+        localization_result,
+        assets_result,
     ) = save_result?;
 
     cache::GraphCache::new(&store_path).invalidate();
@@ -354,39 +436,8 @@ pub(crate) fn handle_index(
         &format!("built search index ({})", search_stats.summary()),
         search_elapsed,
     );
-    progress::done_elapsed(
-        &format!(
-            "saved localization snapshot ({} records)",
-            localize_stats.record_count
-        ),
-        localize_elapsed,
-    );
-    for warning in &localize_stats.warnings {
-        eprintln!(
-            "  \x1b[33m!\x1b[0m skipped invalid localization catalog {}: {}",
-            warning.catalog_file, warning.reason
-        );
-    }
-    progress::done_elapsed(
-        &format!(
-            "saved asset snapshot ({} images)",
-            assets_stats.record_count
-        ),
-        assets_elapsed,
-    );
-    for warning in &assets_stats.warnings {
-        eprintln!(
-            "  \x1b[33m!\x1b[0m skipped invalid asset catalog {}: {}",
-            warning.catalog_path, warning.reason
-        );
-    }
-
-    progress::summary(&format!(
-        "\n  {} nodes, {} edges indexed in {:.1}s",
-        graph.nodes.len(),
-        graph.edges.len(),
-        total_start.elapsed().as_secs_f64(),
-    ));
+    print_snapshot_progress(localization_result, assets_result);
+    print_index_summary(graph.nodes.len(), graph.edges.len(), total_start);
 
     Ok(())
 }

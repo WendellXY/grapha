@@ -219,8 +219,8 @@ pub(crate) fn handle_symbol_command(
                 && status.may_be_stale
             {
                 eprintln!(
-                    "  \x1b[33m!\x1b[0m results may be stale ({} file(s) changed since last index)",
-                    status.changed_file_count_since_index
+                    "  \x1b[33m!\x1b[0m results may be stale ({} indexed input file(s) changed since last index)",
+                    status.changed_input_file_count_since_index
                 );
             }
 
