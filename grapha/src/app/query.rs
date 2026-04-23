@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Instant;
 
@@ -7,7 +8,7 @@ use serde::Serialize;
 use crate::{
     AssetCommands, ColorMode, ConceptCommands, ContextOutputFormat, FlowCommands, L10nCommands,
     OriginTerminalFilter, QueryOutputFormat, RepoArchOutputFormat, SymbolCommands, assets, cache,
-    changes, concepts, config, fields, localization, query, render, search,
+    changes, concepts, config, fields, history, localization, query, render, search,
 };
 
 use super::index::{
@@ -742,5 +743,93 @@ pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Resul
             let result = query::module_summary::query_module_summary(&graph);
             print_json(&result)
         }
+        crate::RepoCommands::History { command } => handle_history_command(command),
     }
+}
+
+fn handle_history_command(command: crate::HistoryCommands) -> anyhow::Result<()> {
+    match command {
+        crate::HistoryCommands::Add {
+            kind,
+            title,
+            at,
+            status,
+            commit,
+            branch,
+            detail,
+            files,
+            modules,
+            symbols,
+            metadata,
+            path,
+        } => {
+            let symbols = resolve_history_symbols(&path, symbols)?;
+            let event =
+                history::HistoryStore::for_project(&path).add(history::NewHistoryEvent {
+                    kind: kind.into(),
+                    timestamp: at,
+                    title,
+                    status,
+                    commit,
+                    branch,
+                    detail,
+                    files,
+                    modules,
+                    symbols,
+                    metadata: parse_history_metadata(metadata)?,
+                })?;
+            print_json(&event)
+        }
+        crate::HistoryCommands::List {
+            kind,
+            file,
+            module,
+            symbol,
+            limit,
+            path,
+        } => {
+            let symbol = match symbol {
+                Some(symbol) => Some(resolve_history_symbols(&path, vec![symbol])?.remove(0)),
+                None => None,
+            };
+            let events =
+                history::HistoryStore::for_project(&path).list(&history::HistoryListFilter {
+                    kind: kind.map(Into::into),
+                    file,
+                    module,
+                    symbol,
+                    limit,
+                })?;
+            print_json(&events)
+        }
+    }
+}
+
+fn resolve_history_symbols(path: &Path, symbols: Vec<String>) -> anyhow::Result<Vec<String>> {
+    if symbols.is_empty() {
+        return Ok(Vec::new());
+    }
+    let graph = load_graph(path)?;
+    symbols
+        .into_iter()
+        .map(|symbol| {
+            resolve_query_result(query::resolve_node(&graph, &symbol), "symbol")
+                .map(|node| node.id.clone())
+        })
+        .collect()
+}
+
+fn parse_history_metadata(values: Vec<String>) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut metadata = BTreeMap::new();
+    for value in values {
+        let Some((key, val)) = value.split_once('=') else {
+            bail!("metadata must be formatted as key=value");
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            bail!("metadata key cannot be empty");
+        }
+        metadata.insert(key.to_string(), val.trim().to_string());
+    }
+    Ok(metadata)
 }

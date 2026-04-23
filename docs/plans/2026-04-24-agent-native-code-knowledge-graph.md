@@ -75,10 +75,17 @@ Evidence:
 - Public docs: `README.md`
 - Tests: repo config parsing, external-ID namespacing, search `--repo` filtering, SQLite repo round-trip
 
-### Remaining
+2. **Persistent history** — done
+   Added a durable history store under `.grapha/history.db` for commit, build, test, deploy, and incident events. Events can link to source files, modules, and graph-resolved symbol IDs, with optional status, commit, branch, detail, and key/value metadata.
 
-2. **Persistent history**
-   Add an event/history store for commit, build, test, deploy, and incident-like records, linked back to files, modules, and symbols.
+Evidence:
+
+- Store/model: `grapha/src/history.rs`
+- CLI wiring: `grapha/src/main.rs`, `grapha/src/app/query.rs`
+- Public docs: `README.md`
+- Tests: history store filtering plus `grapha repo history add/list` integration round-trip
+
+### Remaining
 
 4. **Brief agent output expansion**
    Extend compact `--format brief` output beyond the first `context`/`arch` slice to additional high-use commands such as `impact`, `trace`, and `smells`.

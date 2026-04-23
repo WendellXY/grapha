@@ -1717,6 +1717,57 @@ fn changes_command_runs_on_clean_repo() {
 }
 
 #[test]
+fn repo_history_add_and_list_round_trip() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().to_str().unwrap();
+
+    let add_output = grapha()
+        .args([
+            "repo",
+            "history",
+            "add",
+            "--kind",
+            "test",
+            "--title",
+            "cargo test",
+            "--at",
+            "2026-04-24T10:00:00Z",
+            "--status",
+            "passed",
+            "--file",
+            "src/lib.rs",
+            "--module",
+            "core",
+            "--meta",
+            "duration_ms=1200",
+            "-p",
+            project,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let added: Value = serde_json::from_slice(&add_output).unwrap();
+    assert_eq!(added["kind"], "test");
+    assert_eq!(added["files"][0], "src/lib.rs");
+    assert_eq!(added["metadata"]["duration_ms"], "1200");
+
+    let list_output = grapha()
+        .args([
+            "repo", "history", "list", "--kind", "test", "--file", "lib.rs", "-p", project,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let listed: Value = serde_json::from_slice(&list_output).unwrap();
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["title"], "cargo test");
+}
+
+#[test]
 fn search_command_finds_symbols() {
     let dir = tempfile::tempdir().unwrap();
     let store_dir = dir.path().join(".grapha");

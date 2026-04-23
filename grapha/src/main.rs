@@ -10,6 +10,7 @@ mod delta;
 mod extract;
 mod fields;
 mod filter;
+mod history;
 mod index_status;
 mod localization;
 mod mcp;
@@ -83,6 +84,27 @@ enum OriginTerminalFilter {
     Event,
     Keychain,
     Search,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum HistoryKind {
+    Commit,
+    Build,
+    Test,
+    Deploy,
+    Incident,
+}
+
+impl From<HistoryKind> for history::HistoryEventKind {
+    fn from(value: HistoryKind) -> Self {
+        match value {
+            HistoryKind::Commit => Self::Commit,
+            HistoryKind::Build => Self::Build,
+            HistoryKind::Test => Self::Test,
+            HistoryKind::Deploy => Self::Deploy,
+            HistoryKind::Incident => Self::Incident,
+        }
+    }
 }
 
 impl OriginTerminalFilter {
@@ -544,6 +566,75 @@ enum RepoCommands {
     },
     /// Show per-module metrics (symbol counts, coupling, entry points)
     Modules {
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Record or list commit/build/test/deploy/incident history
+    History {
+        #[command(subcommand)]
+        command: HistoryCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum HistoryCommands {
+    /// Add a typed history event linked to files, modules, or symbols
+    Add {
+        /// Event kind
+        #[arg(long, value_enum)]
+        kind: HistoryKind,
+        /// Event title
+        #[arg(long)]
+        title: String,
+        /// Event timestamp (defaults to current Unix milliseconds)
+        #[arg(long)]
+        at: Option<String>,
+        /// Optional status label, such as passed, failed, deployed, or mitigated
+        #[arg(long)]
+        status: Option<String>,
+        /// Related commit SHA
+        #[arg(long)]
+        commit: Option<String>,
+        /// Related branch name
+        #[arg(long)]
+        branch: Option<String>,
+        /// Free-form event detail
+        #[arg(long)]
+        detail: Option<String>,
+        /// Link a source file path or suffix
+        #[arg(long = "file")]
+        files: Vec<String>,
+        /// Link a module name
+        #[arg(long = "module")]
+        modules: Vec<String>,
+        /// Link a symbol query, resolved to the current graph symbol ID
+        #[arg(long = "symbol")]
+        symbols: Vec<String>,
+        /// Metadata key/value pair, formatted as key=value
+        #[arg(long = "meta")]
+        metadata: Vec<String>,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// List typed history events
+    List {
+        /// Filter by event kind
+        #[arg(long, value_enum)]
+        kind: Option<HistoryKind>,
+        /// Filter by linked source file substring
+        #[arg(long)]
+        file: Option<String>,
+        /// Filter by linked module name
+        #[arg(long)]
+        module: Option<String>,
+        /// Filter by linked symbol query, resolved to the current graph symbol ID
+        #[arg(long)]
+        symbol: Option<String>,
+        /// Maximum number of events to return (0 means unlimited)
+        #[arg(long, default_value = "50")]
+        limit: usize,
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,

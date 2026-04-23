@@ -177,6 +177,8 @@ grapha repo modules                        # per-module metrics
 grapha repo map [--module M]               # file/symbol overview
 grapha repo changes [unstaged|staged|all|REF]
 grapha repo arch [--format json|brief]     # configured architecture rule violations
+grapha repo history add --kind test --title "cargo test" [--file PATH] [--module M] [--symbol QUERY]
+grapha repo history list [--kind test] [--file PATH] [--module M] [--symbol QUERY] [--limit N]
 ```
 
 ### Indexing & Serving
