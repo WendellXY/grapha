@@ -1593,16 +1593,19 @@ fn fuzzy_candidate_rank(query: &str, candidate: &str) -> Option<(usize, usize)> 
         return None;
     }
 
-    if query.len() >= 4 && candidate.contains(query) {
-        return Some((0, candidate.len().saturating_sub(query.len())));
+    let query_len = query.chars().count();
+    let candidate_len = candidate.chars().count();
+
+    if query_len >= 4 && candidate.contains(query) {
+        return Some((0, candidate_len.saturating_sub(query_len)));
     }
-    if candidate.len() >= 4 && query.contains(candidate) {
-        return Some((0, query.len().saturating_sub(candidate.len())));
+    if candidate_len >= 4 && query.contains(candidate) {
+        return Some((0, query_len.saturating_sub(candidate_len)));
     }
 
-    let max_distance = fuzzy_phrase_distance(query.len().max(candidate.len()));
+    let max_distance = fuzzy_phrase_distance(query_len.max(candidate_len));
     let distance = levenshtein_bounded(query, candidate, max_distance)?;
-    Some((distance, query.len().abs_diff(candidate.len())))
+    Some((distance, query_len.abs_diff(candidate_len)))
 }
 
 fn fuzzy_matches_text(normalized_value: &str, normalized_query: &str) -> bool {
@@ -1633,7 +1636,8 @@ fn fuzzy_query_tokens_match(normalized_query: &str, normalized_value: &str) -> b
             if query_token == *value_token {
                 return true;
             }
-            let max_distance = fuzzy_token_distance(query_token.len().max(value_token.len()));
+            let max_distance =
+                fuzzy_token_distance(query_token.chars().count().max(value_token.chars().count()));
             levenshtein_bounded(query_token, value_token, max_distance).is_some()
         })
     })
@@ -1962,6 +1966,133 @@ mod tests {
                 .evidence
                 .iter()
                 .any(|evidence| evidence.kind == "l10n_value" && evidence.match_kind == "fuzzy")
+        );
+    }
+
+    #[test]
+    fn search_concepts_does_not_fuzzy_match_unrelated_short_cjk_values() {
+        let banner_owner = make_node(
+            "banner-page",
+            "BannerPage",
+            NodeKind::Struct,
+            "BannerPage.swift",
+        );
+        let mut banner_usage = make_node(
+            "banner-title",
+            "bannerTitle",
+            NodeKind::Property,
+            "BannerPage.swift",
+        );
+        banner_usage
+            .metadata
+            .insert("l10n.ref_kind".to_string(), "literal".to_string());
+        banner_usage
+            .metadata
+            .insert("l10n.literal".to_string(), "banner_title".to_string());
+
+        let submit_owner = make_node(
+            "submit-page",
+            "SubmitPage",
+            NodeKind::Struct,
+            "SubmitPage.swift",
+        );
+        let mut submit_usage = make_node(
+            "submit-title",
+            "submitTitle",
+            NodeKind::Property,
+            "SubmitPage.swift",
+        );
+        submit_usage
+            .metadata
+            .insert("l10n.ref_kind".to_string(), "literal".to_string());
+        submit_usage
+            .metadata
+            .insert("l10n.literal".to_string(), "submit_title".to_string());
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                banner_owner.clone(),
+                banner_usage,
+                submit_owner.clone(),
+                submit_usage,
+            ],
+            edges: vec![
+                Edge {
+                    source: banner_owner.id.clone(),
+                    target: "banner-title".to_string(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                    repo: None,
+                },
+                Edge {
+                    source: submit_owner.id.clone(),
+                    target: "submit-title".to_string(),
+                    kind: EdgeKind::Contains,
+                    confidence: 1.0,
+                    direction: None,
+                    operation: None,
+                    condition: None,
+                    async_boundary: None,
+                    provenance: Vec::new(),
+                    repo: None,
+                },
+            ],
+        };
+        let (_dir, search_index) = build_search_index(&graph);
+        let catalogs = LocalizationCatalogIndex::from_records(vec![
+            LocalizationCatalogRecord {
+                table: "Localizable".to_string(),
+                key: "banner_title".to_string(),
+                catalog_file: "Resources/Localizable.xcstrings".to_string(),
+                catalog_dir: "Resources".to_string(),
+                source_language: "zh-Hans".to_string(),
+                source_value: "首页横幅".to_string(),
+                status: "translated".to_string(),
+                comment: None,
+                translations: BTreeMap::new(),
+            },
+            LocalizationCatalogRecord {
+                table: "Localizable".to_string(),
+                key: "submit_title".to_string(),
+                catalog_file: "Resources/Localizable.xcstrings".to_string(),
+                catalog_dir: "Resources".to_string(),
+                source_language: "zh-Hans".to_string(),
+                source_value: "提交".to_string(),
+                status: "translated".to_string(),
+                comment: None,
+                translations: BTreeMap::new(),
+            },
+        ]);
+
+        let result = search_concepts(
+            &graph,
+            &search_index,
+            &ConceptIndex::default(),
+            &catalogs,
+            &AssetCatalogIndex::default(),
+            "横幅",
+            5,
+        )
+        .unwrap();
+
+        assert!(
+            result
+                .scopes
+                .iter()
+                .any(|scope| scope.symbol.id == banner_owner.id)
+        );
+        assert!(
+            result
+                .scopes
+                .iter()
+                .all(|scope| scope.symbol.id != submit_owner.id),
+            "unrelated two-character CJK values should not be fuzzy matches"
         );
     }
 
