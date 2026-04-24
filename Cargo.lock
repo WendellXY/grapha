@@ -738,7 +738,7 @@ dependencies = [
 
 [[package]]
 name = "grapha"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -773,7 +773,7 @@ dependencies = [
 
 [[package]]
 name = "grapha-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "ignore",
@@ -785,7 +785,7 @@ dependencies = [
 
 [[package]]
 name = "grapha-rust"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "grapha-core",
@@ -797,7 +797,7 @@ dependencies = [
 
 [[package]]
 name = "grapha-swift"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "grapha-core",
