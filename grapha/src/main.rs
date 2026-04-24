@@ -483,7 +483,7 @@ enum ConceptCommands {
         /// Business concept text
         term: String,
         /// Max results
-        #[arg(long, default_value = "10")]
+        #[arg(long, default_value_t = concepts::DEFAULT_CONCEPT_SEARCH_LIMIT)]
         limit: usize,
         /// Project directory
         #[arg(short, long, default_value = ".")]

@@ -242,8 +242,8 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of scopes to return (default: 10)",
-                        "default": 10
+                        "description": "Maximum number of scopes to return (default: 20)",
+                        "default": 20
                     }
                 },
                 "required": ["query"]
@@ -661,7 +661,7 @@ fn handle_search_concepts(state: &McpState, arguments: &Value) -> Value {
     let limit = arguments
         .get("limit")
         .and_then(|v| v.as_u64())
-        .unwrap_or(10) as usize;
+        .unwrap_or(concepts::DEFAULT_CONCEPT_SEARCH_LIMIT as u64) as usize;
 
     let concept_index = match concepts::load_concept_index_from_store(&state.store_path) {
         Ok(index) => index,

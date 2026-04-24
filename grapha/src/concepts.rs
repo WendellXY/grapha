@@ -15,6 +15,7 @@ use crate::symbol_locator::SymbolLocatorIndex;
 
 const CONCEPTS_SNAPSHOT_VERSION: &str = "1";
 const CONCEPTS_SNAPSHOT_FILE: &str = "concepts.json";
+pub const DEFAULT_CONCEPT_SEARCH_LIMIT: usize = 20;
 
 const STATUS_CONFIRMED: &str = "confirmed";
 const STATUS_CANDIDATE: &str = "candidate";
@@ -22,10 +23,13 @@ const STATUS_CANDIDATE: &str = "candidate";
 const SCORE_CONCEPT_STORE: f32 = 1000.0;
 const SCORE_L10N_VALUE_EXACT: f32 = 920.0;
 const SCORE_L10N_VALUE_CONTAINS: f32 = 880.0;
+const SCORE_L10N_VALUE_FUZZY: f32 = 850.0;
 const SCORE_L10N_KEY_EXACT: f32 = 840.0;
 const SCORE_L10N_KEY_CONTAINS: f32 = 800.0;
+const SCORE_L10N_KEY_FUZZY: f32 = 780.0;
 const SCORE_ASSET_EXACT: f32 = 760.0;
 const SCORE_ASSET_CONTAINS: f32 = 720.0;
+const SCORE_ASSET_FUZZY: f32 = 700.0;
 const SCORE_FALLBACK_CALLER_BONUS: f32 = 15.0;
 const SCORE_FALLBACK_SEED_PENALTY: f32 = 25.0;
 const SCORE_SYMBOL_EXACT: f32 = 660.0;
@@ -164,6 +168,7 @@ struct ConceptSnapshot {
 enum TextMatch {
     Exact,
     Contains,
+    Fuzzy,
 }
 
 #[derive(Debug)]
@@ -225,6 +230,11 @@ impl ConceptIndex {
                 match_kind: entry.match_kind.clone(),
             },
         ))
+    }
+
+    pub fn record_for_search_term(&self, term: &str) -> Option<(&ConceptRecord, ConceptLookup)> {
+        self.record_for_term(term)
+            .or_else(|| self.fuzzy_record_for_term(term))
     }
 
     pub fn bind_concept(
@@ -441,6 +451,46 @@ impl ConceptIndex {
             }
         }
     }
+
+    fn fuzzy_record_for_term(&self, term: &str) -> Option<(&ConceptRecord, ConceptLookup)> {
+        let normalized = normalize_concept(term);
+        if normalized.is_empty() {
+            return None;
+        }
+
+        let mut best: Option<(&ConceptLookupEntry, usize, usize)> = None;
+        for (candidate, entry) in &self.lookup {
+            let Some((distance, length_delta)) = fuzzy_candidate_rank(&normalized, candidate)
+            else {
+                continue;
+            };
+            let should_replace = match best.as_ref() {
+                Some((best_entry, best_distance, best_length_delta)) => {
+                    (distance, length_delta, entry.matched_term.as_str())
+                        < (
+                            *best_distance,
+                            *best_length_delta,
+                            best_entry.matched_term.as_str(),
+                        )
+                }
+                None => true,
+            };
+            if should_replace {
+                best = Some((entry, distance, length_delta));
+            }
+        }
+
+        let (entry, _, _) = best?;
+        let record = self.records.get(entry.record_index)?;
+        Some((
+            record,
+            ConceptLookup {
+                concept: record.concept.clone(),
+                matched_term: entry.matched_term.clone(),
+                match_kind: format!("fuzzy_{}", entry.match_kind),
+            },
+        ))
+    }
 }
 
 pub fn load_concept_index(project_root: &Path) -> anyhow::Result<ConceptIndex> {
@@ -549,7 +599,7 @@ pub fn search_concepts(
         search_index,
     };
 
-    if let Some((record, lookup)) = concepts.record_for_term(query) {
+    if let Some((record, lookup)) = concepts.record_for_search_term(query) {
         let scopes = direct_concept_scopes(record, &lookup, &node_index, &locators, limit);
         if !scopes.is_empty() {
             return Ok(ConceptSearchResult {
@@ -580,6 +630,14 @@ pub fn search_concepts(
         query,
         TextMatch::Contains,
     );
+    add_localization_value_scopes(
+        &mut scopes,
+        &scope_context,
+        catalogs,
+        &normalized_query,
+        query,
+        TextMatch::Fuzzy,
+    );
     add_localization_key_scopes(
         &mut scopes,
         &scope_context,
@@ -596,6 +654,14 @@ pub fn search_concepts(
         query,
         TextMatch::Contains,
     );
+    add_localization_key_scopes(
+        &mut scopes,
+        &scope_context,
+        catalogs,
+        &normalized_query,
+        query,
+        TextMatch::Fuzzy,
+    );
     add_asset_scopes(
         &mut scopes,
         &scope_context,
@@ -609,6 +675,13 @@ pub fn search_concepts(
         assets_index,
         &normalized_query,
         TextMatch::Contains,
+    );
+    add_asset_scopes(
+        &mut scopes,
+        &scope_context,
+        assets_index,
+        &normalized_query,
+        TextMatch::Fuzzy,
     );
     add_symbol_scopes(&mut scopes, &scope_context, query, limit)?;
 
@@ -711,6 +784,8 @@ fn add_localization_value_scopes(
             record,
             if match_type == TextMatch::Exact {
                 SCORE_L10N_VALUE_EXACT
+            } else if match_type == TextMatch::Fuzzy {
+                SCORE_L10N_VALUE_FUZZY
             } else {
                 SCORE_L10N_VALUE_CONTAINS
             },
@@ -757,6 +832,8 @@ fn add_localization_key_scopes(
             record,
             if match_type == TextMatch::Exact {
                 SCORE_L10N_KEY_EXACT
+            } else if match_type == TextMatch::Fuzzy {
+                SCORE_L10N_KEY_FUZZY
             } else {
                 SCORE_L10N_KEY_CONTAINS
             },
@@ -846,6 +923,8 @@ fn add_asset_scopes(
                 context.locators,
                 if match_type == TextMatch::Exact {
                     SCORE_ASSET_EXACT
+                } else if match_type == TextMatch::Fuzzy {
+                    SCORE_ASSET_FUZZY
                 } else {
                     SCORE_ASSET_CONTAINS
                 },
@@ -870,6 +949,8 @@ fn add_asset_scopes(
                 record,
                 if match_type == TextMatch::Exact {
                     SCORE_ASSET_EXACT
+                } else if match_type == TextMatch::Fuzzy {
+                    SCORE_ASSET_FUZZY
                 } else {
                     SCORE_ASSET_CONTAINS
                 },
@@ -888,7 +969,10 @@ fn add_symbol_scopes(
         context.search_index,
         query,
         limit.saturating_mul(4).max(8),
-        &SearchOptions::default(),
+        &SearchOptions {
+            fuzzy: true,
+            ..SearchOptions::default()
+        },
     )?;
     let normalized_query = normalize_match_text(query);
 
@@ -898,12 +982,10 @@ fn add_symbol_scopes(
         };
         let scope = scope_for_node(node, context.parents, context.node_index);
         let normalized_name = normalize_match_text(query::normalize_symbol_name(&node.name));
-        let (match_kind, base_score) = if normalized_name == normalized_query {
-            ("exact", SCORE_SYMBOL_EXACT)
-        } else if normalized_name.starts_with(&normalized_query) {
-            ("prefix", SCORE_SYMBOL_PREFIX)
-        } else {
-            ("bm25", SCORE_SYMBOL_BM25)
+        let Some((match_kind, base_score)) =
+            concept_symbol_match(&normalized_name, &normalized_query)
+        else {
+            continue;
         };
         add_scope(
             scopes,
@@ -924,6 +1006,26 @@ fn add_symbol_scopes(
         );
     }
     Ok(())
+}
+
+fn concept_symbol_match(
+    normalized_name: &str,
+    normalized_query: &str,
+) -> Option<(&'static str, f32)> {
+    if normalized_query.is_empty() {
+        return None;
+    }
+    if normalized_name == normalized_query {
+        Some(("exact", SCORE_SYMBOL_EXACT))
+    } else if normalized_name.starts_with(normalized_query) {
+        Some(("prefix", SCORE_SYMBOL_PREFIX))
+    } else if normalized_name.contains(normalized_query) {
+        Some(("contains", SCORE_SYMBOL_PREFIX))
+    } else if fuzzy_query_tokens_match(normalized_query, normalized_name) {
+        Some(("fuzzy", SCORE_SYMBOL_BM25))
+    } else {
+        None
+    }
 }
 
 fn add_l10n_fallback_scopes(
@@ -1251,6 +1353,7 @@ fn matches_localization_value(
             TextMatch::Contains => {
                 normalized_value.contains(normalized_query) && normalized_value != normalized_query
             }
+            TextMatch::Fuzzy => fuzzy_matches_text(&normalized_value, normalized_query),
         }
     })
 }
@@ -1277,6 +1380,7 @@ fn matches_text(value: &str, normalized_query: &str, match_type: TextMatch) -> b
         TextMatch::Contains => {
             normalized_value.contains(normalized_query) && normalized_value != normalized_query
         }
+        TextMatch::Fuzzy => fuzzy_matches_text(&normalized_value, normalized_query),
     }
 }
 
@@ -1484,10 +1588,112 @@ fn normalize_concept(value: &str) -> String {
     normalize_match_text(value)
 }
 
+fn fuzzy_candidate_rank(query: &str, candidate: &str) -> Option<(usize, usize)> {
+    if query.is_empty() || candidate.is_empty() || query == candidate {
+        return None;
+    }
+
+    if query.len() >= 4 && candidate.contains(query) {
+        return Some((0, candidate.len().saturating_sub(query.len())));
+    }
+    if candidate.len() >= 4 && query.contains(candidate) {
+        return Some((0, query.len().saturating_sub(candidate.len())));
+    }
+
+    let max_distance = fuzzy_phrase_distance(query.len().max(candidate.len()));
+    let distance = levenshtein_bounded(query, candidate, max_distance)?;
+    Some((distance, query.len().abs_diff(candidate.len())))
+}
+
+fn fuzzy_matches_text(normalized_value: &str, normalized_query: &str) -> bool {
+    if normalized_value.is_empty()
+        || normalized_query.is_empty()
+        || normalized_value == normalized_query
+        || normalized_value.contains(normalized_query)
+    {
+        return false;
+    }
+
+    if fuzzy_candidate_rank(normalized_query, normalized_value).is_some() {
+        return true;
+    }
+
+    fuzzy_query_tokens_match(normalized_query, normalized_value)
+}
+
+fn fuzzy_query_tokens_match(normalized_query: &str, normalized_value: &str) -> bool {
+    let value_tokens: Vec<&str> = normalized_value.split_whitespace().collect();
+    let query_tokens: Vec<&str> = normalized_query.split_whitespace().collect();
+    if value_tokens.is_empty() || query_tokens.is_empty() {
+        return false;
+    }
+
+    query_tokens.into_iter().all(|query_token| {
+        value_tokens.iter().any(|value_token| {
+            if query_token == *value_token {
+                return true;
+            }
+            let max_distance = fuzzy_token_distance(query_token.len().max(value_token.len()));
+            levenshtein_bounded(query_token, value_token, max_distance).is_some()
+        })
+    })
+}
+
+fn fuzzy_phrase_distance(len: usize) -> usize {
+    if len <= 4 {
+        1
+    } else if len <= 12 {
+        2
+    } else {
+        3
+    }
+}
+
+fn fuzzy_token_distance(len: usize) -> usize {
+    if len <= 3 {
+        0
+    } else if len <= 6 {
+        1
+    } else {
+        2
+    }
+}
+
+fn levenshtein_bounded(left: &str, right: &str, max_distance: usize) -> Option<usize> {
+    let left_chars: Vec<char> = left.chars().collect();
+    let right_chars: Vec<char> = right.chars().collect();
+    if left_chars.len().abs_diff(right_chars.len()) > max_distance {
+        return None;
+    }
+
+    let mut previous: Vec<usize> = (0..=right_chars.len()).collect();
+    let mut current = vec![0; right_chars.len() + 1];
+
+    for (left_index, left_char) in left_chars.iter().enumerate() {
+        current[0] = left_index + 1;
+        let mut row_min = current[0];
+        for (right_index, right_char) in right_chars.iter().enumerate() {
+            let substitution_cost = usize::from(left_char != right_char);
+            current[right_index + 1] = (previous[right_index + 1] + 1)
+                .min(current[right_index] + 1)
+                .min(previous[right_index] + substitution_cost);
+            row_min = row_min.min(current[right_index + 1]);
+        }
+        if row_min > max_distance {
+            return None;
+        }
+        std::mem::swap(&mut previous, &mut current);
+    }
+
+    let distance = previous[right_chars.len()];
+    (distance <= max_distance).then_some(distance)
+}
+
 fn match_kind_label(match_type: TextMatch) -> &'static str {
     match match_type {
         TextMatch::Exact => "exact",
         TextMatch::Contains => "contains",
+        TextMatch::Fuzzy => "fuzzy",
     }
 }
 
@@ -1643,6 +1849,154 @@ mod tests {
         assert_eq!(result.scopes.len(), 1);
         assert_eq!(result.scopes[0].symbol.id, "gift-banner-page");
         assert_eq!(result.scopes[0].status, STATUS_CONFIRMED);
+    }
+
+    #[test]
+    fn search_concepts_fuzzy_matches_stored_concept_by_default() {
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![make_node(
+                "gift-banner-page",
+                "GiftBannerPage",
+                NodeKind::Struct,
+                "GiftBannerPage.swift",
+            )],
+            edges: Vec::new(),
+        };
+        let (_dir, search_index) = build_search_index(&graph);
+        let mut concepts = ConceptIndex::default();
+        concepts
+            .bind_concept(
+                "gift banner",
+                &[String::from("gift-banner-page")],
+                Vec::new(),
+            )
+            .unwrap();
+
+        let result = search_concepts(
+            &graph,
+            &search_index,
+            &concepts,
+            &LocalizationCatalogIndex::default(),
+            &AssetCatalogIndex::default(),
+            "gift baner",
+            5,
+        )
+        .unwrap();
+
+        assert_eq!(result.resolved_from, "concept_store");
+        assert_eq!(result.matched_concept.as_deref(), Some("gift banner"));
+        assert_eq!(result.scopes[0].symbol.id, "gift-banner-page");
+        assert!(
+            result.scopes[0]
+                .evidence
+                .iter()
+                .any(|evidence| evidence.match_kind == "fuzzy_concept")
+        );
+    }
+
+    #[test]
+    fn search_concepts_fuzzy_matches_localized_values_by_default() {
+        let owner = make_node(
+            "gift-banner-page",
+            "GiftBannerPage",
+            NodeKind::Struct,
+            "GiftBannerPage.swift",
+        );
+        let mut usage = make_node(
+            "gift-banner-title",
+            "bannerTitle",
+            NodeKind::Property,
+            "GiftBannerPage.swift",
+        );
+        usage
+            .metadata
+            .insert("l10n.ref_kind".to_string(), "literal".to_string());
+        usage
+            .metadata
+            .insert("l10n.literal".to_string(), "gift_banner_title".to_string());
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![owner.clone(), usage],
+            edges: vec![Edge {
+                source: owner.id.clone(),
+                target: "gift-banner-title".to_string(),
+                kind: EdgeKind::Contains,
+                confidence: 1.0,
+                direction: None,
+                operation: None,
+                condition: None,
+                async_boundary: None,
+                provenance: Vec::new(),
+                repo: None,
+            }],
+        };
+        let (_dir, search_index) = build_search_index(&graph);
+        let catalogs = LocalizationCatalogIndex::from_records(vec![LocalizationCatalogRecord {
+            table: "Localizable".to_string(),
+            key: "gift_banner_title".to_string(),
+            catalog_file: "Resources/Localizable.xcstrings".to_string(),
+            catalog_dir: "Resources".to_string(),
+            source_language: "en".to_string(),
+            source_value: "Gift banner".to_string(),
+            status: "translated".to_string(),
+            comment: None,
+            translations: BTreeMap::new(),
+        }]);
+
+        let result = search_concepts(
+            &graph,
+            &search_index,
+            &ConceptIndex::default(),
+            &catalogs,
+            &AssetCatalogIndex::default(),
+            "gift baner",
+            5,
+        )
+        .unwrap();
+
+        assert_eq!(result.scopes[0].symbol.id, owner.id);
+        assert!(
+            result.scopes[0]
+                .evidence
+                .iter()
+                .any(|evidence| evidence.kind == "l10n_value" && evidence.match_kind == "fuzzy")
+        );
+    }
+
+    #[test]
+    fn search_concepts_fuzzy_matches_symbols_by_default() {
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![make_node(
+                "gift-banner-page",
+                "GiftBannerPage",
+                NodeKind::Struct,
+                "GiftBannerPage.swift",
+            )],
+            edges: Vec::new(),
+        };
+        let (_dir, search_index) = build_search_index(&graph);
+
+        let result = search_concepts(
+            &graph,
+            &search_index,
+            &ConceptIndex::default(),
+            &LocalizationCatalogIndex::default(),
+            &AssetCatalogIndex::default(),
+            "gift baner",
+            5,
+        )
+        .unwrap();
+
+        assert_eq!(result.scopes[0].symbol.id, "gift-banner-page");
+        assert!(
+            result.scopes[0]
+                .evidence
+                .iter()
+                .any(|evidence| evidence.kind == "symbol_query")
+        );
     }
 
     #[test]

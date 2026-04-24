@@ -136,7 +136,7 @@ Add to `.mcp.json`:
 | `analyze_complexity` | Structural metrics + severity rating for any type |
 | `detect_smells` | Code smell scan scoped to the repo, a module, a file, or a symbol |
 | `get_module_summary` | Per-module metrics with cross-module coupling ratio |
-| `search_concepts` | Business concept lookup across bindings, localization, assets, and symbols |
+| `search_concepts` | Fuzzy business concept lookup across bindings, localization, assets, and symbols |
 | `get_concept` | Stored concept aliases and bound symbols |
 | `bind_concept` | Persist confirmed concept-to-symbol mappings |
 | `add_concept_alias` | Add aliases for a concept |
@@ -203,7 +203,7 @@ grapha asset usages <name> [--format json|tree]
 ### Concepts
 
 ```bash
-grapha concept search "送礼横幅" [--limit N] [--format json|tree]
+grapha concept search "送礼横幅" [--limit N] [--format json|tree]   # fuzzy by default, limit defaults to 20
 grapha concept show "送礼横幅" [--format json|tree]
 grapha concept bind "送礼横幅" --symbol GiftBannerPage --symbol GiftBannerViewModel
 grapha concept alias "送礼横幅" --add "礼物 banner" --add "gift banner"

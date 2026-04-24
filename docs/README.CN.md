@@ -129,7 +129,7 @@ grapha index . && grapha serve --mcp --watch
 | `analyze_complexity` | 结构指标 + 严重度评级 |
 | `detect_smells` | 按仓库、模块、文件或符号扫描代码味道 |
 | `get_module_summary` | 模块级指标，含跨模块耦合度 |
-| `search_concepts` | 跨绑定、国际化、资源和符号查找业务概念 |
+| `search_concepts` | 跨绑定、国际化、资源和符号进行默认模糊业务概念查找 |
 | `get_concept` | 查看已存概念别名和绑定符号 |
 | `bind_concept` | 持久化确认后的概念到符号映射 |
 | `add_concept_alias` | 为概念添加别名 |
@@ -192,7 +192,7 @@ grapha asset usages <name> [--format json|tree]
 ### 业务概念
 
 ```bash
-grapha concept search "送礼横幅" [--limit N] [--format json|tree]
+grapha concept search "送礼横幅" [--limit N] [--format json|tree]   # 默认模糊，limit 默认 20
 grapha concept show "送礼横幅" [--format json|tree]
 grapha concept bind "送礼横幅" --symbol GiftBannerPage --symbol GiftBannerViewModel
 grapha concept alias "送礼横幅" --add "礼物 banner" --add "gift banner"
