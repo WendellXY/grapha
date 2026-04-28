@@ -7,6 +7,7 @@ mod classify;
 mod compress;
 mod concepts;
 mod config;
+mod data_paths;
 mod delta;
 mod extract;
 mod fields;

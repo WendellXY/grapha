@@ -1,9 +1,41 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::Value;
+use std::path::Path;
 
 fn grapha() -> Command {
     Command::cargo_bin("grapha").unwrap()
+}
+
+fn run_git(cwd: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn contains_file_named(root: &Path, file_name: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.file_name().and_then(|name| name.to_str()) == Some(file_name) {
+            return true;
+        }
+        if path.is_dir() && contains_file_named(&path, file_name) {
+            return true;
+        }
+    }
+    false
 }
 
 fn strip_ansi(input: &str) -> String {
@@ -192,6 +224,7 @@ fn doc_comments_drive_search_concepts_and_compact_output() {
 #[test]
 fn symbol_annotations_round_trip_through_cli_context_and_concept_search() {
     let dir = tempfile::tempdir().unwrap();
+    let grapha_home = tempfile::tempdir().unwrap();
     let store_dir = dir.path().join(".grapha");
     std::fs::write(
         dir.path().join("gift.rs"),
@@ -211,6 +244,7 @@ fn symbol_annotations_round_trip_through_cli_context_and_concept_search() {
 
     let annotation_text = "Owns the gift handoff between catalog and checkout.";
     grapha()
+        .env("GRAPHA_HOME", grapha_home.path())
         .args([
             "symbol",
             "annotate",
@@ -227,6 +261,7 @@ fn symbol_annotations_round_trip_through_cli_context_and_concept_search() {
         .stdout(predicate::str::contains("\"stale\": false"));
 
     let context_output = grapha()
+        .env("GRAPHA_HOME", grapha_home.path())
         .args([
             "symbol",
             "context",
@@ -246,6 +281,7 @@ fn symbol_annotations_round_trip_through_cli_context_and_concept_search() {
     assert_eq!(parsed["symbol"]["annotation"]["created_by"], "codex");
 
     let concept_output = grapha()
+        .env("GRAPHA_HOME", grapha_home.path())
         .args([
             "concept",
             "search",
@@ -283,6 +319,7 @@ fn symbol_annotations_round_trip_through_cli_context_and_concept_search() {
         .success();
 
     grapha()
+        .env("GRAPHA_HOME", grapha_home.path())
         .args([
             "symbol",
             "annotation",
@@ -293,6 +330,81 @@ fn symbol_annotations_round_trip_through_cli_context_and_concept_search() {
         .assert()
         .success()
         .stdout(predicate::str::contains(annotation_text));
+}
+
+#[test]
+fn symbol_annotations_are_shared_across_git_worktrees_but_indexes_stay_local() {
+    let dir = tempfile::tempdir().unwrap();
+    let grapha_home = tempfile::tempdir().unwrap();
+    let main = dir.path().join("main");
+    let linked = dir.path().join("linked");
+    std::fs::create_dir(&main).unwrap();
+    std::fs::create_dir(main.join("src")).unwrap();
+    std::fs::write(
+        main.join("src").join("lib.rs"),
+        "pub struct CheckoutCoordinator;\n",
+    )
+    .unwrap();
+
+    run_git(&main, &["init"]);
+    run_git(&main, &["add", "src/lib.rs"]);
+    run_git(
+        &main,
+        &[
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test User",
+            "commit",
+            "-m",
+            "init",
+        ],
+    );
+    run_git(&main, &["worktree", "add", linked.to_str().unwrap()]);
+
+    grapha()
+        .args(["index", main.to_str().unwrap()])
+        .assert()
+        .success();
+    grapha()
+        .args(["index", linked.to_str().unwrap()])
+        .assert()
+        .success();
+
+    let annotation_text = "Shared worktree knowledge for checkout coordination.";
+    grapha()
+        .env("GRAPHA_HOME", grapha_home.path())
+        .args([
+            "symbol",
+            "annotate",
+            "CheckoutCoordinator",
+            annotation_text,
+            "-p",
+            main.to_str().unwrap(),
+            "--by",
+            "codex",
+        ])
+        .assert()
+        .success();
+
+    grapha()
+        .env("GRAPHA_HOME", grapha_home.path())
+        .args([
+            "symbol",
+            "annotation",
+            "CheckoutCoordinator",
+            "-p",
+            linked.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(annotation_text));
+
+    assert!(main.join(".grapha").join("grapha.db").exists());
+    assert!(linked.join(".grapha").join("grapha.db").exists());
+    assert!(contains_file_named(grapha_home.path(), "annotations.db"));
+    assert!(!contains_file_named(grapha_home.path(), "grapha.db"));
+    assert!(!contains_file_named(grapha_home.path(), "search_index"));
 }
 
 #[test]

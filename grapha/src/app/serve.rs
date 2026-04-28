@@ -14,6 +14,7 @@ fn run_mcp_server_with_optional_watch(
     let state = mcp::handler::McpState {
         graph,
         search_index,
+        project_root: path.clone(),
         store_path: path.join(".grapha"),
         recall: recall::Recall::new(),
     };

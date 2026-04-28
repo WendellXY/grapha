@@ -601,6 +601,7 @@ pub fn search_concepts(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn search_concepts_with_annotations(
     graph: &Graph,
     search_index: &Index,
@@ -2364,6 +2365,26 @@ mod tests {
                         .is_some_and(|value| value.contains("gift handoff"))),
             "annotation-only concept matches should report annotation evidence: {:?}",
             result.scopes[0].evidence
+        );
+
+        let fuzzy_result = search_concepts_with_annotations(
+            &graph,
+            &search_index,
+            &ConceptIndex::default(),
+            &LocalizationCatalogIndex::default(),
+            &AssetCatalogIndex::default(),
+            "gft hndoff",
+            5,
+            Some(&annotations),
+        )
+        .unwrap();
+
+        assert!(
+            fuzzy_result.scopes[0].evidence.iter().any(|evidence| {
+                evidence.kind == "annotation" && evidence.match_kind == "fuzzy"
+            }),
+            "fuzzy annotation concept matches should report fuzzy annotation evidence: {:?}",
+            fuzzy_result.scopes[0].evidence
         );
     }
 

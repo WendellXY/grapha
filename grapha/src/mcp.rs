@@ -173,6 +173,7 @@ mod tests {
         McpState {
             graph,
             search_index: index,
+            project_root: PathBuf::from("/tmp/project"),
             store_path: PathBuf::from("/tmp/test"),
             recall: crate::recall::Recall::new(),
         }

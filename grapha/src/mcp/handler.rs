@@ -15,6 +15,7 @@ use crate::{annotations, assets, concepts, localization};
 pub struct McpState {
     pub graph: Graph,
     pub search_index: Index,
+    pub project_root: PathBuf,
     pub store_path: PathBuf,
     pub recall: Recall,
 }
@@ -494,7 +495,7 @@ fn handle_search_symbols(state: &McpState, arguments: &Value) -> Value {
                 let graph =
                     search::needs_graph_for_projection(fields, false).then_some(&state.graph);
                 let annotations = if fields.annotation {
-                    annotations::AnnotationStore::for_store_dir(&state.store_path)
+                    annotations::AnnotationStore::for_project_root(&state.project_root)
                         .load_index()
                         .ok()
                 } else {
@@ -516,8 +517,7 @@ fn handle_search_symbols(state: &McpState, arguments: &Value) -> Value {
 }
 
 fn handle_get_index_status(state: &McpState) -> Value {
-    let project_root = state.store_path.parent().unwrap_or(&state.store_path);
-    match crate::index_status::load_index_status(project_root, &state.store_path) {
+    match crate::index_status::load_index_status(&state.project_root, &state.store_path) {
         Ok(status) => serialize_result(&status),
         Err(error) => tool_error(format!("failed to load index status: {error}")),
     }
@@ -536,7 +536,7 @@ fn handle_get_symbol_context(state: &mut McpState, arguments: &Value) -> Value {
     match query::context::query_context(&state.graph, &symbol_id) {
         Ok(mut result) => {
             if let Ok(annotations) =
-                annotations::AnnotationStore::for_store_dir(&state.store_path).load_index()
+                annotations::AnnotationStore::for_project_root(&state.project_root).load_index()
             {
                 result.apply_annotations(&state.graph, &annotations);
             }
@@ -568,7 +568,7 @@ fn handle_annotate_symbol(state: &mut McpState, arguments: &Value) -> Value {
         return tool_error(format!("symbol not found: {query}"));
     };
 
-    match annotations::AnnotationStore::for_store_dir(&state.store_path)
+    match annotations::AnnotationStore::for_project_root(&state.project_root)
         .upsert_for_node(node, annotation, created_by)
     {
         Ok(result) => serialize_result(&result),
@@ -666,7 +666,7 @@ fn handle_batch_context(state: &mut McpState, arguments: &Value) -> Value {
         return tool_error("batch_context supports at most 20 symbols per call".to_string());
     }
 
-    let annotations = annotations::AnnotationStore::for_store_dir(&state.store_path)
+    let annotations = annotations::AnnotationStore::for_project_root(&state.project_root)
         .load_index()
         .ok();
     let mut results: Vec<Value> = Vec::with_capacity(symbol_strs.len());
@@ -766,7 +766,7 @@ fn handle_search_concepts(state: &McpState, arguments: &Value) -> Value {
     let catalogs =
         localization::load_catalog_index_from_store(&state.store_path).unwrap_or_default();
     let assets_index = assets::load_asset_index_from_store(&state.store_path).unwrap_or_default();
-    let annotations = annotations::AnnotationStore::for_store_dir(&state.store_path)
+    let annotations = annotations::AnnotationStore::for_project_root(&state.project_root)
         .load_index()
         .ok();
 
@@ -1097,6 +1097,7 @@ mod tests {
         McpState {
             graph,
             search_index: index,
+            project_root: PathBuf::from("/tmp/project"),
             store_path: PathBuf::from("/tmp/test"),
             recall: Recall::new(),
         }
@@ -1295,6 +1296,7 @@ mod tests {
         McpState {
             graph,
             search_index: index,
+            project_root: PathBuf::from("/tmp/project"),
             store_path: PathBuf::from("/tmp/test"),
             recall: Recall::new(),
         }
