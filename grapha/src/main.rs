@@ -1,3 +1,4 @@
+mod annotations;
 mod app;
 mod assets;
 mod cache;
@@ -279,7 +280,7 @@ enum SymbolCommands {
         /// Include source snippet and relationships in results
         #[arg(long)]
         context: bool,
-        /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,role; or "full"/"all"/"none")
+        /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,annotation,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
     },
@@ -293,7 +294,7 @@ enum SymbolCommands {
         /// Output format
         #[arg(long, value_enum, default_value_t = ContextOutputFormat::Json)]
         format: ContextOutputFormat,
-        /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,role; or "full"/"all"/"none")
+        /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,annotation,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
     },
@@ -310,7 +311,7 @@ enum SymbolCommands {
         /// Output format
         #[arg(long, value_enum, default_value_t = BriefOutputFormat::Json)]
         format: BriefOutputFormat,
-        /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,role; or "full"/"all"/"none")
+        /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,annotation,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
     },
@@ -326,6 +327,27 @@ enum SymbolCommands {
     File {
         /// File name or path suffix (e.g. "RoomPage.swift" or "src/main.rs")
         file: String,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Attach an agent-written annotation to a symbol
+    Annotate {
+        /// Symbol name, locator, ID, or Swift USR
+        symbol: String,
+        /// Annotation text to store for this symbol
+        annotation: String,
+        /// Agent or author label
+        #[arg(long)]
+        by: Option<String>,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Show the stored annotation for a symbol
+    Annotation {
+        /// Symbol name, locator, ID, or Swift USR
+        symbol: String,
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
@@ -491,7 +513,7 @@ enum ConceptCommands {
         /// Output format
         #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
         format: QueryOutputFormat,
-        /// Fields to display in tree output (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,role; or "full"/"all"/"none")
+        /// Fields to display in tree output (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,annotation,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
     },
@@ -505,7 +527,7 @@ enum ConceptCommands {
         /// Output format
         #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
         format: QueryOutputFormat,
-        /// Fields to display in tree output (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,role; or "full"/"all"/"none")
+        /// Fields to display in tree output (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,annotation,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
     },

@@ -8,6 +8,7 @@ use tantivy::query::{BooleanQuery, Occur, QueryParser, TermQuery};
 use tantivy::schema::{IndexRecordOption, STORED, STRING, Schema, TEXT, Value};
 use tantivy::{Index, IndexWriter, ReloadPolicy, TantivyDocument, Term, doc};
 
+use crate::annotations::{AnnotationIndex, SymbolAnnotationView};
 use crate::delta::{EntitySyncStats, GraphDelta, SyncMode};
 use crate::fields::FieldSet;
 use crate::symbol_locator::SymbolLocatorIndex;
@@ -752,6 +753,8 @@ pub struct SearchOutputResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doc_comment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<SymbolAnnotationView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<String>,
@@ -833,6 +836,7 @@ pub fn needs_graph_for_projection(fields: FieldSet, include_context: bool) -> bo
         || fields.visibility
         || fields.signature
         || fields.doc_comment
+        || fields.annotation
         || fields.role
 }
 
@@ -841,6 +845,7 @@ pub fn project_results(
     graph: Option<&Graph>,
     fields: FieldSet,
     include_context: bool,
+    annotations: Option<&AnnotationIndex>,
 ) -> Vec<SearchOutputResult> {
     let graph_details = graph.map(|graph| collect_graph_details(results, graph));
 
@@ -898,6 +903,13 @@ pub fn project_results(
                 },
                 doc_comment: if fields.doc_comment {
                     details.and_then(|details| details.node.doc_comment.clone())
+                } else {
+                    None
+                },
+                annotation: if fields.annotation {
+                    details.and_then(|details| {
+                        annotations.and_then(|annotations| annotations.get_for_node(details.node))
+                    })
                 } else {
                     None
                 },
@@ -1814,6 +1826,7 @@ mod tests {
             Some(&graph),
             FieldSet::parse("id,repo,signature,doc_comment,role,snippet"),
             true,
+            None,
         );
 
         assert_eq!(projected.len(), 1);

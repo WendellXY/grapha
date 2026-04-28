@@ -14,6 +14,7 @@ pub struct FieldSet {
     pub visibility: bool,
     pub signature: bool,
     pub doc_comment: bool,
+    pub annotation: bool,
     pub role: bool,
 }
 
@@ -30,6 +31,7 @@ impl Default for FieldSet {
             visibility: false,
             signature: false,
             doc_comment: false,
+            annotation: false,
             role: false,
         }
     }
@@ -58,6 +60,7 @@ impl FieldSet {
             visibility: true,
             signature: true,
             doc_comment: true,
+            annotation: true,
             role: true,
         }
     }
@@ -74,6 +77,7 @@ impl FieldSet {
             visibility: false,
             signature: false,
             doc_comment: false,
+            annotation: false,
             role: false,
         }
     }
@@ -96,6 +100,7 @@ impl FieldSet {
                         "visibility" => fs.visibility = true,
                         "signature" => fs.signature = true,
                         "doc_comment" => fs.doc_comment = true,
+                        "annotation" => fs.annotation = true,
                         "role" => fs.role = true,
                         _ => {}
                     }

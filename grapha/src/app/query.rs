@@ -9,8 +9,8 @@ use crate::{
     AssetCommands, BriefOutputFormat, ColorMode, ConceptCommands, ContextOutputFormat,
     FlowCommands, L10nCommands, OriginTerminalFilter, QueryOutputFormat, RepoArchOutputFormat,
     RepoDoctorOutputFormat, RepoInferenceOutputFormat, RepoSmellsOutputFormat, SymbolCommands,
-    assets, cache, changes, concepts, config, fields, history, inferred, localization, maintenance,
-    query, render, search,
+    annotations, assets, cache, changes, concepts, config, fields, history, inferred, localization,
+    maintenance, query, render, search,
 };
 
 use super::index::{
@@ -222,7 +222,18 @@ pub(crate) fn handle_symbol_command(
             } else {
                 None
             };
-            let projected = search::project_results(&results, graph.as_ref(), field_set, context);
+            let annotations = if field_set.annotation {
+                Some(annotations::AnnotationStore::for_project_root(&path).load_index()?)
+            } else {
+                None
+            };
+            let projected = search::project_results(
+                &results,
+                graph.as_ref(),
+                field_set,
+                context,
+                annotations.as_ref(),
+            );
             print_json(&projected)?;
             if let Ok(status) = crate::index_status::load_index_status(&path, &path.join(".grapha"))
                 && status.freshness_tracking_available
@@ -250,8 +261,13 @@ pub(crate) fn handle_symbol_command(
             let field_set = resolve_field_set(&fields, &path);
             let render_options = render_options.with_fields(field_set);
             let graph = load_graph(&path)?;
-            let result =
+            let mut result =
                 resolve_query_result(query::context::query_context(&graph, &symbol), "symbol")?;
+            if field_set.annotation {
+                let annotations =
+                    annotations::AnnotationStore::for_project_root(&path).load_index()?;
+                result.apply_annotations(&graph, &annotations);
+            }
 
             match format {
                 ContextOutputFormat::Json => print_json(&result),
@@ -315,6 +331,32 @@ pub(crate) fn handle_symbol_command(
             if result.total == 0 {
                 anyhow::bail!("no symbols found in file matching: {file}");
             }
+            print_json(&result)
+        }
+        SymbolCommands::Annotate {
+            symbol,
+            annotation,
+            by,
+            path,
+        } => {
+            let graph = load_graph(&path)?;
+            let node = resolve_query_result(query::resolve_node(&graph, &symbol), "symbol")?;
+            let result = annotations::AnnotationStore::for_project_root(&path).upsert_for_node(
+                node,
+                &annotation,
+                by.as_deref(),
+            )?;
+            cache::QueryCache::new(&path.join(".grapha")).invalidate();
+            print_json(&result)
+        }
+        SymbolCommands::Annotation { symbol, path } => {
+            let graph = load_graph(&path)?;
+            let node = resolve_query_result(query::resolve_node(&graph, &symbol), "symbol")?;
+            let Some(result) =
+                annotations::AnnotationStore::for_project_root(&path).get_for_node(node)?
+            else {
+                bail!("no annotation stored for symbol: {symbol}");
+            };
             print_json(&result)
         }
     }
@@ -613,7 +655,10 @@ pub(crate) fn handle_concept_command(
             let concept_index = concepts::load_concept_index(&path)?;
             let catalogs = localization::load_catalog_index(&path).unwrap_or_default();
             let assets_index = assets::load_asset_index(&path).unwrap_or_default();
-            let result = concepts::search_concepts(
+            let annotations = annotations::AnnotationStore::for_project_root(&path)
+                .load_index()
+                .ok();
+            let result = concepts::search_concepts_with_annotations(
                 &graph,
                 &search_index,
                 &concept_index,
@@ -621,6 +666,7 @@ pub(crate) fn handle_concept_command(
                 &assets_index,
                 &term,
                 limit,
+                annotations.as_ref(),
             )?;
             print_query_result(
                 &result,

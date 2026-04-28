@@ -10,7 +10,7 @@ use crate::query;
 use crate::recall::{self, Recall};
 use crate::search;
 use crate::store::Store;
-use crate::{assets, concepts, localization};
+use crate::{annotations, assets, concepts, localization};
 
 pub struct McpState {
     pub graph: Graph,
@@ -78,7 +78,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                     },
                     "fields": {
                         "type": "string",
-                        "description": "Optional comma-separated projected fields to include (for example: id,locator,doc_comment,signature; or full/all/none)"
+                        "description": "Optional comma-separated projected fields to include (for example: id,locator,doc_comment,annotation,signature; or full/all/none)"
                     }
                 },
                 "required": ["query"]
@@ -94,7 +94,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_symbol_context".to_string(),
-            description: "Get 360-degree context for a symbol: callers, callees, implementors, containment, and type references.".to_string(),
+            description: "Get 360-degree context for a symbol: callers, callees, implementors, containment, type references, and stored annotations when present.".to_string(),
             input_schema: json!({
                 "type": "object",
                 "properties": {
@@ -104,6 +104,28 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                     }
                 },
                 "required": ["symbol"]
+            }),
+        },
+        ToolDefinition {
+            name: "annotate_symbol".to_string(),
+            description: "Attach or replace an agent-written annotation for a symbol, keyed by that symbol's Grapha ID/Swift USR.".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Symbol name, locator, ID, or Swift USR"
+                    },
+                    "annotation": {
+                        "type": "string",
+                        "description": "Agent-written explanation of the symbol's usage or business role"
+                    },
+                    "created_by": {
+                        "type": "string",
+                        "description": "Optional agent or author label"
+                    }
+                },
+                "required": ["symbol", "annotation"]
             }),
         },
         ToolDefinition {
@@ -385,6 +407,7 @@ pub fn handle_tool_call(state: &mut McpState, tool_name: &str, arguments: &Value
         "search_symbols" => handle_search_symbols(state, arguments),
         "get_index_status" => handle_get_index_status(state),
         "get_symbol_context" => handle_get_symbol_context(state, arguments),
+        "annotate_symbol" => handle_annotate_symbol(state, arguments),
         "get_impact" => handle_get_impact(state, arguments),
         "get_file_map" => handle_get_file_map(state, arguments),
         "trace" => handle_trace(state, arguments),
@@ -470,7 +493,20 @@ fn handle_search_symbols(state: &McpState, arguments: &Value) -> Value {
             if let Some(fields) = fields {
                 let graph =
                     search::needs_graph_for_projection(fields, false).then_some(&state.graph);
-                serialize_result(&search::project_results(&results, graph, fields, false))
+                let annotations = if fields.annotation {
+                    annotations::AnnotationStore::for_store_dir(&state.store_path)
+                        .load_index()
+                        .ok()
+                } else {
+                    None
+                };
+                serialize_result(&search::project_results(
+                    &results,
+                    graph,
+                    fields,
+                    false,
+                    annotations.as_ref(),
+                ))
             } else {
                 serialize_result(&results)
             }
@@ -498,8 +534,45 @@ fn handle_get_symbol_context(state: &mut McpState, arguments: &Value) -> Value {
     };
 
     match query::context::query_context(&state.graph, &symbol_id) {
-        Ok(result) => serialize_result(&result),
+        Ok(mut result) => {
+            if let Ok(annotations) =
+                annotations::AnnotationStore::for_store_dir(&state.store_path).load_index()
+            {
+                result.apply_annotations(&state.graph, &annotations);
+            }
+            serialize_result(&result)
+        }
         Err(e) => tool_error(format_query_error(&e)),
+    }
+}
+
+fn handle_annotate_symbol(state: &mut McpState, arguments: &Value) -> Value {
+    let query = match arguments.get("symbol").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return tool_error("missing required parameter: symbol".to_string()),
+    };
+    let annotation = match arguments
+        .get("annotation")
+        .or_else(|| arguments.get("text"))
+        .and_then(|v| v.as_str())
+    {
+        Some(s) => s,
+        None => return tool_error("missing required parameter: annotation".to_string()),
+    };
+    let created_by = arguments.get("created_by").and_then(|v| v.as_str());
+    let symbol_id = match resolve_symbol(state, query) {
+        Ok(id) => id,
+        Err(e) => return e,
+    };
+    let Some(node) = state.graph.nodes.iter().find(|node| node.id == symbol_id) else {
+        return tool_error(format!("symbol not found: {query}"));
+    };
+
+    match annotations::AnnotationStore::for_store_dir(&state.store_path)
+        .upsert_for_node(node, annotation, created_by)
+    {
+        Ok(result) => serialize_result(&result),
+        Err(error) => tool_error(format!("failed to save annotation: {error}")),
     }
 }
 
@@ -593,6 +666,9 @@ fn handle_batch_context(state: &mut McpState, arguments: &Value) -> Value {
         return tool_error("batch_context supports at most 20 symbols per call".to_string());
     }
 
+    let annotations = annotations::AnnotationStore::for_store_dir(&state.store_path)
+        .load_index()
+        .ok();
     let mut results: Vec<Value> = Vec::with_capacity(symbol_strs.len());
     for symbol in &symbol_strs {
         let resolved = resolve_symbol(state, symbol);
@@ -601,7 +677,10 @@ fn handle_batch_context(state: &mut McpState, arguments: &Value) -> Value {
             Err(_) => symbol,
         };
         match query::context::query_context(&state.graph, query_id) {
-            Ok(ctx) => {
+            Ok(mut ctx) => {
+                if let Some(annotations) = annotations.as_ref() {
+                    ctx.apply_annotations(&state.graph, annotations);
+                }
                 results.push(json!({
                     "query": symbol,
                     "result": serde_json::to_value(&ctx).unwrap_or(Value::Null),
@@ -687,8 +766,11 @@ fn handle_search_concepts(state: &McpState, arguments: &Value) -> Value {
     let catalogs =
         localization::load_catalog_index_from_store(&state.store_path).unwrap_or_default();
     let assets_index = assets::load_asset_index_from_store(&state.store_path).unwrap_or_default();
+    let annotations = annotations::AnnotationStore::for_store_dir(&state.store_path)
+        .load_index()
+        .ok();
 
-    match concepts::search_concepts(
+    match concepts::search_concepts_with_annotations(
         &state.graph,
         &state.search_index,
         &concept_index,
@@ -696,6 +778,7 @@ fn handle_search_concepts(state: &McpState, arguments: &Value) -> Value {
         &assets_index,
         query,
         limit,
+        annotations.as_ref(),
     ) {
         Ok(result) => serialize_result(&result),
         Err(error) => tool_error(format!("concept search failed: {error}")),
@@ -875,12 +958,13 @@ mod tests {
     #[test]
     fn tool_definitions_count() {
         let tools = tool_definitions();
-        assert_eq!(tools.len(), 17);
+        assert_eq!(tools.len(), 18);
 
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"search_symbols"));
         assert!(names.contains(&"get_index_status"));
         assert!(names.contains(&"get_symbol_context"));
+        assert!(names.contains(&"annotate_symbol"));
         assert!(names.contains(&"get_impact"));
         assert!(names.contains(&"get_file_map"));
         assert!(names.contains(&"trace"));

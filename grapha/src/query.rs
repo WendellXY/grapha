@@ -21,6 +21,7 @@ use thiserror::Error;
 
 use grapha_core::graph::{Graph, Node, NodeKind, NodeRole, Visibility};
 
+use crate::annotations::{AnnotationIndex, SymbolAnnotationView};
 use crate::symbol_locator::{SymbolLocatorIndex, locator_matches_suffix};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -322,6 +323,8 @@ pub struct SymbolInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doc_comment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<SymbolAnnotationView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
@@ -347,6 +350,8 @@ pub struct SymbolRef {
     pub signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doc_comment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<SymbolAnnotationView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -374,6 +379,8 @@ pub struct SymbolTreeRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub doc_comment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<SymbolAnnotationView>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
@@ -400,6 +407,7 @@ impl SymbolInfo {
             role: node.role.clone(),
             signature: node.signature.clone(),
             doc_comment: node.doc_comment.clone(),
+            annotation: None,
             module: node.module.clone(),
             snippet: node.snippet.clone(),
             repo: node.repo.clone(),
@@ -425,6 +433,7 @@ impl SymbolRef {
             role: node.role.clone(),
             signature: node.signature.clone(),
             doc_comment: node.doc_comment.clone(),
+            annotation: None,
             module: node.module.clone(),
             snippet: node.snippet.clone(),
             repo: node.repo.clone(),
@@ -450,6 +459,7 @@ impl SymbolTreeRef {
             role: node.role.clone(),
             signature: node.signature.clone(),
             doc_comment: node.doc_comment.clone(),
+            annotation: None,
             module: node.module.clone(),
             snippet: node.snippet.clone(),
             repo: node.repo.clone(),
@@ -460,6 +470,72 @@ impl SymbolTreeRef {
     pub(crate) fn with_locator(mut self, locator: String) -> Self {
         self.locator = Some(locator);
         self
+    }
+}
+
+impl ContextResult {
+    pub(crate) fn apply_annotations(&mut self, graph: &Graph, annotations: &AnnotationIndex) {
+        if annotations.is_empty() {
+            return;
+        }
+        let node_index: std::collections::HashMap<&str, &Node> = graph
+            .nodes
+            .iter()
+            .map(|node| (node.id.as_str(), node))
+            .collect();
+
+        annotate_symbol_info(&mut self.symbol, &node_index, annotations);
+        for symbol in self
+            .callers
+            .iter_mut()
+            .chain(self.callees.iter_mut())
+            .chain(self.reads.iter_mut())
+            .chain(self.read_by.iter_mut())
+            .chain(self.invalidation_sources.iter_mut())
+            .chain(self.contains.iter_mut())
+            .chain(self.contained_by.iter_mut())
+            .chain(self.implementors.iter_mut())
+            .chain(self.implements.iter_mut())
+            .chain(self.type_refs.iter_mut())
+        {
+            annotate_symbol_ref(symbol, &node_index, annotations);
+        }
+        for symbol in &mut self.contains_tree {
+            annotate_symbol_tree_ref(symbol, &node_index, annotations);
+        }
+    }
+}
+
+fn annotate_symbol_info(
+    symbol: &mut SymbolInfo,
+    node_index: &std::collections::HashMap<&str, &Node>,
+    annotations: &AnnotationIndex,
+) {
+    symbol.annotation = node_index
+        .get(symbol.id.as_str())
+        .and_then(|node| annotations.get_for_node(node));
+}
+
+fn annotate_symbol_ref(
+    symbol: &mut SymbolRef,
+    node_index: &std::collections::HashMap<&str, &Node>,
+    annotations: &AnnotationIndex,
+) {
+    symbol.annotation = node_index
+        .get(symbol.id.as_str())
+        .and_then(|node| annotations.get_for_node(node));
+}
+
+fn annotate_symbol_tree_ref(
+    symbol: &mut SymbolTreeRef,
+    node_index: &std::collections::HashMap<&str, &Node>,
+    annotations: &AnnotationIndex,
+) {
+    symbol.annotation = node_index
+        .get(symbol.id.as_str())
+        .and_then(|node| annotations.get_for_node(node));
+    for child in &mut symbol.contains {
+        annotate_symbol_tree_ref(child, node_index, annotations);
     }
 }
 

@@ -190,6 +190,112 @@ fn doc_comments_drive_search_concepts_and_compact_output() {
 }
 
 #[test]
+fn symbol_annotations_round_trip_through_cli_context_and_concept_search() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+    std::fs::write(
+        dir.path().join("gift.rs"),
+        "pub struct CheckoutCoordinator;\n",
+    )
+    .unwrap();
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let annotation_text = "Owns the gift handoff between catalog and checkout.";
+    grapha()
+        .args([
+            "symbol",
+            "annotate",
+            "CheckoutCoordinator",
+            annotation_text,
+            "-p",
+            dir.path().to_str().unwrap(),
+            "--by",
+            "codex",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(annotation_text))
+        .stdout(predicate::str::contains("\"stale\": false"));
+
+    let context_output = grapha()
+        .args([
+            "symbol",
+            "context",
+            "CheckoutCoordinator",
+            "-p",
+            dir.path().to_str().unwrap(),
+            "--fields",
+            "annotation",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: Value = serde_json::from_slice(&context_output).unwrap();
+    assert_eq!(parsed["symbol"]["annotation"]["text"], annotation_text);
+    assert_eq!(parsed["symbol"]["annotation"]["created_by"], "codex");
+
+    let concept_output = grapha()
+        .args([
+            "concept",
+            "search",
+            "gift handoff",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: Value = serde_json::from_slice(&concept_output).unwrap();
+    assert!(
+        parsed["scopes"][0]["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|evidence| evidence["kind"] == "annotation"
+                && evidence["source_value"]
+                    .as_str()
+                    .is_some_and(|value| value.contains("gift handoff"))),
+        "concept search should report annotation evidence: {parsed:#?}"
+    );
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+            "--full-rebuild",
+        ])
+        .assert()
+        .success();
+
+    grapha()
+        .args([
+            "symbol",
+            "annotation",
+            "CheckoutCoordinator",
+            "-p",
+            dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(annotation_text));
+}
+
+#[test]
 fn compact_flag_preserves_swiftui_hierarchy() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(

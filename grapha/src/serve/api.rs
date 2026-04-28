@@ -140,7 +140,20 @@ pub async fn get_search(
         .unwrap_or_default();
     let graph =
         crate::search::needs_graph_for_projection(fields, params.context).then_some(&state.graph);
-    let projected = crate::search::project_results(&results, graph, fields, params.context);
+    let annotations = if fields.annotation {
+        crate::annotations::AnnotationStore::for_project_root(&state.project_path)
+            .load_index()
+            .ok()
+    } else {
+        None
+    };
+    let projected = crate::search::project_results(
+        &results,
+        graph,
+        fields,
+        params.context,
+        annotations.as_ref(),
+    );
     let index_status = crate::index_status::load_index_status(
         &state.project_path,
         &state.project_path.join(".grapha"),

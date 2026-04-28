@@ -39,6 +39,7 @@ impl RenderOptions {
                 visibility: false,
                 signature: false,
                 doc_comment: false,
+                annotation: false,
                 role: false,
             },
         }
@@ -58,6 +59,7 @@ impl RenderOptions {
                 visibility: false,
                 signature: false,
                 doc_comment: false,
+                annotation: false,
                 role: false,
             },
         }
@@ -210,6 +212,14 @@ fn format_span(span: [usize; 2]) -> String {
     }
 }
 
+fn annotation_label(annotation: &crate::annotations::SymbolAnnotationView) -> String {
+    if annotation.stale {
+        format!("{} [stale]", annotation.text)
+    } else {
+        annotation.text.clone()
+    }
+}
+
 fn format_key(key: &str, options: RenderOptions) -> String {
     let palette = Palette::new(options);
     palette.key(key)
@@ -321,6 +331,14 @@ fn symbol_info_details(symbol: &SymbolInfo, options: RenderOptions) -> Vec<TreeN
             options,
         );
     }
+    if fields.annotation {
+        push_detail(
+            &mut children,
+            "annotation",
+            symbol.annotation.as_ref().map(annotation_label),
+            options,
+        );
+    }
     if fields.role {
         push_detail(
             &mut children,
@@ -381,6 +399,14 @@ fn symbol_ref_details(symbol: &SymbolRef, options: RenderOptions) -> Vec<TreeNod
             options,
         );
     }
+    if fields.annotation {
+        push_detail(
+            &mut children,
+            "annotation",
+            symbol.annotation.as_ref().map(annotation_label),
+            options,
+        );
+    }
     if fields.role {
         push_detail(
             &mut children,
@@ -438,6 +464,14 @@ fn symbol_tree_ref_details(symbol: &SymbolTreeRef, options: RenderOptions) -> Ve
             &mut children,
             "doc_comment",
             symbol.doc_comment.clone(),
+            options,
+        );
+    }
+    if fields.annotation {
+        push_detail(
+            &mut children,
+            "annotation",
+            symbol.annotation.as_ref().map(annotation_label),
             options,
         );
     }
@@ -1875,6 +1909,7 @@ mod tests {
             role: None,
             signature: None,
             doc_comment: None,
+            annotation: None,
             module: None,
             snippet: None,
             repo: None,
@@ -1893,6 +1928,7 @@ mod tests {
             role: None,
             signature: None,
             doc_comment: None,
+            annotation: None,
             module: None,
             snippet: None,
             repo: None,
@@ -1953,6 +1989,7 @@ mod tests {
                 role: None,
                 signature: None,
                 doc_comment: None,
+                annotation: None,
                 module: None,
                 snippet: None,
                 repo: None,
@@ -1968,6 +2005,7 @@ mod tests {
                         role: None,
                         signature: None,
                         doc_comment: None,
+                        annotation: None,
                         module: None,
                         snippet: None,
                         repo: None,
@@ -1984,6 +2022,7 @@ mod tests {
                         role: None,
                         signature: None,
                         doc_comment: None,
+                        annotation: None,
                         module: None,
                         snippet: None,
                         repo: None,

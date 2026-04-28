@@ -7,6 +7,7 @@ use tantivy::Index;
 
 use grapha_core::graph::{Edge, EdgeKind, Graph, Node, NodeKind};
 
+use crate::annotations::AnnotationIndex;
 use crate::assets::{self, AssetCatalogIndex, AssetRecord};
 use crate::localization::{LocalizationCatalogIndex, LocalizationCatalogRecord};
 use crate::query::{self, SymbolInfo};
@@ -187,6 +188,7 @@ struct ScopeSearchContext<'a> {
     edges_by_target: &'a HashMap<&'a str, Vec<&'a Edge>>,
     locators: &'a SymbolLocatorIndex,
     search_index: &'a Index,
+    annotations: Option<&'a AnnotationIndex>,
 }
 
 fn default_binding_status() -> String {
@@ -577,6 +579,7 @@ pub fn show_concept(
     })
 }
 
+#[cfg(test)]
 pub fn search_concepts(
     graph: &Graph,
     search_index: &Index,
@@ -585,6 +588,28 @@ pub fn search_concepts(
     assets_index: &AssetCatalogIndex,
     query: &str,
     limit: usize,
+) -> anyhow::Result<ConceptSearchResult> {
+    search_concepts_with_annotations(
+        graph,
+        search_index,
+        concepts,
+        catalogs,
+        assets_index,
+        query,
+        limit,
+        None,
+    )
+}
+
+pub fn search_concepts_with_annotations(
+    graph: &Graph,
+    search_index: &Index,
+    concepts: &ConceptIndex,
+    catalogs: &LocalizationCatalogIndex,
+    assets_index: &AssetCatalogIndex,
+    query: &str,
+    limit: usize,
+    annotations: Option<&AnnotationIndex>,
 ) -> anyhow::Result<ConceptSearchResult> {
     let locators = SymbolLocatorIndex::new(graph);
     let node_index = graph_node_index(graph);
@@ -597,6 +622,7 @@ pub fn search_concepts(
         edges_by_target: &edges_by_target,
         locators: &locators,
         search_index,
+        annotations,
     };
 
     if let Some((record, lookup)) = concepts.record_for_search_term(query) {
@@ -683,6 +709,7 @@ pub fn search_concepts(
         &normalized_query,
         TextMatch::Fuzzy,
     );
+    add_annotation_scopes(&mut scopes, &scope_context, &normalized_query, query);
     add_symbol_scopes(&mut scopes, &scope_context, query, limit)?;
 
     let mut matches: Vec<_> = scopes
@@ -959,6 +986,49 @@ fn add_asset_scopes(
     }
 }
 
+fn add_annotation_scopes(
+    scopes: &mut HashMap<String, ScopeAccumulator>,
+    context: &ScopeSearchContext<'_>,
+    normalized_query: &str,
+    raw_query: &str,
+) {
+    let Some(annotations) = context.annotations else {
+        return;
+    };
+
+    for node in &context.graph.nodes {
+        let Some(annotation) = annotations.get_for_node(node) else {
+            continue;
+        };
+        let Some((match_kind, base_score)) = concept_doc_match(&annotation.text, normalized_query)
+        else {
+            continue;
+        };
+        let scope = scope_for_node(node, context.parents, context.node_index);
+        add_scope(
+            scopes,
+            scope,
+            context.locators,
+            base_score,
+            STATUS_CANDIDATE,
+            ConceptEvidence {
+                kind: "annotation".to_string(),
+                value: raw_query.trim().to_string(),
+                match_kind: match_kind.to_string(),
+                table: None,
+                key: None,
+                source_value: Some(annotation.text),
+                ui_path: Vec::new(),
+                note: Some(if annotation.stale {
+                    format!("{} (stale)", node.name)
+                } else {
+                    node.name.clone()
+                }),
+            },
+        );
+    }
+}
+
 fn add_symbol_scopes(
     scopes: &mut HashMap<String, ScopeAccumulator>,
     context: &ScopeSearchContext<'_>,
@@ -1025,6 +1095,29 @@ fn add_symbol_scopes(
                     source_value: Some(doc_comment.to_string()),
                     ui_path: Vec::new(),
                     note: Some(node.name.clone()),
+                },
+            )
+        } else if let Some(annotation) = context
+            .annotations
+            .and_then(|index| index.get_for_node(node))
+            && let Some((match_kind, base_score)) =
+                concept_doc_match(&annotation.text, &normalized_query)
+        {
+            (
+                base_score,
+                ConceptEvidence {
+                    kind: "annotation".to_string(),
+                    value: query.trim().to_string(),
+                    match_kind: match_kind.to_string(),
+                    table: None,
+                    key: None,
+                    source_value: Some(annotation.text),
+                    ui_path: Vec::new(),
+                    note: Some(if annotation.stale {
+                        format!("{} (stale)", node.name)
+                    } else {
+                        node.name.clone()
+                    }),
                 },
             )
         } else {
@@ -2218,6 +2311,58 @@ mod tests {
                         .as_deref()
                         .is_some_and(|value| value.contains("gift flow"))),
             "doc-only concept matches should report doc_comment evidence: {:?}",
+            result.scopes[0].evidence
+        );
+    }
+
+    #[test]
+    fn search_concepts_matches_symbol_annotations() {
+        let node = make_node(
+            "gift-coordinator",
+            "Coordinator",
+            NodeKind::Struct,
+            "GiftCoordinator.swift",
+        );
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![node.clone()],
+            edges: Vec::new(),
+        };
+        let (_dir, search_index) = build_search_index(&graph);
+        let store_dir = tempdir().unwrap();
+        let annotation_store = crate::annotations::AnnotationStore::for_store_dir(store_dir.path());
+        annotation_store
+            .upsert_for_node(
+                &node,
+                "Coordinates the gift handoff between catalog and checkout.",
+                Some("codex"),
+            )
+            .unwrap();
+        let annotations = annotation_store.load_index().unwrap();
+
+        let result = search_concepts_with_annotations(
+            &graph,
+            &search_index,
+            &ConceptIndex::default(),
+            &LocalizationCatalogIndex::default(),
+            &AssetCatalogIndex::default(),
+            "gift handoff",
+            5,
+            Some(&annotations),
+        )
+        .unwrap();
+
+        assert_eq!(result.scopes[0].symbol.id, node.id);
+        assert!(
+            result.scopes[0]
+                .evidence
+                .iter()
+                .any(|evidence| evidence.kind == "annotation"
+                    && evidence
+                        .source_value
+                        .as_deref()
+                        .is_some_and(|value| value.contains("gift handoff"))),
+            "annotation-only concept matches should report annotation evidence: {:?}",
             result.scopes[0].evidence
         );
     }

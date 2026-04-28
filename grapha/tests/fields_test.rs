@@ -11,6 +11,7 @@ fn default_has_file_true_rest_false() {
     assert!(!fs.visibility);
     assert!(!fs.signature);
     assert!(!fs.doc_comment);
+    assert!(!fs.annotation);
     assert!(!fs.role);
 }
 
@@ -25,6 +26,7 @@ fn parse_all_enables_every_field() {
     assert!(fs.visibility);
     assert!(fs.signature);
     assert!(fs.doc_comment);
+    assert!(fs.annotation);
     assert!(fs.role);
 }
 
@@ -39,6 +41,7 @@ fn parse_full_alias_enables_every_field() {
     assert!(fs.visibility);
     assert!(fs.signature);
     assert!(fs.doc_comment);
+    assert!(fs.annotation);
     assert!(fs.role);
 }
 
@@ -53,6 +56,7 @@ fn parse_none_disables_every_field() {
     assert!(!fs.visibility);
     assert!(!fs.signature);
     assert!(!fs.doc_comment);
+    assert!(!fs.annotation);
     assert!(!fs.role);
 }
 
@@ -67,6 +71,7 @@ fn parse_comma_separated_fields() {
     assert!(!fs.visibility);
     assert!(!fs.signature);
     assert!(!fs.doc_comment);
+    assert!(!fs.annotation);
     assert!(!fs.role);
 }
 
@@ -81,6 +86,7 @@ fn parse_trims_whitespace() {
     assert!(!fs.visibility);
     assert!(!fs.signature);
     assert!(!fs.doc_comment);
+    assert!(!fs.annotation);
     assert!(fs.role);
 }
 
@@ -101,6 +107,14 @@ fn parse_doc_comment_field() {
 }
 
 #[test]
+fn parse_annotation_field() {
+    let fs = FieldSet::parse("annotation");
+    assert!(fs.annotation);
+    assert!(!fs.file);
+    assert!(!fs.doc_comment);
+}
+
+#[test]
 fn from_config_with_vec_of_strings() {
     let config_fields = vec![
         "file".to_string(),
@@ -116,6 +130,7 @@ fn from_config_with_vec_of_strings() {
     assert!(fs.visibility);
     assert!(fs.signature);
     assert!(!fs.doc_comment);
+    assert!(!fs.annotation);
     assert!(!fs.role);
 }
 
