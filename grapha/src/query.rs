@@ -320,6 +320,8 @@ pub struct SymbolInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_comment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
@@ -344,6 +346,8 @@ pub struct SymbolRef {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_comment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
@@ -367,6 +371,8 @@ pub struct SymbolTreeRef {
     pub role: Option<NodeRole>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_comment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -393,6 +399,7 @@ impl SymbolInfo {
             visibility: Some(node.visibility),
             role: node.role.clone(),
             signature: node.signature.clone(),
+            doc_comment: node.doc_comment.clone(),
             module: node.module.clone(),
             snippet: node.snippet.clone(),
             repo: node.repo.clone(),
@@ -417,6 +424,7 @@ impl SymbolRef {
             visibility: Some(node.visibility),
             role: node.role.clone(),
             signature: node.signature.clone(),
+            doc_comment: node.doc_comment.clone(),
             module: node.module.clone(),
             snippet: node.snippet.clone(),
             repo: node.repo.clone(),
@@ -441,6 +449,7 @@ impl SymbolTreeRef {
             visibility: Some(node.visibility),
             role: node.role.clone(),
             signature: node.signature.clone(),
+            doc_comment: node.doc_comment.clone(),
             module: node.module.clone(),
             snippet: node.snippet.clone(),
             repo: node.repo.clone(),

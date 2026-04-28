@@ -990,7 +990,7 @@ fn extract_named_item(
         metadata: HashMap::new(),
         role: None,
         signature: None,
-        doc_comment: None,
+        doc_comment: extract_doc_comment(node, source),
         module: None,
         snippet: None,
         repo: None,
@@ -1971,6 +1971,49 @@ mod tests {
         );
         let doc = node.doc_comment.as_ref().unwrap();
         assert!(doc.contains("doc comment"), "should contain comment text");
+    }
+
+    #[test]
+    fn extracts_doc_comments_for_named_declarations() {
+        let result = extract(
+            r#"
+            /// Coordinates checkout.
+            pub struct CheckoutFlow { id: String }
+
+            /// Possible checkout states.
+            enum CheckoutState { Pending }
+
+            /// Behavior for payment processors.
+            trait PaymentProcessor { fn charge(&self); }
+
+            /// Shared checkout helpers.
+            mod checkout_helpers {}
+
+            /// Maximum retry attempts.
+            const MAX_RETRIES: usize = 3;
+
+            /// Customer identifier alias.
+            type CustomerId = String;
+            "#,
+        );
+
+        for (name, expected) in [
+            ("CheckoutFlow", "Coordinates checkout"),
+            ("CheckoutState", "Possible checkout states"),
+            ("PaymentProcessor", "Behavior for payment processors"),
+            ("checkout_helpers", "Shared checkout helpers"),
+            ("MAX_RETRIES", "Maximum retry attempts"),
+            ("CustomerId", "Customer identifier alias"),
+        ] {
+            let node = find_node(&result, name);
+            assert_eq!(
+                node.doc_comment
+                    .as_deref()
+                    .map(|doc| doc.contains(expected)),
+                Some(true),
+                "{name} should carry its declaration doc comment"
+            );
+        }
     }
 
     #[test]

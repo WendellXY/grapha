@@ -965,7 +965,15 @@ fn add_symbol_scopes(
     query: &str,
     limit: usize,
 ) -> anyhow::Result<()> {
-    let results = search::search_filtered(
+    let mut results = search::search_filtered(
+        context.search_index,
+        query,
+        limit.saturating_mul(4).max(8),
+        &SearchOptions::default(),
+    )?;
+    let mut seen_result_ids: HashSet<String> =
+        results.iter().map(|result| result.id.clone()).collect();
+    for result in search::search_filtered(
         context.search_index,
         query,
         limit.saturating_mul(4).max(8),
@@ -973,7 +981,11 @@ fn add_symbol_scopes(
             fuzzy: true,
             ..SearchOptions::default()
         },
-    )?;
+    )? {
+        if seen_result_ids.insert(result.id.clone()) {
+            results.push(result);
+        }
+    }
     let normalized_query = normalize_match_text(query);
 
     for (rank, result) in results.iter().enumerate() {
@@ -982,27 +994,49 @@ fn add_symbol_scopes(
         };
         let scope = scope_for_node(node, context.parents, context.node_index);
         let normalized_name = normalize_match_text(query::normalize_symbol_name(&node.name));
-        let Some((match_kind, base_score)) =
+        let evidence = if let Some((match_kind, base_score)) =
             concept_symbol_match(&normalized_name, &normalized_query)
-        else {
+        {
+            (
+                base_score,
+                ConceptEvidence {
+                    kind: "symbol_query".to_string(),
+                    value: query.trim().to_string(),
+                    match_kind: match_kind.to_string(),
+                    table: None,
+                    key: None,
+                    source_value: None,
+                    ui_path: Vec::new(),
+                    note: Some(node.name.clone()),
+                },
+            )
+        } else if let Some(doc_comment) = node.doc_comment.as_deref()
+            && let Some((match_kind, base_score)) =
+                concept_doc_match(doc_comment, &normalized_query)
+        {
+            (
+                base_score,
+                ConceptEvidence {
+                    kind: "doc_comment".to_string(),
+                    value: query.trim().to_string(),
+                    match_kind: match_kind.to_string(),
+                    table: None,
+                    key: None,
+                    source_value: Some(doc_comment.to_string()),
+                    ui_path: Vec::new(),
+                    note: Some(node.name.clone()),
+                },
+            )
+        } else {
             continue;
         };
         add_scope(
             scopes,
             scope,
             context.locators,
-            (base_score - rank as f32).max(0.0),
+            (evidence.0 - rank as f32).max(0.0),
             STATUS_CANDIDATE,
-            ConceptEvidence {
-                kind: "symbol_query".to_string(),
-                value: query.trim().to_string(),
-                match_kind: match_kind.to_string(),
-                table: None,
-                key: None,
-                source_value: None,
-                ui_path: Vec::new(),
-                note: Some(node.name.clone()),
-            },
+            evidence.1,
         );
     }
     Ok(())
@@ -1022,6 +1056,22 @@ fn concept_symbol_match(
     } else if normalized_name.contains(normalized_query) {
         Some(("contains", SCORE_SYMBOL_PREFIX))
     } else if fuzzy_query_tokens_match(normalized_query, normalized_name) {
+        Some(("fuzzy", SCORE_SYMBOL_BM25))
+    } else {
+        None
+    }
+}
+
+fn concept_doc_match(doc_comment: &str, normalized_query: &str) -> Option<(&'static str, f32)> {
+    let normalized_doc = normalize_match_text(doc_comment);
+    if normalized_query.is_empty() || normalized_doc.is_empty() {
+        return None;
+    }
+    if normalized_doc == normalized_query {
+        Some(("exact", SCORE_SYMBOL_BM25))
+    } else if normalized_doc.contains(normalized_query) {
+        Some(("contains", SCORE_SYMBOL_BM25))
+    } else if fuzzy_query_tokens_match(normalized_query, &normalized_doc) {
         Some(("fuzzy", SCORE_SYMBOL_BM25))
     } else {
         None
@@ -2127,6 +2177,48 @@ mod tests {
                 .evidence
                 .iter()
                 .any(|evidence| evidence.kind == "symbol_query")
+        );
+    }
+
+    #[test]
+    fn search_concepts_matches_symbol_doc_comments() {
+        let mut node = make_node(
+            "gift-coordinator",
+            "Coordinator",
+            NodeKind::Struct,
+            "GiftCoordinator.swift",
+        );
+        node.doc_comment = Some("Coordinates the gift flow between catalog and checkout.".into());
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![node.clone()],
+            edges: Vec::new(),
+        };
+        let (_dir, search_index) = build_search_index(&graph);
+
+        let result = search_concepts(
+            &graph,
+            &search_index,
+            &ConceptIndex::default(),
+            &LocalizationCatalogIndex::default(),
+            &AssetCatalogIndex::default(),
+            "gift flow",
+            5,
+        )
+        .unwrap();
+
+        assert_eq!(result.scopes[0].symbol.id, node.id);
+        assert!(
+            result.scopes[0]
+                .evidence
+                .iter()
+                .any(|evidence| evidence.kind == "doc_comment"
+                    && evidence
+                        .source_value
+                        .as_deref()
+                        .is_some_and(|value| value.contains("gift flow"))),
+            "doc-only concept matches should report doc_comment evidence: {:?}",
+            result.scopes[0].evidence
         );
     }
 

@@ -195,7 +195,7 @@ fn extract_struct_or_class(
         metadata: HashMap::new(),
         role,
         signature: None,
-        doc_comment: None,
+        doc_comment: extract_swift_doc_comment(node, source),
         module: None,
         snippet: None,
         repo: None,
@@ -296,7 +296,7 @@ fn extract_property_as_entry_point(
         metadata: HashMap::new(),
         role: Some(NodeRole::EntryPoint),
         signature: None,
-        doc_comment: None,
+        doc_comment: extract_swift_doc_comment(node, source),
         module: None,
         snippet: None,
         repo: None,
@@ -427,7 +427,7 @@ fn extract_enum(
         metadata: HashMap::new(),
         role: None,
         signature: None,
-        doc_comment: None,
+        doc_comment: extract_swift_doc_comment(node, source),
         module: None,
         snippet: None,
         repo: None,
@@ -521,7 +521,7 @@ fn extract_extension(
         metadata: HashMap::new(),
         role: None,
         signature: None,
-        doc_comment: None,
+        doc_comment: extract_swift_doc_comment(node, source),
         module: None,
         snippet: None,
         repo: None,
@@ -567,7 +567,7 @@ fn extract_protocol(
         metadata: HashMap::new(),
         role: None,
         signature: None,
-        doc_comment: None,
+        doc_comment: extract_swift_doc_comment(node, source),
         module: None,
         snippet: None,
         repo: None,
@@ -692,7 +692,7 @@ fn extract_property(
         metadata: HashMap::new(),
         role: None,
         signature: None,
-        doc_comment: None,
+        doc_comment: extract_swift_doc_comment(node, source),
         module: None,
         snippet: None,
         repo: None,
@@ -829,7 +829,7 @@ fn extract_typealias(
         metadata: HashMap::new(),
         role: None,
         signature: None,
-        doc_comment: None,
+        doc_comment: extract_swift_doc_comment(node, source),
         module: None,
         snippet: None,
         repo: None,
@@ -918,12 +918,16 @@ pub fn enrich_doc_comments_with_tree(
             continue;
         }
         let line = node.span.start[0];
-        let key = (node.name.clone(), line);
-        let adjusted_key = (node.name.clone(), line + 1);
-        if let Some(doc) = doc_map
-            .remove(&key)
-            .or_else(|| doc_map.remove(&adjusted_key))
-        {
+        let doc = [
+            Some(line),
+            line.checked_sub(1),
+            Some(line + 1),
+            Some(line + 2),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|candidate_line| doc_map.remove(&(node.name.clone(), candidate_line)));
+        if let Some(doc) = doc {
             node.doc_comment = Some(doc);
         }
     }
@@ -965,6 +969,13 @@ fn collect_doc_comments(
         }
         "property_declaration" => {
             if let Some(name) = find_pattern_name(node, source)
+                && let Some(doc) = extract_swift_doc_comment(node, source)
+            {
+                out.insert((name, node.start_position().row + 1), doc);
+            }
+        }
+        "typealias_declaration" => {
+            if let Some(name) = type_identifier_text(node, source)
                 && let Some(doc) = extract_swift_doc_comment(node, source)
             {
                 out.insert((name, node.start_position().row + 1), doc);

@@ -10,6 +10,7 @@ fn default_has_file_true_rest_false() {
     assert!(!fs.snippet);
     assert!(!fs.visibility);
     assert!(!fs.signature);
+    assert!(!fs.doc_comment);
     assert!(!fs.role);
 }
 
@@ -23,6 +24,7 @@ fn parse_all_enables_every_field() {
     assert!(fs.snippet);
     assert!(fs.visibility);
     assert!(fs.signature);
+    assert!(fs.doc_comment);
     assert!(fs.role);
 }
 
@@ -36,6 +38,7 @@ fn parse_full_alias_enables_every_field() {
     assert!(fs.snippet);
     assert!(fs.visibility);
     assert!(fs.signature);
+    assert!(fs.doc_comment);
     assert!(fs.role);
 }
 
@@ -49,6 +52,7 @@ fn parse_none_disables_every_field() {
     assert!(!fs.snippet);
     assert!(!fs.visibility);
     assert!(!fs.signature);
+    assert!(!fs.doc_comment);
     assert!(!fs.role);
 }
 
@@ -62,6 +66,7 @@ fn parse_comma_separated_fields() {
     assert!(!fs.snippet);
     assert!(!fs.visibility);
     assert!(!fs.signature);
+    assert!(!fs.doc_comment);
     assert!(!fs.role);
 }
 
@@ -75,6 +80,7 @@ fn parse_trims_whitespace() {
     assert!(!fs.snippet);
     assert!(!fs.visibility);
     assert!(!fs.signature);
+    assert!(!fs.doc_comment);
     assert!(fs.role);
 }
 
@@ -84,6 +90,14 @@ fn parse_ignores_unknown_fields() {
     assert!(fs.file);
     assert!(fs.id);
     assert!(!fs.module);
+}
+
+#[test]
+fn parse_doc_comment_field() {
+    let fs = FieldSet::parse("doc_comment");
+    assert!(fs.doc_comment);
+    assert!(!fs.file);
+    assert!(!fs.signature);
 }
 
 #[test]
@@ -101,6 +115,7 @@ fn from_config_with_vec_of_strings() {
     assert!(!fs.snippet);
     assert!(fs.visibility);
     assert!(fs.signature);
+    assert!(!fs.doc_comment);
     assert!(!fs.role);
 }
 

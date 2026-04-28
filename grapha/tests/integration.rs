@@ -119,6 +119,77 @@ fn compact_flag_produces_grouped_output() {
 }
 
 #[test]
+fn doc_comments_drive_search_concepts_and_compact_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_dir = dir.path().join(".grapha");
+    std::fs::write(
+        dir.path().join("gift.rs"),
+        "/// Coordinates the gift flow handoff.\npub struct CheckoutCoordinator;\n",
+    )
+    .unwrap();
+
+    grapha()
+        .args([
+            "index",
+            dir.path().to_str().unwrap(),
+            "--store-dir",
+            store_dir.to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+
+    let search_output = grapha()
+        .args([
+            "symbol",
+            "search",
+            "gift flow",
+            "-p",
+            dir.path().to_str().unwrap(),
+            "--fields",
+            "id,doc_comment",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: Value = serde_json::from_slice(&search_output).unwrap();
+    assert_eq!(parsed[0]["name"], "CheckoutCoordinator");
+    assert!(
+        parsed[0]["doc_comment"]
+            .as_str()
+            .is_some_and(|doc| doc.contains("Coordinates the gift flow handoff."))
+    );
+
+    grapha()
+        .args([
+            "concept",
+            "search",
+            "gift flow",
+            "-p",
+            dir.path().to_str().unwrap(),
+            "--format",
+            "tree",
+            "--fields",
+            "doc_comment",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[doc_comment] gift flow"))
+        .stdout(predicate::str::contains(
+            "/// Coordinates the gift flow handoff.",
+        ));
+
+    grapha()
+        .args(["analyze", dir.path().to_str().unwrap(), "--compact"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"doc_comment\": \"/// Coordinates the gift flow handoff.\\n\"",
+        ));
+}
+
+#[test]
 fn compact_flag_preserves_swiftui_hierarchy() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(

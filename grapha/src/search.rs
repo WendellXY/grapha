@@ -166,7 +166,12 @@ fn node_document(fields: SearchFields, node: &Node, locator: &str) -> Result<Tan
     if let Some(search_terms_field) = fields.search_terms {
         document.add_text(
             search_terms_field,
-            search_terms_text(&node.name, locator, &node.file.to_string_lossy()),
+            search_terms_text(
+                &node.name,
+                locator,
+                &node.file.to_string_lossy(),
+                node.doc_comment.as_deref(),
+            ),
         );
     }
     Ok(document)
@@ -363,10 +368,13 @@ fn tokenize_search_terms(input: &str) -> Vec<String> {
     tokens
 }
 
-fn search_terms_text(name: &str, locator: &str, file: &str) -> String {
+fn search_terms_text(name: &str, locator: &str, file: &str, doc_comment: Option<&str>) -> String {
     let mut tokens = tokenize_search_terms(name);
     tokens.extend(tokenize_search_terms(locator));
     tokens.extend(tokenize_search_terms(file));
+    if let Some(doc_comment) = doc_comment {
+        tokens.extend(tokenize_search_terms(doc_comment));
+    }
     tokens.sort();
     tokens.dedup();
     tokens.join(" ")
@@ -385,7 +393,7 @@ fn search_terms_query(
 ) -> Option<Box<dyn tantivy::query::Query>> {
     let search_terms_field = fields.search_terms?;
     let terms = tokenize_search_terms(query_str);
-    if terms.len() < 2 {
+    if terms.is_empty() {
         return None;
     }
 
@@ -536,15 +544,11 @@ pub fn search_filtered(
             QueryParser::for_index(index, vec![fields.name, fields.locator, fields.file]);
         let exact_query =
             Box::new(query_parser.parse_query(query_str)?) as Box<dyn tantivy::query::Query>;
-        if identifier_like_query(query_str) {
-            if let Some(token_query) = search_terms_query(fields, query_str) {
-                Box::new(BooleanQuery::new(vec![
-                    (Occur::Should, exact_query),
-                    (Occur::Should, token_query),
-                ]))
-            } else {
-                exact_query
-            }
+        if let Some(token_query) = search_terms_query(fields, query_str) {
+            Box::new(BooleanQuery::new(vec![
+                (Occur::Should, exact_query),
+                (Occur::Should, token_query),
+            ]))
         } else {
             exact_query
         }
@@ -746,6 +750,8 @@ pub struct SearchOutputResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_comment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<String>,
@@ -826,6 +832,7 @@ pub fn needs_graph_for_projection(fields: FieldSet, include_context: bool) -> bo
         || fields.snippet
         || fields.visibility
         || fields.signature
+        || fields.doc_comment
         || fields.role
 }
 
@@ -886,6 +893,11 @@ pub fn project_results(
                 },
                 signature: if fields.signature {
                     details.and_then(|details| details.node.signature.clone())
+                } else {
+                    None
+                },
+                doc_comment: if fields.doc_comment {
+                    details.and_then(|details| details.node.doc_comment.clone())
                 } else {
                     None
                 },
@@ -1536,6 +1548,25 @@ mod tests {
     }
 
     #[test]
+    fn search_matches_doc_comment_terms() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut graph = make_rich_test_graph();
+        graph.nodes[2].doc_comment = Some("Coordinates the gift flow handoff.".into());
+        let index = build_index(&graph, dir.path()).unwrap();
+
+        let results = search_filtered(&index, "gift flow", 10, &SearchOptions::default()).unwrap();
+
+        assert!(
+            results.iter().any(|result| result.name == "Config"),
+            "doc-only business terms should find the documented symbol, got: {:?}",
+            results
+                .iter()
+                .map(|result| &result.name)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn sync_index_rebuilds_legacy_index_without_repo_fields() {
         let dir = tempfile::tempdir().unwrap();
         let mut schema_builder = Schema::builder();
@@ -1729,7 +1760,7 @@ mod tests {
                     metadata: HashMap::new(),
                     role: Some(NodeRole::EntryPoint),
                     signature: Some("fn main()".into()),
-                    doc_comment: None,
+                    doc_comment: Some("Starts the application".into()),
                     module: Some("App".into()),
                     snippet: Some("fn main() { helper(); }".into()),
                     repo: None,
@@ -1781,7 +1812,7 @@ mod tests {
         let projected = project_results(
             &results,
             Some(&graph),
-            FieldSet::parse("id,repo,signature,role,snippet"),
+            FieldSet::parse("id,repo,signature,doc_comment,role,snippet"),
             true,
         );
 
@@ -1792,6 +1823,10 @@ mod tests {
         assert_eq!(result.id.as_deref(), Some("app::main"));
         assert_eq!(result.repo.as_deref(), Some("app"));
         assert_eq!(result.signature.as_deref(), Some("fn main()"));
+        assert_eq!(
+            result.doc_comment.as_deref(),
+            Some("Starts the application")
+        );
         assert_eq!(result.role.as_deref(), Some("entry_point"));
         assert_eq!(result.snippet.as_deref(), Some("fn main() { helper(); }"));
         assert!(result.file.is_none());

@@ -279,7 +279,7 @@ enum SymbolCommands {
         /// Include source snippet and relationships in results
         #[arg(long)]
         context: bool,
-        /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,role; or "full"/"all"/"none")
+        /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
     },
@@ -293,7 +293,7 @@ enum SymbolCommands {
         /// Output format
         #[arg(long, value_enum, default_value_t = ContextOutputFormat::Json)]
         format: ContextOutputFormat,
-        /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,role; or "full"/"all"/"none")
+        /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
     },
@@ -310,7 +310,7 @@ enum SymbolCommands {
         /// Output format
         #[arg(long, value_enum, default_value_t = BriefOutputFormat::Json)]
         format: BriefOutputFormat,
-        /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,role; or "full"/"all"/"none")
+        /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
     },
@@ -491,7 +491,7 @@ enum ConceptCommands {
         /// Output format
         #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
         format: QueryOutputFormat,
-        /// Fields to display in tree output (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,role; or "full"/"all"/"none")
+        /// Fields to display in tree output (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
     },
@@ -505,7 +505,7 @@ enum ConceptCommands {
         /// Output format
         #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
         format: QueryOutputFormat,
-        /// Fields to display in tree output (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,role; or "full"/"all"/"none")
+        /// Fields to display in tree output (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
     },

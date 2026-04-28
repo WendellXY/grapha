@@ -1255,6 +1255,54 @@ extension RoomPage {
     }
 
     #[test]
+    fn extracts_doc_comments_for_type_property_and_protocol_declarations() {
+        let result = extract(
+            r#"
+            /// Owns the gift flow.
+            struct GiftFlow {
+                /// Current gift recipient.
+                var recipientName: String
+            }
+
+            /// Global hooks for game UI actions.
+            @MainActor
+            public enum WebGameCoreHooks { }
+
+            /// Runs gift checkout.
+            class GiftCheckout { }
+
+            /// Coordinates gift payment.
+            protocol GiftPaying {
+                /// Starts the payment handoff.
+                func startPayment()
+            }
+
+            /// Stable gift identifier.
+            typealias GiftId = String
+            "#,
+        );
+
+        for (name, expected) in [
+            ("GiftFlow", "Owns the gift flow"),
+            ("recipientName", "Current gift recipient"),
+            ("WebGameCoreHooks", "Global hooks for game UI actions"),
+            ("GiftCheckout", "Runs gift checkout"),
+            ("GiftPaying", "Coordinates gift payment"),
+            ("startPayment", "Starts the payment handoff"),
+            ("GiftId", "Stable gift identifier"),
+        ] {
+            let node = find_node(&result, name);
+            assert_eq!(
+                node.doc_comment
+                    .as_deref()
+                    .map(|doc| doc.contains(expected)),
+                Some(true),
+                "{name} should carry its declaration doc comment"
+            );
+        }
+    }
+
+    #[test]
     fn enrich_doc_comments_patches_missing_docs() {
         let source = br#"
 class GameManager {
@@ -1364,6 +1412,51 @@ class GameManager {
                 .unwrap()
                 .contains("current score"),
             "doc should contain expected text"
+        );
+    }
+
+    #[test]
+    fn enrich_doc_comments_patches_attribute_prefixed_type_docs() {
+        let source = br#"
+/// UI action hooks that WebGame registers at startup.
+/// Breaks circular dependencies where WebGameCore needs to trigger UI defined in WebGame.
+@MainActor
+public enum WebGameCoreHooks {
+}
+"#;
+        let mut result = ExtractionResult::new();
+        result.nodes.push(Node {
+            id: "s:WebGameCoreHooks".into(),
+            kind: NodeKind::Enum,
+            name: "WebGameCoreHooks".into(),
+            file: "test.swift".into(),
+            span: Span {
+                start: [4, 0],
+                end: [4, 0],
+            },
+            visibility: Visibility::Public,
+            metadata: HashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+            snippet: None,
+            repo: None,
+        });
+
+        enrich_doc_comments(source, &mut result).unwrap();
+
+        let hooks = result
+            .nodes
+            .iter()
+            .find(|node| node.name == "WebGameCoreHooks")
+            .unwrap();
+        assert!(
+            hooks
+                .doc_comment
+                .as_deref()
+                .is_some_and(|doc| doc.contains("Breaks circular dependencies")),
+            "attribute-prefixed type docs should enrich index-store nodes"
         );
     }
 

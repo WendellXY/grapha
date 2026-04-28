@@ -38,6 +38,7 @@ impl RenderOptions {
                 snippet: false,
                 visibility: false,
                 signature: false,
+                doc_comment: false,
                 role: false,
             },
         }
@@ -56,6 +57,7 @@ impl RenderOptions {
                 snippet: false,
                 visibility: false,
                 signature: false,
+                doc_comment: false,
                 role: false,
             },
         }
@@ -311,6 +313,14 @@ fn symbol_info_details(symbol: &SymbolInfo, options: RenderOptions) -> Vec<TreeN
             options,
         );
     }
+    if fields.doc_comment {
+        push_detail(
+            &mut children,
+            "doc_comment",
+            symbol.doc_comment.clone(),
+            options,
+        );
+    }
     if fields.role {
         push_detail(
             &mut children,
@@ -363,6 +373,14 @@ fn symbol_ref_details(symbol: &SymbolRef, options: RenderOptions) -> Vec<TreeNod
             options,
         );
     }
+    if fields.doc_comment {
+        push_detail(
+            &mut children,
+            "doc_comment",
+            symbol.doc_comment.clone(),
+            options,
+        );
+    }
     if fields.role {
         push_detail(
             &mut children,
@@ -412,6 +430,14 @@ fn symbol_tree_ref_details(symbol: &SymbolTreeRef, options: RenderOptions) -> Ve
             &mut children,
             "signature",
             symbol.signature.clone(),
+            options,
+        );
+    }
+    if fields.doc_comment {
+        push_detail(
+            &mut children,
+            "doc_comment",
+            symbol.doc_comment.clone(),
             options,
         );
     }
@@ -1848,6 +1874,7 @@ mod tests {
             visibility: Some(Visibility::Public),
             role: None,
             signature: None,
+            doc_comment: None,
             module: None,
             snippet: None,
             repo: None,
@@ -1865,6 +1892,7 @@ mod tests {
             visibility: Some(Visibility::Public),
             role: None,
             signature: None,
+            doc_comment: None,
             module: None,
             snippet: None,
             repo: None,
@@ -1924,6 +1952,7 @@ mod tests {
                 visibility: Some(Visibility::Public),
                 role: None,
                 signature: None,
+                doc_comment: None,
                 module: None,
                 snippet: None,
                 repo: None,
@@ -1938,6 +1967,7 @@ mod tests {
                         visibility: Some(Visibility::Public),
                         role: None,
                         signature: None,
+                        doc_comment: None,
                         module: None,
                         snippet: None,
                         repo: None,
@@ -1953,6 +1983,7 @@ mod tests {
                         visibility: Some(Visibility::Public),
                         role: None,
                         signature: None,
+                        doc_comment: None,
                         module: None,
                         snippet: None,
                         repo: None,
@@ -1988,12 +2019,14 @@ mod tests {
         let mut root = symbol_info("body", NodeKind::Property, "ContentView.swift");
         root.module = Some("Room".into());
         root.signature = Some("var body: some View".into());
+        root.doc_comment = Some("Renders the room surface.".into());
         root.role = Some(grapha_core::graph::NodeRole::Internal);
         root.snippet = Some("Text(\"Hello\")\n.padding()".into());
 
         let mut dependency = symbol_ref("roomMode", NodeKind::Property, "ContentView.swift");
         dependency.module = Some("Room".into());
         dependency.signature = Some("@State var roomMode: RoomMode".into());
+        dependency.doc_comment = Some("Current room mode.".into());
         dependency.role = Some(grapha_core::graph::NodeRole::Internal);
         dependency.snippet = Some("roomMode".into());
 
@@ -2022,12 +2055,14 @@ mod tests {
         assert!(rendered.contains("span: 1..2"));
         assert!(rendered.contains("visibility: public"));
         assert!(rendered.contains("signature: var body: some View"));
+        assert!(rendered.contains("doc_comment: Renders the room surface."));
         assert!(rendered.contains("role: internal"));
         assert!(rendered.contains("├── snippet"));
         assert!(rendered.contains("│   ├── Text(\"Hello\")"));
         assert!(rendered.contains("│   └── .padding()"));
         assert!(rendered.contains("id: ContentView.swift::roomMode"));
         assert!(rendered.contains("signature: @State var roomMode: RoomMode"));
+        assert!(rendered.contains("doc_comment: Current room mode."));
     }
 
     #[test]

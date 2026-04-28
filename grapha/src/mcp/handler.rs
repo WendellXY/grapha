@@ -4,6 +4,7 @@ use grapha_core::graph::Graph;
 use serde_json::{Value, json};
 use tantivy::Index;
 
+use crate::fields::FieldSet;
 use crate::mcp::types::ToolDefinition;
 use crate::query;
 use crate::recall::{self, Recall};
@@ -74,6 +75,10 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
                         "type": "boolean",
                         "description": "Keep only public symbols (default: false)",
                         "default": false
+                    },
+                    "fields": {
+                        "type": "string",
+                        "description": "Optional comma-separated projected fields to include (for example: id,locator,doc_comment,signature; or full/all/none)"
                     }
                 },
                 "required": ["query"]
@@ -455,9 +460,21 @@ fn handle_search_symbols(state: &McpState, arguments: &Value) -> Value {
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
     };
+    let fields = arguments
+        .get("fields")
+        .and_then(|v| v.as_str())
+        .map(FieldSet::parse);
 
     match search::search_filtered(&state.search_index, query_str, limit, &options) {
-        Ok(results) => serialize_result(&results),
+        Ok(results) => {
+            if let Some(fields) = fields {
+                let graph =
+                    search::needs_graph_for_projection(fields, false).then_some(&state.graph);
+                serialize_result(&search::project_results(&results, graph, fields, false))
+            } else {
+                serialize_result(&results)
+            }
+        }
         Err(e) => tool_error(format!("search failed: {e}")),
     }
 }

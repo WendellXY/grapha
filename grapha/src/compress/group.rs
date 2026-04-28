@@ -27,6 +27,8 @@ pub struct SymbolSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc_comment: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub module: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<String>,
@@ -132,6 +134,7 @@ pub fn group(graph: &Graph) -> GroupedGraph {
             span: [node.span.start[0], node.span.end[0]],
             role: node.role.clone(),
             signature: node.signature.clone(),
+            doc_comment: node.doc_comment.clone(),
             module: node.module.clone(),
             members,
             calls,
@@ -231,6 +234,7 @@ mod tests {
                 let mut n = make_node("a.rs::main", "main", NodeKind::Function, "a.rs", 0);
                 n.role = Some(grapha_core::graph::NodeRole::EntryPoint);
                 n.signature = Some("fn main()".to_string());
+                n.doc_comment = Some("Starts the app.".to_string());
                 n.module = Some("app".to_string());
                 n
             }],
@@ -240,6 +244,7 @@ mod tests {
         let json = serde_json::to_string(&grouped).unwrap();
         assert!(json.contains("entry_point"));
         assert!(json.contains("fn main()"));
+        assert!(json.contains("Starts the app."));
         assert!(json.contains("app"));
         assert!(json.contains("\"id\":\"a.rs::main\""));
         assert!(json.contains("\"locator\":"));

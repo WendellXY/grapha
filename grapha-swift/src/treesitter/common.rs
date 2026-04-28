@@ -415,6 +415,10 @@ pub(super) fn extract_swift_doc_comment(node: tree_sitter::Node, source: &[u8]) 
     let mut comments = Vec::new();
     let mut prev = node.prev_named_sibling();
     while let Some(sib) = prev {
+        if matches!(sib.kind(), "attribute" | "modifiers") {
+            prev = sib.prev_named_sibling();
+            continue;
+        }
         if sib.kind() == "comment" || sib.kind() == "multiline_comment" {
             if let Ok(text) = sib.utf8_text(source) {
                 comments.push(text.to_string());
