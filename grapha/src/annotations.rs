@@ -87,9 +87,16 @@ impl AnnotationStore {
     }
 
     pub fn for_project_root(project_root: &Path) -> Self {
+        Self::for_project_root_importing(
+            project_root,
+            project_root.join(".grapha").join("annotations.db"),
+        )
+    }
+
+    pub(crate) fn for_project_root_importing(project_root: &Path, import_from: PathBuf) -> Self {
         Self {
             path: crate::data_paths::annotation_db_path(project_root),
-            import_from: Some(project_root.join(".grapha").join("annotations.db")),
+            import_from: Some(import_from),
         }
     }
 

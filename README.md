@@ -187,6 +187,7 @@ grapha repo history list [--kind test] [--file PATH] [--module M] [--symbol QUER
 
 ```bash
 grapha index <path> [--format sqlite|json] [--store-dir DIR] [--full-rebuild] [--timing]
+grapha migrate [-p PATH] [--from OTHER_WORKTREE_OR_STORE] [--force]
 grapha analyze <path> [--compact] [--filter fn,struct]
 grapha serve [-p PATH] [--mcp] [--watch] [--port N]
 ```

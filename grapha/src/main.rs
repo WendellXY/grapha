@@ -18,6 +18,7 @@ mod inferred;
 mod localization;
 mod maintenance;
 mod mcp;
+mod migration;
 mod progress;
 mod query;
 mod recall;
@@ -190,6 +191,18 @@ enum Commands {
         /// Show per-phase timing breakdown for performance profiling
         #[arg(long)]
         timing: bool,
+    },
+    /// Bootstrap this worktree from another local Grapha store
+    Migrate {
+        /// Project directory to receive the temporary migrated store
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+        /// Source project root or .grapha store directory (default: newest sibling worktree)
+        #[arg(long)]
+        from: Option<PathBuf>,
+        /// Replace an existing non-temporary target Grapha index
+        #[arg(long)]
+        force: bool,
     },
     /// Launch web UI for interactive graph exploration
     Serve {
@@ -739,6 +752,7 @@ fn main() -> anyhow::Result<()> {
             full_rebuild,
             timing,
         } => app::index::handle_index(path, format, store_dir, full_rebuild, timing)?,
+        Commands::Migrate { path, from, force } => app::migrate::handle_migrate(path, from, force)?,
         Commands::Serve {
             path,
             port,

@@ -44,6 +44,15 @@ struct IndexStatusSnapshot {
     #[serde(default)]
     index_store_stamp: Option<FileStamp>,
     repo: Option<IndexedRepoState>,
+    #[serde(default)]
+    borrowed_from: Option<BorrowedIndexSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BorrowedIndexSource {
+    project_root: String,
+    store_dir: String,
+    migrated_at_unix_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -68,6 +77,8 @@ pub struct IndexStatus {
     pub grapha_version: String,
     pub node_count: usize,
     pub edge_count: usize,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub temporary: bool,
     pub may_be_stale: bool,
     pub freshness_tracking_available: bool,
     pub changed_file_count_since_index: usize,
@@ -77,7 +88,16 @@ pub struct IndexStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repo: Option<RepoStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub borrowed_from: Option<BorrowedIndexStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BorrowedIndexStatus {
+    pub project_root: String,
+    pub store_dir: String,
+    pub migrated_at_unix_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -115,6 +135,10 @@ fn current_unix_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn classify_index_input(path: &str) -> IndexInputKinds {
@@ -389,12 +413,14 @@ fn legacy_status(store_dir: &Path) -> anyhow::Result<IndexStatus> {
         grapha_version: env!("CARGO_PKG_VERSION").to_string(),
         node_count: 0,
         edge_count: 0,
+        temporary: false,
         may_be_stale: false,
         freshness_tracking_available: false,
         changed_file_count_since_index: 0,
         changed_input_file_count_since_index: 0,
         changed_input_files_since_index: Vec::new(),
         repo: None,
+        borrowed_from: None,
         note: Some(
             "reindex with the current Grapha build to enable freshness tracking".to_string(),
         ),
@@ -462,11 +488,12 @@ fn compute_status(
                     current_head_oid.as_deref(),
                 ) {
                     if indexed_head != current_head {
-                        changed_files.extend(changed_files_between_heads(
-                            &repo,
-                            indexed_head,
-                            current_head,
-                        )?);
+                        match changed_files_between_heads(&repo, indexed_head, current_head) {
+                            Ok(paths) => changed_files.extend(paths),
+                            Err(_) => {
+                                changed_files.insert(".git/HEAD".to_string());
+                            }
+                        }
                     }
                 } else if indexed_repo.head_oid != current_head_oid {
                     changed_files.insert(".git/HEAD".to_string());
@@ -505,7 +532,21 @@ fn compute_status(
         None => None,
     };
 
-    let note = if !freshness_tracking_available && snapshot.repo.is_some() {
+    let borrowed_from = snapshot
+        .borrowed_from
+        .as_ref()
+        .map(|source| BorrowedIndexStatus {
+            project_root: source.project_root.clone(),
+            store_dir: source.store_dir.clone(),
+            migrated_at_unix_secs: source.migrated_at_unix_secs,
+        });
+    let temporary = borrowed_from.is_some();
+    let note = if let Some(source) = borrowed_from.as_ref() {
+        Some(format!(
+            "temporary index migrated from {}; run `grapha index` to replace it with this worktree's index",
+            source.project_root
+        ))
+    } else if !freshness_tracking_available && snapshot.repo.is_some() {
         Some("git status unavailable for this project root".to_string())
     } else {
         None
@@ -518,12 +559,15 @@ fn compute_status(
         grapha_version: snapshot.grapha_version,
         node_count: snapshot.node_count,
         edge_count: snapshot.edge_count,
-        may_be_stale: freshness_tracking_available && !changed_input_files.is_empty(),
+        temporary,
+        may_be_stale: temporary
+            || (freshness_tracking_available && !changed_input_files.is_empty()),
         freshness_tracking_available,
         changed_file_count_since_index: changed_files.len(),
         changed_input_file_count_since_index: changed_input_files.len(),
         changed_input_files_since_index: changed_input_files,
         repo: repo_status,
+        borrowed_from,
         note,
     })
 }
@@ -547,8 +591,70 @@ pub fn save_index_status(
         index_store_path,
         index_store_stamp,
         repo: capture_repo_state(project_root)?,
+        borrowed_from: None,
     };
     save_snapshot(store_dir, &snapshot)
+}
+
+pub fn save_borrowed_index_status(
+    store_dir: &Path,
+    source_project_root: &Path,
+    source_store_dir: &Path,
+    node_count: usize,
+    edge_count: usize,
+) -> anyhow::Result<()> {
+    let source_snapshot = load_snapshot(source_store_dir).ok();
+    let indexed_at_unix_secs = source_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.indexed_at_unix_secs)
+        .unwrap_or_else(current_unix_secs);
+    let grapha_version = source_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.grapha_version.clone())
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+    let config_fingerprint = source_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.config_fingerprint.clone())
+        .unwrap_or_default();
+    let index_store_path = source_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.index_store_path.clone());
+    let index_store_stamp = source_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.index_store_stamp);
+    let repo = match source_snapshot
+        .as_ref()
+        .and_then(|snapshot| snapshot.repo.clone())
+    {
+        Some(repo) => Some(repo),
+        None => capture_repo_state(source_project_root)?,
+    };
+
+    let snapshot = IndexStatusSnapshot {
+        version: INDEX_STATUS_VERSION,
+        indexed_at_unix_secs,
+        grapha_version,
+        node_count,
+        edge_count,
+        binary_stamp: cache::current_binary_stamp(),
+        config_fingerprint,
+        index_store_path,
+        index_store_stamp,
+        repo,
+        borrowed_from: Some(BorrowedIndexSource {
+            project_root: normalize_repo_path(source_project_root),
+            store_dir: normalize_repo_path(source_store_dir),
+            migrated_at_unix_secs: current_unix_secs(),
+        }),
+    };
+    save_snapshot(store_dir, &snapshot)
+}
+
+pub fn store_has_borrowed_index(store_dir: &Path) -> bool {
+    load_snapshot(store_dir)
+        .ok()
+        .and_then(|snapshot| snapshot.borrowed_from)
+        .is_some()
 }
 
 pub fn plan_index_work(
@@ -569,6 +675,10 @@ pub fn plan_index_work(
             return Ok(None);
         }
     };
+
+    if snapshot.borrowed_from.is_some() {
+        return Ok(None);
+    }
 
     let status = compute_status(snapshot.clone(), project_root)?;
     if !status.freshness_tracking_available {

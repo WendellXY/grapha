@@ -236,13 +236,16 @@ pub(crate) fn handle_symbol_command(
             );
             print_json(&projected)?;
             if let Ok(status) = crate::index_status::load_index_status(&path, &path.join(".grapha"))
-                && status.freshness_tracking_available
+                && (status.freshness_tracking_available || status.temporary)
                 && status.may_be_stale
             {
-                eprintln!(
-                    "  \x1b[33m!\x1b[0m results may be stale ({} indexed input file(s) changed since last index)",
-                    status.changed_input_file_count_since_index
-                );
+                let reason = status.note.unwrap_or_else(|| {
+                    format!(
+                        "{} indexed input file(s) changed since last index",
+                        status.changed_input_file_count_since_index
+                    )
+                });
+                eprintln!("  \x1b[33m!\x1b[0m results may be stale ({reason})");
             }
 
             eprintln!(
