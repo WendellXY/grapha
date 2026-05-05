@@ -5,7 +5,24 @@ use serde::Serialize;
 use grapha_core::graph::{EdgeKind, FlowDirection, Graph, Node, NodeRole};
 
 use super::flow::{is_dataflow_edge, terminal_kind_to_string};
-use super::{QueryResolveError, SymbolRef, normalize_symbol_name};
+use super::{QueryResolveError, SymbolRef, normalize_symbol_name, truncate_with_total};
+
+/// Cap for the `flows` vector returned by [`query_trace_with_options`].
+///
+/// The default leaves results unbounded; the CLI overrides this with the
+/// user-supplied `--limit` so AI-agent callers don't drown in token-heavy
+/// flow listings on entry points with large fan-out.
+#[derive(Debug, Clone)]
+pub struct TraceQueryOptions {
+    pub limit: usize,
+}
+
+impl Default for TraceQueryOptions {
+    fn default() -> Self {
+        // Internal callers stay unbounded.
+        Self { limit: usize::MAX }
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct TraceResult {
@@ -16,6 +33,7 @@ pub struct TraceResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
     pub flows: Vec<Flow>,
+    pub total_flows: usize,
     pub summary: TraceSummary,
     #[serde(skip)]
     pub(crate) entry_ref: SymbolRef,
@@ -276,6 +294,15 @@ pub fn query_trace(
     entry: &str,
     max_depth: usize,
 ) -> Result<TraceResult, QueryResolveError> {
+    query_trace_with_options(graph, entry, max_depth, &TraceQueryOptions::default())
+}
+
+pub fn query_trace_with_options(
+    graph: &Graph,
+    entry: &str,
+    max_depth: usize,
+    options: &TraceQueryOptions,
+) -> Result<TraceResult, QueryResolveError> {
     let entry_node = crate::query::resolve_node(graph, entry)?;
 
     let node_index: HashMap<&str, usize> = graph
@@ -295,7 +322,7 @@ pub fn query_trace(
                 .push((&edge.target, ei));
         }
     }
-    let direct_flows = trace_from_root(
+    let mut direct_flows = trace_from_root(
         graph,
         entry_node.id.as_str(),
         max_depth,
@@ -304,6 +331,7 @@ pub fn query_trace(
     );
     if !direct_flows.is_empty() {
         let summary = summarize_flows(&direct_flows);
+        let total_flows = truncate_with_total(&mut direct_flows, options.limit);
         return Ok(TraceResult {
             entry: entry_node.id.clone(),
             requested_symbol: entry_node.name.clone(),
@@ -311,6 +339,7 @@ pub fn query_trace(
             fallback_used: false,
             hint: None,
             flows: direct_flows,
+            total_flows,
             summary,
             entry_ref: SymbolRef::from_node(entry_node),
         });
@@ -344,14 +373,17 @@ pub fn query_trace(
         None
     };
 
+    let summary = summarize_flows(&flows);
+    let total_flows = truncate_with_total(&mut flows, options.limit);
     Ok(TraceResult {
         entry: entry_node.id.clone(),
         requested_symbol: entry_node.name.clone(),
         traced_roots,
         fallback_used,
         hint,
-        summary: summarize_flows(&flows),
+        summary,
         flows,
+        total_flows,
         entry_ref: SymbolRef::from_node(entry_node),
     })
 }
@@ -909,5 +941,70 @@ mod tests {
         assert_eq!(result.summary.total_flows, 1);
         assert_eq!(result.summary.reads, 1);
         assert!(result.hint.is_none());
+    }
+
+    #[test]
+    fn trace_truncates_flows_and_preserves_summary() {
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                make_node("entry", Some(NodeRole::EntryPoint)),
+                make_node(
+                    "terminal_a",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Persistence,
+                    }),
+                ),
+                make_node(
+                    "terminal_b",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Network,
+                    }),
+                ),
+                make_node(
+                    "terminal_c",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Cache,
+                    }),
+                ),
+            ],
+            edges: vec![
+                {
+                    let mut e = make_edge("entry", "terminal_a", EdgeKind::Writes);
+                    e.direction = Some(FlowDirection::Write);
+                    e.operation = Some("save".to_string());
+                    e
+                },
+                {
+                    let mut e = make_edge("entry", "terminal_b", EdgeKind::Reads);
+                    e.direction = Some(FlowDirection::Read);
+                    e.operation = Some("fetch".to_string());
+                    e
+                },
+                {
+                    let mut e = make_edge("entry", "terminal_c", EdgeKind::Reads);
+                    e.direction = Some(FlowDirection::Read);
+                    e.operation = Some("lookup".to_string());
+                    e
+                },
+            ],
+        };
+
+        let truncated =
+            query_trace_with_options(&graph, "entry", 10, &TraceQueryOptions { limit: 1 }).unwrap();
+        assert_eq!(truncated.flows.len(), 1, "flows should be truncated");
+        assert_eq!(truncated.total_flows, 3);
+        // Summary is computed from the pre-truncation flow set, so total_flows
+        // there must remain at the un-truncated count.
+        assert_eq!(truncated.summary.total_flows, 3);
+        // Read/write counts also reflect the pre-truncation flow set.
+        assert_eq!(truncated.summary.reads, 2);
+        assert_eq!(truncated.summary.writes, 1);
+
+        let unbounded =
+            query_trace_with_options(&graph, "entry", 10, &TraceQueryOptions::default()).unwrap();
+        assert_eq!(unbounded.flows.len(), 3);
+        assert_eq!(unbounded.total_flows, 3);
+        assert_eq!(unbounded.summary.total_flows, 3);
     }
 }

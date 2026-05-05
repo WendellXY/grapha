@@ -6,8 +6,27 @@ use crate::symbol_locator::SymbolLocatorIndex;
 
 use super::{
     ContextResult, QueryResolveError, SymbolInfo, SymbolRef, SymbolTreeRef,
-    is_swiftui_invalidation_source,
+    is_swiftui_invalidation_source, truncate_with_total,
 };
+
+/// Per-section caps for [`query_context_with_options`].
+///
+/// Each result vector (`callers`, `callees`, …) is truncated to at most
+/// `limit` items independently, *after* sort/dedup, so the kept items are
+/// deterministic. The default leaves results unbounded so internal callers
+/// (web UI, MCP, in-process consumers) keep their existing behavior; only the
+/// CLI dispatch path passes the user-supplied limit.
+#[derive(Debug, Clone)]
+pub struct ContextQueryOptions {
+    pub limit: usize,
+}
+
+impl Default for ContextQueryOptions {
+    fn default() -> Self {
+        // Internal callers stay unbounded.
+        Self { limit: usize::MAX }
+    }
+}
 
 fn to_symbol_ref(node: &grapha_core::graph::Node, locators: &SymbolLocatorIndex) -> SymbolRef {
     SymbolRef::from_node(node).with_locator(locators.locator_for_node(node))
@@ -144,6 +163,14 @@ fn collect_invalidation_sources<'a>(
 }
 
 pub fn query_context(graph: &Graph, query: &str) -> Result<ContextResult, QueryResolveError> {
+    query_context_with_options(graph, query, &ContextQueryOptions::default())
+}
+
+pub fn query_context_with_options(
+    graph: &Graph,
+    query: &str,
+    options: &ContextQueryOptions,
+) -> Result<ContextResult, QueryResolveError> {
     let node = crate::query::resolve_node(graph, query)?;
     let locators = SymbolLocatorIndex::new(graph);
 
@@ -264,7 +291,7 @@ pub fn query_context(graph: &Graph, query: &str) -> Result<ContextResult, QueryR
     sort_ids_by_span(&mut contains_ids, &node_index);
     sort_ids_by_span(&mut contained_by_ids, &node_index);
 
-    let contains_tree = contains_ids
+    let mut contains_tree: Vec<SymbolTreeRef> = contains_ids
         .iter()
         .filter_map(|node_id| {
             build_contains_tree(
@@ -277,30 +304,61 @@ pub fn query_context(graph: &Graph, query: &str) -> Result<ContextResult, QueryR
             )
         })
         .collect();
-    let contains = contains_ids
+    let mut contains: Vec<SymbolRef> = contains_ids
         .into_iter()
         .filter_map(|node_id| node_index.get(node_id).copied())
         .map(|node| to_symbol_ref(node, &locators))
         .collect();
-    let contained_by = contained_by_ids
+    let mut contained_by: Vec<SymbolRef> = contained_by_ids
         .into_iter()
         .filter_map(|node_id| node_index.get(node_id).copied())
         .map(|node| to_symbol_ref(node, &locators))
         .collect();
 
+    // Truncate per-section after sort/dedup so the kept items are deterministic.
+    let limit = options.limit;
+    let total_callers = truncate_with_total(&mut callers, limit);
+    let total_callees = truncate_with_total(&mut callees, limit);
+    let total_reads = truncate_with_total(&mut reads, limit);
+    let total_read_by = truncate_with_total(&mut read_by, limit);
+    let total_invalidation_sources = truncate_with_total(&mut invalidation_sources, limit);
+    let total_contains = truncate_with_total(&mut contains, limit);
+    let total_contained_by = truncate_with_total(&mut contained_by, limit);
+    let total_implementors = truncate_with_total(&mut implementors, limit);
+    let total_implements = truncate_with_total(&mut implements, limit);
+    let total_type_refs = truncate_with_total(&mut type_refs, limit);
+
+    // Keep `contains_tree` aligned with the truncated `contains` vector so
+    // tree-mode and brief-mode rendering agree on which children survived
+    // `--limit`. Top-level entries not in `contains` are dropped; deeper
+    // descendants are unaffected (they're displayed inline under a kept root).
+    let kept_contains_ids: HashSet<&str> =
+        contains.iter().map(|symbol| symbol.id.as_str()).collect();
+    contains_tree.retain(|tree_ref| kept_contains_ids.contains(tree_ref.id.as_str()));
+
     Ok(ContextResult {
         symbol: SymbolInfo::from_node(node).with_locator(locators.locator_for_node(node)),
         callers,
+        total_callers,
         callees,
+        total_callees,
         reads,
+        total_reads,
         read_by,
+        total_read_by,
         invalidation_sources,
+        total_invalidation_sources,
         contains,
+        total_contains,
         contains_tree,
         contained_by,
+        total_contained_by,
         implementors,
+        total_implementors,
         implements,
+        total_implements,
         type_refs,
+        total_type_refs,
     })
 }
 
@@ -1206,5 +1264,196 @@ mod tests {
             vec!["c.swift::caller"],
             "caller should appear only once even if it hits multiple members"
         );
+    }
+
+    #[test]
+    fn context_truncates_each_section_independently() {
+        let mk = |id: &str, name: &str, kind: NodeKind| Node {
+            id: id.into(),
+            kind,
+            name: name.into(),
+            file: "graph.swift".into(),
+            span: Span {
+                start: [0, 0],
+                end: [1, 0],
+            },
+            visibility: Visibility::Public,
+            metadata: StdHashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+            snippet: None,
+            repo: None,
+        };
+
+        let calls = |source: &str, target: &str| Edge {
+            source: source.into(),
+            target: target.into(),
+            kind: EdgeKind::Calls,
+            confidence: 0.9,
+            direction: None,
+            operation: None,
+            condition: None,
+            async_boundary: None,
+            provenance: Vec::new(),
+            repo: None,
+        };
+        let implements = |source: &str, target: &str| Edge {
+            source: source.into(),
+            target: target.into(),
+            kind: EdgeKind::Implements,
+            confidence: 1.0,
+            direction: None,
+            operation: None,
+            condition: None,
+            async_boundary: None,
+            provenance: Vec::new(),
+            repo: None,
+        };
+
+        // The queried node ("Service") has 3 callers (caller_a/b/c), 3 callees
+        // (callee_a/b/c), and 3 implementors (impl_a/b/c). NodeKind::Trait is
+        // used so the type-aware caller-from-member path is triggered without
+        // adding spurious callers (no Contains edges).
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                mk("Service", "Service", NodeKind::Trait),
+                mk("caller_a", "caller_a", NodeKind::Function),
+                mk("caller_b", "caller_b", NodeKind::Function),
+                mk("caller_c", "caller_c", NodeKind::Function),
+                mk("callee_a", "callee_a", NodeKind::Function),
+                mk("callee_b", "callee_b", NodeKind::Function),
+                mk("callee_c", "callee_c", NodeKind::Function),
+                mk("impl_a", "ImplA", NodeKind::Struct),
+                mk("impl_b", "ImplB", NodeKind::Struct),
+                mk("impl_c", "ImplC", NodeKind::Struct),
+            ],
+            edges: vec![
+                calls("caller_a", "Service"),
+                calls("caller_b", "Service"),
+                calls("caller_c", "Service"),
+                calls("Service", "callee_a"),
+                calls("Service", "callee_b"),
+                calls("Service", "callee_c"),
+                implements("impl_a", "Service"),
+                implements("impl_b", "Service"),
+                implements("impl_c", "Service"),
+            ],
+        };
+
+        let truncated =
+            query_context_with_options(&graph, "Service", &ContextQueryOptions { limit: 1 })
+                .unwrap();
+        assert_eq!(truncated.callers.len(), 1, "callers should be truncated");
+        assert_eq!(truncated.total_callers, 3);
+        assert_eq!(truncated.callees.len(), 1, "callees should be truncated");
+        assert_eq!(truncated.total_callees, 3);
+        assert_eq!(
+            truncated.implementors.len(),
+            1,
+            "implementors should be truncated"
+        );
+        assert_eq!(truncated.total_implementors, 3);
+
+        let unbounded = query_context_with_options(
+            &graph,
+            "Service",
+            &ContextQueryOptions { limit: usize::MAX },
+        )
+        .unwrap();
+        assert_eq!(unbounded.callers.len(), 3);
+        assert_eq!(unbounded.total_callers, 3);
+        assert_eq!(unbounded.callees.len(), 3);
+        assert_eq!(unbounded.total_callees, 3);
+        assert_eq!(unbounded.implementors.len(), 3);
+        assert_eq!(unbounded.total_implementors, 3);
+    }
+
+    #[test]
+    fn context_contains_tree_pruned_to_kept_contains() {
+        // A struct with 5 contained members. Under `--limit=2`, both the
+        // truncated `contains` vector AND `contains_tree` must drop the same
+        // top-level entries, and surviving entries must align in order.
+        let mk = |id: &str, name: &str, kind: NodeKind, span_start: [usize; 2]| Node {
+            id: id.into(),
+            kind,
+            name: name.into(),
+            file: "model.rs".into(),
+            span: Span {
+                start: span_start,
+                end: [span_start[0] + 1, 0],
+            },
+            visibility: Visibility::Public,
+            metadata: StdHashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+            snippet: None,
+            repo: None,
+        };
+        let contains = |source: &str, target: &str| Edge {
+            source: source.into(),
+            target: target.into(),
+            kind: EdgeKind::Contains,
+            confidence: 1.0,
+            direction: None,
+            operation: None,
+            condition: None,
+            async_boundary: None,
+            provenance: Vec::new(),
+            repo: None,
+        };
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                mk("Holder", "Holder", NodeKind::Struct, [0, 0]),
+                mk("Holder::a", "a", NodeKind::Property, [2, 4]),
+                mk("Holder::b", "b", NodeKind::Property, [3, 4]),
+                mk("Holder::c", "c", NodeKind::Property, [4, 4]),
+                mk("Holder::d", "d", NodeKind::Property, [5, 4]),
+                mk("Holder::e", "e", NodeKind::Property, [6, 4]),
+            ],
+            edges: vec![
+                contains("Holder", "Holder::a"),
+                contains("Holder", "Holder::b"),
+                contains("Holder", "Holder::c"),
+                contains("Holder", "Holder::d"),
+                contains("Holder", "Holder::e"),
+            ],
+        };
+
+        // Unbounded baseline: all 5 entries in both `contains` and `contains_tree`.
+        let unbounded = query_context_with_options(
+            &graph,
+            "Holder",
+            &ContextQueryOptions { limit: usize::MAX },
+        )
+        .unwrap();
+        assert_eq!(unbounded.contains.len(), 5);
+        assert_eq!(unbounded.contains_tree.len(), 5);
+        assert_eq!(unbounded.total_contains, 5);
+
+        let truncated =
+            query_context_with_options(&graph, "Holder", &ContextQueryOptions { limit: 2 })
+                .unwrap();
+        assert_eq!(truncated.contains.len(), 2, "contains capped at limit=2");
+        assert_eq!(
+            truncated.contains_tree.len(),
+            2,
+            "contains_tree must be pruned to match `contains` truncation"
+        );
+        // The two vectors must agree on which top-level IDs survived.
+        for (i, kept) in truncated.contains.iter().enumerate() {
+            assert_eq!(
+                truncated.contains_tree[i].id, kept.id,
+                "contains_tree[{i}] must match contains[{i}] ID after truncation"
+            );
+        }
+        // Pre-truncation total stays.
+        assert_eq!(truncated.total_contains, 5);
     }
 }

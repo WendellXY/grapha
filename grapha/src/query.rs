@@ -58,6 +58,14 @@ enum MatchTier {
     CaseInsensitiveNormalizedExact,
 }
 
+/// Truncate `items` to at most `limit` entries and return the original
+/// (pre-truncation) length.
+pub(crate) fn truncate_with_total<T>(items: &mut Vec<T>, limit: usize) -> usize {
+    let total = items.len();
+    items.truncate(limit);
+    total
+}
+
 pub(crate) fn strip_accessor_prefix(name: &str) -> &str {
     name.strip_prefix("getter:")
         .or_else(|| name.strip_prefix("setter:"))
@@ -293,16 +301,26 @@ pub fn resolve_node<'a>(graph: &'a Graph, query: &str) -> Result<&'a Node, Query
 pub struct ContextResult {
     pub symbol: SymbolInfo,
     pub callers: Vec<SymbolRef>,
+    pub total_callers: usize,
     pub callees: Vec<SymbolRef>,
+    pub total_callees: usize,
     pub reads: Vec<SymbolRef>,
+    pub total_reads: usize,
     pub read_by: Vec<SymbolRef>,
+    pub total_read_by: usize,
     pub invalidation_sources: Vec<SymbolRef>,
+    pub total_invalidation_sources: usize,
     pub contains: Vec<SymbolRef>,
+    pub total_contains: usize,
     pub contains_tree: Vec<SymbolTreeRef>,
     pub contained_by: Vec<SymbolRef>,
+    pub total_contained_by: usize,
     pub implementors: Vec<SymbolRef>,
+    pub total_implementors: usize,
     pub implements: Vec<SymbolRef>,
+    pub total_implements: usize,
     pub type_refs: Vec<SymbolRef>,
+    pub total_type_refs: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

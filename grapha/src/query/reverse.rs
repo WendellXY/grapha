@@ -5,7 +5,26 @@ use serde::Serialize;
 use grapha_core::graph::{EdgeKind, Graph, Node, NodeKind, NodeRole};
 
 use super::flow::is_dataflow_edge;
-use super::{QueryResolveError, SymbolRef, normalize_symbol_name, strip_accessor_prefix};
+use super::{
+    QueryResolveError, SymbolRef, normalize_symbol_name, strip_accessor_prefix, truncate_with_total,
+};
+
+/// Cap for the `affected_entries` vector returned by [`query_reverse_with_options`].
+///
+/// The default leaves results unbounded; the CLI overrides this with the
+/// user-supplied `--limit`. `total_entries` always reflects the pre-truncation
+/// count so callers can detect truncation.
+#[derive(Debug, Clone)]
+pub struct ReverseQueryOptions {
+    pub limit: usize,
+}
+
+impl Default for ReverseQueryOptions {
+    fn default() -> Self {
+        // Internal callers stay unbounded.
+        Self { limit: usize::MAX }
+    }
+}
 
 #[derive(Debug, Serialize)]
 pub struct ReverseResult {
@@ -223,6 +242,15 @@ pub fn query_reverse(
     symbol: &str,
     max_depth: Option<usize>,
 ) -> Result<ReverseResult, QueryResolveError> {
+    query_reverse_with_options(graph, symbol, max_depth, &ReverseQueryOptions::default())
+}
+
+pub fn query_reverse_with_options(
+    graph: &Graph,
+    symbol: &str,
+    max_depth: Option<usize>,
+    options: &ReverseQueryOptions,
+) -> Result<ReverseResult, QueryResolveError> {
     let target_node = crate::query::resolve_node(graph, symbol)?;
 
     let node_index: HashMap<&str, &Node> = graph.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
@@ -289,7 +317,7 @@ pub fn query_reverse(
         }
     }
 
-    let total_entries = affected_entries.len();
+    let total_entries = truncate_with_total(&mut affected_entries, options.limit);
     Ok(ReverseResult {
         symbol: target_node.id.clone(),
         affected_entries,
@@ -590,5 +618,54 @@ mod tests {
         let result = query_reverse(&graph, "Row", None).unwrap();
         assert_eq!(result.total_entries, 0);
         assert!(result.affected_entries.is_empty());
+    }
+
+    #[test]
+    fn reverse_truncates_affected_entries() {
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                make_node(
+                    "entry_a",
+                    "entry_a",
+                    NodeKind::Function,
+                    Some(NodeRole::EntryPoint),
+                ),
+                make_node(
+                    "entry_b",
+                    "entry_b",
+                    NodeKind::Function,
+                    Some(NodeRole::EntryPoint),
+                ),
+                make_node(
+                    "entry_c",
+                    "entry_c",
+                    NodeKind::Function,
+                    Some(NodeRole::EntryPoint),
+                ),
+                make_node("shared", "shared", NodeKind::Function, None),
+            ],
+            edges: vec![
+                make_edge("entry_a", "shared"),
+                make_edge("entry_b", "shared"),
+                make_edge("entry_c", "shared"),
+            ],
+        };
+
+        let truncated =
+            query_reverse_with_options(&graph, "shared", None, &ReverseQueryOptions { limit: 1 })
+                .unwrap();
+        assert_eq!(
+            truncated.affected_entries.len(),
+            1,
+            "affected_entries should be truncated"
+        );
+        assert_eq!(truncated.total_entries, 3);
+
+        let unbounded =
+            query_reverse_with_options(&graph, "shared", None, &ReverseQueryOptions::default())
+                .unwrap();
+        assert_eq!(unbounded.affected_entries.len(), 3);
+        assert_eq!(unbounded.total_entries, 3);
     }
 }

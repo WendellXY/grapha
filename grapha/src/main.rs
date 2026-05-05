@@ -311,6 +311,9 @@ enum SymbolCommands {
         /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,annotation,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
+        /// Limit items per result section (callers, callees, etc.). Pass a large value to disable.
+        #[arg(long, default_value = "20")]
+        limit: usize,
     },
     /// Analyze blast radius of changing a symbol
     Impact {
@@ -328,6 +331,9 @@ enum SymbolCommands {
         /// Fields to display (comma-separated: file,id,locator,module,repo,span,snippet,visibility,signature,doc_comment,annotation,role; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
+        /// Limit items per depth bucket (depth_1, depth_2, depth_3_plus). Pass a large value to disable.
+        #[arg(long, default_value = "20")]
+        limit: usize,
     },
     /// Analyze structural complexity of a type (properties, dependencies, invalidation surface)
     Complexity {
@@ -389,6 +395,9 @@ enum FlowCommands {
         /// Fields to display in tree output (comma-separated: file; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
+        /// Limit flows (forward) or affected entries (reverse). Pass a large value to disable.
+        #[arg(long, default_value = "20")]
+        limit: usize,
     },
     /// Derive a semantic effect graph from a symbol
     Graph {
@@ -406,6 +415,9 @@ enum FlowCommands {
         /// Fields to display in tree output (comma-separated: file; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
+        /// Limit nodes and edges in the dataflow result. Pass a large value to disable.
+        #[arg(long, default_value = "20")]
+        limit: usize,
     },
     /// Trace backward to likely API/data origins for a UI symbol
     Origin {
@@ -426,6 +438,9 @@ enum FlowCommands {
         /// Fields to display in output (comma-separated: file,snippet; or "full"/"all"/"none")
         #[arg(long)]
         fields: Option<String>,
+        /// Limit reported origins. Pass a large value to disable.
+        #[arg(long, default_value = "20")]
+        limit: usize,
     },
     /// List auto-detected entry points
     Entries {
@@ -438,9 +453,9 @@ enum FlowCommands {
         /// Filter entry points by file path or suffix
         #[arg(long)]
         file: Option<String>,
-        /// Limit the number of shown entries
-        #[arg(long)]
-        limit: Option<usize>,
+        /// Limit the number of shown entries. Pass a large value to disable.
+        #[arg(long, default_value = "20")]
+        limit: usize,
         /// Output format
         #[arg(long, value_enum, default_value_t = QueryOutputFormat::Json)]
         format: QueryOutputFormat,
@@ -599,6 +614,9 @@ enum RepoCommands {
         /// Project directory
         #[arg(short, long, default_value = ".")]
         path: PathBuf,
+        /// Limit affected symbols and per-symbol impact buckets. Pass a large value to disable.
+        #[arg(long, default_value = "20")]
+        limit: usize,
     },
     /// Show file/symbol map for orientation in large projects
     Map {

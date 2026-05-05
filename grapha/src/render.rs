@@ -527,6 +527,30 @@ fn format_section_count(label: &str, count: usize, options: RenderOptions) -> St
     )
 }
 
+/// Render `label (shown of total)` when truncated, otherwise `label (count)`.
+fn format_section_truncated(
+    label: &str,
+    shown: usize,
+    total: usize,
+    options: RenderOptions,
+) -> String {
+    let palette = Palette::new(options);
+    if shown < total {
+        format!(
+            "{} ({} of {})",
+            palette.section_header(label),
+            palette.number(shown),
+            palette.number(total),
+        )
+    } else {
+        format!(
+            "{} ({})",
+            palette.section_header(label),
+            palette.number(shown),
+        )
+    }
+}
+
 fn format_section_progress(
     label: &str,
     shown: usize,
@@ -573,18 +597,19 @@ fn symbol_tree_ref_to_tree_node(symbol: &SymbolTreeRef, options: RenderOptions) 
     tree_node(format_symbol_tree_ref(symbol, options), children)
 }
 
-fn push_symbol_section(
+fn push_symbol_section_with_total(
     children: &mut Vec<TreeNode>,
     label: &str,
     symbols: &[SymbolRef],
+    total: usize,
     options: RenderOptions,
 ) {
-    if symbols.is_empty() {
+    if symbols.is_empty() && total == 0 {
         return;
     }
 
     children.push(TreeNode::branch(
-        format_section_count(label, symbols.len(), options),
+        format_section_truncated(label, symbols.len(), total, options),
         symbols
             .iter()
             .map(|symbol| symbol_ref_node(symbol, Vec::new(), options))
@@ -711,20 +736,28 @@ fn format_brief_symbol_list(symbols: &[SymbolRef], options: RenderOptions) -> St
         .join(", ")
 }
 
-fn format_brief_section(
+fn format_brief_section_with_total(
     label: &str,
     symbols: &[SymbolRef],
+    total: usize,
     options: RenderOptions,
 ) -> Option<String> {
-    if symbols.is_empty() {
-        None
-    } else {
-        Some(format!(
-            "{label}({}): {}",
-            symbols.len(),
-            format_brief_symbol_list(symbols, options)
-        ))
+    if symbols.is_empty() && total == 0 {
+        return None;
     }
+    // Use `label (N of M)` with a space — matches the tree-mode helpers
+    // (`format_section_count`, `format_section_truncated`,
+    // `format_section_progress`) so brief output is visually consistent with
+    // tree output for the same data.
+    let header = if symbols.len() < total {
+        format!("{label} ({} of {})", symbols.len(), total)
+    } else {
+        format!("{label} ({})", symbols.len())
+    };
+    Some(format!(
+        "{header}: {}",
+        format_brief_symbol_list(symbols, options)
+    ))
 }
 
 fn edge_kind_label(kind: EdgeKind) -> &'static str {
@@ -763,20 +796,50 @@ fn format_architecture_violation(violation: &ArchitectureViolation) -> String {
 pub fn render_context_with_options(result: &ContextResult, options: RenderOptions) -> String {
     let mut children = Vec::new();
 
-    push_symbol_section(&mut children, "callers", &result.callers, options);
-    push_symbol_section(&mut children, "callees", &result.callees, options);
-    push_symbol_section(&mut children, "reads", &result.reads, options);
-    push_symbol_section(&mut children, "read_by", &result.read_by, options);
-    push_symbol_section(
+    push_symbol_section_with_total(
+        &mut children,
+        "callers",
+        &result.callers,
+        result.total_callers,
+        options,
+    );
+    push_symbol_section_with_total(
+        &mut children,
+        "callees",
+        &result.callees,
+        result.total_callees,
+        options,
+    );
+    push_symbol_section_with_total(
+        &mut children,
+        "reads",
+        &result.reads,
+        result.total_reads,
+        options,
+    );
+    push_symbol_section_with_total(
+        &mut children,
+        "read_by",
+        &result.read_by,
+        result.total_read_by,
+        options,
+    );
+    push_symbol_section_with_total(
         &mut children,
         "invalidation_sources",
         &result.invalidation_sources,
+        result.total_invalidation_sources,
         options,
     );
 
     if !result.contains_tree.is_empty() {
         children.push(TreeNode::branch(
-            format_section_count("contains", result.contains_tree.len(), options),
+            format_section_truncated(
+                "contains",
+                result.contains_tree.len(),
+                result.total_contains,
+                options,
+            ),
             result
                 .contains_tree
                 .iter()
@@ -785,10 +848,34 @@ pub fn render_context_with_options(result: &ContextResult, options: RenderOption
         ));
     }
 
-    push_symbol_section(&mut children, "contained_by", &result.contained_by, options);
-    push_symbol_section(&mut children, "implementors", &result.implementors, options);
-    push_symbol_section(&mut children, "implements", &result.implements, options);
-    push_symbol_section(&mut children, "type_refs", &result.type_refs, options);
+    push_symbol_section_with_total(
+        &mut children,
+        "contained_by",
+        &result.contained_by,
+        result.total_contained_by,
+        options,
+    );
+    push_symbol_section_with_total(
+        &mut children,
+        "implementors",
+        &result.implementors,
+        result.total_implementors,
+        options,
+    );
+    push_symbol_section_with_total(
+        &mut children,
+        "implements",
+        &result.implements,
+        result.total_implements,
+        options,
+    );
+    push_symbol_section_with_total(
+        &mut children,
+        "type_refs",
+        &result.type_refs,
+        result.total_type_refs,
+        options,
+    );
 
     render_tree(&symbol_info_node(&result.symbol, children, options))
 }
@@ -801,20 +888,46 @@ pub fn render_context_brief_with_options(result: &ContextResult, options: Render
     )];
 
     let sections = [
-        format_brief_section("callers", &result.callers, options),
-        format_brief_section("callees", &result.callees, options),
-        format_brief_section("reads", &result.reads, options),
-        format_brief_section("read_by", &result.read_by, options),
-        format_brief_section(
+        format_brief_section_with_total("callers", &result.callers, result.total_callers, options),
+        format_brief_section_with_total("callees", &result.callees, result.total_callees, options),
+        format_brief_section_with_total("reads", &result.reads, result.total_reads, options),
+        format_brief_section_with_total("read_by", &result.read_by, result.total_read_by, options),
+        format_brief_section_with_total(
             "invalidation_sources",
             &result.invalidation_sources,
+            result.total_invalidation_sources,
             options,
         ),
-        format_brief_section("contains", &result.contains, options),
-        format_brief_section("contained_by", &result.contained_by, options),
-        format_brief_section("implementors", &result.implementors, options),
-        format_brief_section("implements", &result.implements, options),
-        format_brief_section("type_refs", &result.type_refs, options),
+        format_brief_section_with_total(
+            "contains",
+            &result.contains,
+            result.total_contains,
+            options,
+        ),
+        format_brief_section_with_total(
+            "contained_by",
+            &result.contained_by,
+            result.total_contained_by,
+            options,
+        ),
+        format_brief_section_with_total(
+            "implementors",
+            &result.implementors,
+            result.total_implementors,
+            options,
+        ),
+        format_brief_section_with_total(
+            "implements",
+            &result.implements,
+            result.total_implements,
+            options,
+        ),
+        format_brief_section_with_total(
+            "type_refs",
+            &result.type_refs,
+            result.total_type_refs,
+            options,
+        ),
     ];
 
     for section in sections.into_iter().flatten() {
@@ -1240,7 +1353,7 @@ pub fn render_trace_with_options(result: &TraceResult, options: RenderOptions) -
         options,
     )));
     children.push(TreeNode::branch(
-        format_section_count("flows", result.summary.total_flows, options),
+        format_section_truncated("flows", result.flows.len(), result.total_flows, options),
         flows.into_tree_children(),
     ));
 
@@ -1268,7 +1381,12 @@ pub fn render_trace_brief_with_options(result: &TraceResult, options: RenderOpti
         lines.push(format!("hint: {hint}"));
     }
     if !result.flows.is_empty() {
-        lines.push(format!("flows({}):", result.flows.len()));
+        let header = if result.flows.len() < result.total_flows {
+            format!("flows ({} of {}):", result.flows.len(), result.total_flows)
+        } else {
+            format!("flows ({}):", result.flows.len())
+        };
+        lines.push(header);
         lines.extend(result.flows.iter().map(format_trace_flow_brief));
     }
     lines.join("\n")
@@ -1451,7 +1569,7 @@ pub fn render_dataflow_with_options(result: &DataflowResult, options: RenderOpti
                 options,
             )),
             TreeNode::branch(
-                Palette::new(options).section_header("graph"),
+                format_section_truncated("graph", result.edges.len(), result.total_edges, options),
                 render_dataflow_children(
                     &result.entry,
                     &adjacency,
@@ -1490,7 +1608,12 @@ pub fn render_reverse_with_options(result: &ReverseResult, options: RenderOption
     let root = TreeNode::branch(
         reverse_root_label(result, options),
         vec![TreeNode::branch(
-            format_section_count("affected entries", result.total_entries, options),
+            format_section_truncated(
+                "affected entries",
+                result.affected_entries.len(),
+                result.total_entries,
+                options,
+            ),
             tree.into_tree_children(),
         )],
     );
@@ -1508,7 +1631,16 @@ pub fn render_reverse_brief_with_options(result: &ReverseResult, options: Render
         format!("affected_entries: {}", result.total_entries),
     ];
     if !result.affected_entries.is_empty() {
-        lines.push("entries:".to_string());
+        let header = if result.affected_entries.len() < result.total_entries {
+            format!(
+                "entries ({} of {}):",
+                result.affected_entries.len(),
+                result.total_entries
+            )
+        } else {
+            "entries:".to_string()
+        };
+        lines.push(header);
         lines.extend(result.affected_entries.iter().map(|entry| {
             format!(
                 "- {} distance={} path={}",
@@ -1557,7 +1689,12 @@ pub fn render_origin_with_options(result: &OriginResult, options: RenderOptions)
             options,
         )),
         TreeNode::branch(
-            format_section_count("origins", result.total_origins, options),
+            format_section_truncated(
+                "origins",
+                result.origins.len(),
+                result.total_origins,
+                options,
+            ),
             result
                 .origins
                 .iter()
@@ -1650,14 +1787,33 @@ pub fn render_impact_with_options(result: &ImpactResult, options: RenderOptions)
         .map(|node| impact_tree_to_tree_node(node, options))
         .collect();
 
+    // Render `kept of total` whenever truncation is in effect so the summary
+    // is internally consistent with the truncated `depth_*` vectors AND
+    // surfaces the pre-truncation total to the reader.
+    let summary_field = |shown: usize, total: usize| -> String {
+        if shown < total {
+            format!("{shown} of {total}")
+        } else {
+            shown.to_string()
+        }
+    };
     let root = symbol_ref_node(
         &result.source_ref,
         vec![
             TreeNode::leaf(format_summary(
                 &[
-                    ("depth_1", result.depth_1.len().to_string()),
-                    ("depth_2", result.depth_2.len().to_string()),
-                    ("depth_3_plus", result.depth_3_plus.len().to_string()),
+                    (
+                        "depth_1",
+                        summary_field(result.depth_1.len(), result.total_depth_1),
+                    ),
+                    (
+                        "depth_2",
+                        summary_field(result.depth_2.len(), result.total_depth_2),
+                    ),
+                    (
+                        "depth_3_plus",
+                        summary_field(result.depth_3_plus.len(), result.total_depth_3_plus),
+                    ),
                     ("total", result.total_affected.to_string()),
                 ],
                 options,
@@ -1685,7 +1841,12 @@ pub fn render_impact_with_options(result: &ImpactResult, options: RenderOptions)
                 options,
             )),
             TreeNode::branch(
-                format_section_count("dependents", result.total_affected, options),
+                format_section_truncated(
+                    "dependents",
+                    result.depth_1.len() + result.depth_2.len() + result.depth_3_plus.len(),
+                    result.total_affected,
+                    options,
+                ),
                 dependents,
             ),
         ],
@@ -1702,9 +1863,9 @@ pub fn render_impact_brief_with_options(result: &ImpactResult, options: RenderOp
         format!(
             "summary: total={}, depth_1={}, depth_2={}, depth_3_plus={}",
             result.total_affected,
-            result.depth_1.len(),
-            result.depth_2.len(),
-            result.depth_3_plus.len()
+            result.total_depth_1,
+            result.total_depth_2,
+            result.total_depth_3_plus
         ),
         format!(
             "direct: dependents={}, files={}, modules={}, public={}, internal={}",
@@ -1716,13 +1877,22 @@ pub fn render_impact_brief_with_options(result: &ImpactResult, options: RenderOp
         ),
     ];
 
-    if let Some(section) = format_brief_section("depth_1", &result.depth_1, options) {
+    if let Some(section) =
+        format_brief_section_with_total("depth_1", &result.depth_1, result.total_depth_1, options)
+    {
         lines.push(section);
     }
-    if let Some(section) = format_brief_section("depth_2", &result.depth_2, options) {
+    if let Some(section) =
+        format_brief_section_with_total("depth_2", &result.depth_2, result.total_depth_2, options)
+    {
         lines.push(section);
     }
-    if let Some(section) = format_brief_section("depth_3_plus", &result.depth_3_plus, options) {
+    if let Some(section) = format_brief_section_with_total(
+        "depth_3_plus",
+        &result.depth_3_plus,
+        result.total_depth_3_plus,
+        options,
+    ) {
         lines.push(section);
     }
 
@@ -1940,16 +2110,26 @@ mod tests {
         let result = ContextResult {
             symbol: symbol_info("helper", NodeKind::Function, "main.rs"),
             callers: vec![symbol_ref("main", NodeKind::Function, "main.rs")],
+            total_callers: 1,
             callees: Vec::new(),
+            total_callees: 0,
             reads: Vec::new(),
+            total_reads: 0,
             read_by: Vec::new(),
+            total_read_by: 0,
             invalidation_sources: Vec::new(),
+            total_invalidation_sources: 0,
             contains: Vec::new(),
+            total_contains: 0,
             contains_tree: Vec::new(),
             contained_by: Vec::new(),
+            total_contained_by: 0,
             implementors: Vec::new(),
+            total_implementors: 0,
             implements: Vec::new(),
+            total_implements: 0,
             type_refs: Vec::new(),
+            total_type_refs: 0,
         };
 
         let rendered = render_context_with_options(&result, RenderOptions::plain());
@@ -1965,19 +2145,25 @@ mod tests {
         let result = ContextResult {
             symbol: symbol_info("body", NodeKind::Property, "ContentView.swift"),
             callers: Vec::new(),
+            total_callers: 0,
             callees: Vec::new(),
+            total_callees: 0,
             reads: vec![symbol_ref(
                 "roomMode",
                 NodeKind::Property,
                 "ContentView.swift",
             )],
+            total_reads: 1,
             read_by: Vec::new(),
+            total_read_by: 0,
             invalidation_sources: vec![symbol_ref(
                 "roomMode",
                 NodeKind::Property,
                 "ContentView.swift",
             )],
+            total_invalidation_sources: 1,
             contains: vec![symbol_ref("VStack", NodeKind::View, "ContentView.swift")],
+            total_contains: 1,
             contains_tree: vec![SymbolTreeRef {
                 id: "ContentView.swift::body::VStack".into(),
                 locator: None,
@@ -2035,9 +2221,13 @@ mod tests {
                 NodeKind::Struct,
                 "ContentView.swift",
             )],
+            total_contained_by: 1,
             implementors: Vec::new(),
+            total_implementors: 0,
             implements: Vec::new(),
+            total_implements: 0,
             type_refs: Vec::new(),
+            total_type_refs: 0,
         };
 
         let rendered = render_context_with_options(&result, RenderOptions::plain());
@@ -2072,16 +2262,26 @@ mod tests {
         let result = ContextResult {
             symbol: root,
             callers: Vec::new(),
+            total_callers: 0,
             callees: Vec::new(),
+            total_callees: 0,
             reads: vec![dependency],
+            total_reads: 1,
             read_by: Vec::new(),
+            total_read_by: 0,
             invalidation_sources: Vec::new(),
+            total_invalidation_sources: 0,
             contains: Vec::new(),
+            total_contains: 0,
             contains_tree: Vec::new(),
             contained_by: Vec::new(),
+            total_contained_by: 0,
             implementors: Vec::new(),
+            total_implementors: 0,
             implements: Vec::new(),
+            total_implements: 0,
             type_refs: Vec::new(),
+            total_type_refs: 0,
         };
 
         let rendered = render_context_with_options(
@@ -2109,22 +2309,32 @@ mod tests {
         let result = ContextResult {
             symbol: symbol_info("helper", NodeKind::Function, "main.rs"),
             callers: vec![symbol_ref("main", NodeKind::Function, "main.rs")],
+            total_callers: 1,
             callees: Vec::new(),
+            total_callees: 0,
             reads: vec![symbol_ref("state", NodeKind::Property, "state.rs")],
+            total_reads: 1,
             read_by: Vec::new(),
+            total_read_by: 0,
             invalidation_sources: Vec::new(),
+            total_invalidation_sources: 0,
             contains: vec![symbol_ref("inner", NodeKind::Struct, "main.rs")],
+            total_contains: 1,
             contains_tree: Vec::new(),
             contained_by: vec![symbol_ref("App", NodeKind::Struct, "app.rs")],
+            total_contained_by: 1,
             implementors: Vec::new(),
+            total_implementors: 0,
             implements: Vec::new(),
+            total_implements: 0,
             type_refs: Vec::new(),
+            total_type_refs: 0,
         };
 
         let rendered = render_context_brief_with_options(&result, RenderOptions::plain());
         assert_eq!(
             rendered,
-            "symbol: helper [function] (main.rs)\ncallers(1): main [function] (main.rs)\nreads(1): state [property] (state.rs)\ncontains(1): inner [struct] (main.rs)\ncontained_by(1): App [struct] (app.rs)"
+            "symbol: helper [function] (main.rs)\ncallers (1): main [function] (main.rs)\nreads (1): state [property] (state.rs)\ncontains (1): inner [struct] (main.rs)\ncontained_by (1): App [struct] (app.rs)"
         );
     }
 
@@ -2196,6 +2406,7 @@ mod tests {
                     async_boundaries: Vec::new(),
                 },
             ],
+            total_flows: 2,
             summary: TraceSummary {
                 total_flows: 2,
                 reads: 0,
@@ -2296,8 +2507,11 @@ mod tests {
                 internal_dependent_count: 0,
             },
             depth_1: vec![symbol_ref("alpha", NodeKind::Function, "a.rs")],
+            total_depth_1: 1,
             depth_2: vec![symbol_ref("beta", NodeKind::Function, "b.rs")],
+            total_depth_2: 1,
             depth_3_plus: Vec::new(),
+            total_depth_3_plus: 0,
             total_affected: 2,
             source_ref: symbol_ref("source", NodeKind::Function, "core.rs"),
             tree,
@@ -2314,6 +2528,115 @@ mod tests {
         assert!(rendered.contains("dependents (2)"));
         assert!(rendered.contains("alpha [function] (a.rs)"));
         assert!(rendered.contains("beta [function] (b.rs)"));
+    }
+
+    #[test]
+    fn impact_render_summary_shows_kept_of_total_when_truncated() {
+        // Truncated state: per-bucket vectors hold strictly fewer items than
+        // their pre-truncation totals. The summary line must surface the gap as
+        // `depth_*=N of M`, and the `dependents` section header must use the
+        // same `kept of total` framing via `format_section_truncated`.
+        let tree = ImpactTreeNode {
+            symbol: symbol_ref("source", NodeKind::Function, "core.rs"),
+            children: vec![ImpactTreeNode {
+                symbol: symbol_ref("alpha", NodeKind::Function, "a.rs"),
+                children: Vec::new(),
+            }],
+        };
+        let result = ImpactResult {
+            source: "core.rs::source".to_string(),
+            summary: ImpactSummary {
+                direct_dependent_count: 1,
+                direct_file_count: 1,
+                direct_module_count: 1,
+                top_direct_modules: vec![ImpactModuleCount {
+                    module: "Core".into(),
+                    count: 1,
+                }],
+                public_dependent_count: 1,
+                internal_dependent_count: 0,
+            },
+            depth_1: vec![symbol_ref("alpha", NodeKind::Function, "a.rs")],
+            total_depth_1: 5,
+            depth_2: vec![symbol_ref("beta", NodeKind::Function, "b.rs")],
+            total_depth_2: 5,
+            depth_3_plus: vec![symbol_ref("gamma", NodeKind::Function, "c.rs")],
+            total_depth_3_plus: 5,
+            total_affected: 15,
+            source_ref: symbol_ref("source", NodeKind::Function, "core.rs"),
+            tree,
+        };
+
+        let rendered = strip_ansi(&render_impact_with_options(&result, RenderOptions::plain()));
+        assert!(
+            rendered.contains("depth_1=1 of 5"),
+            "expected `depth_1=1 of 5` in:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("depth_2=1 of 5"),
+            "expected `depth_2=1 of 5` in:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("depth_3_plus=1 of 5"),
+            "expected `depth_3_plus=1 of 5` in:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("dependents (3 of 15)"),
+            "expected `dependents (3 of 15)` section header in:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn impact_render_summary_omits_of_total_when_full() {
+        // Untruncated state: depth_*.len() == total_depth_*. The summary must
+        // surface bare counts (no `of <total>` suffix) and the dependents
+        // section header must read `dependents (N)`.
+        let tree = ImpactTreeNode {
+            symbol: symbol_ref("source", NodeKind::Function, "core.rs"),
+            children: vec![ImpactTreeNode {
+                symbol: symbol_ref("alpha", NodeKind::Function, "a.rs"),
+                children: Vec::new(),
+            }],
+        };
+        let result = ImpactResult {
+            source: "core.rs::source".to_string(),
+            summary: ImpactSummary {
+                direct_dependent_count: 1,
+                direct_file_count: 1,
+                direct_module_count: 1,
+                top_direct_modules: vec![ImpactModuleCount {
+                    module: "Core".into(),
+                    count: 1,
+                }],
+                public_dependent_count: 1,
+                internal_dependent_count: 0,
+            },
+            depth_1: vec![symbol_ref("alpha", NodeKind::Function, "a.rs")],
+            total_depth_1: 1,
+            depth_2: Vec::new(),
+            total_depth_2: 0,
+            depth_3_plus: Vec::new(),
+            total_depth_3_plus: 0,
+            total_affected: 1,
+            source_ref: symbol_ref("source", NodeKind::Function, "core.rs"),
+            tree,
+        };
+
+        let rendered = strip_ansi(&render_impact_with_options(&result, RenderOptions::plain()));
+        // `depth_1=1` (no ` of `). The summary line lives between `summary: `
+        // and the next newline; check the entire summary at once for clarity.
+        assert!(
+            rendered.contains("summary: depth_1=1, depth_2=0, depth_3_plus=0, total=1"),
+            "expected bare `depth_*=N` summary in:\n{rendered}"
+        );
+        assert!(
+            !rendered.contains(" of "),
+            "untruncated render must not contain ` of ` anywhere; got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("dependents (1)"),
+            "expected `dependents (1)` section header in:\n{rendered}"
+        );
     }
 
     #[test]
@@ -2349,16 +2672,26 @@ mod tests {
         let result = ContextResult {
             symbol: symbol_info("helper", NodeKind::Function, "main.rs"),
             callers: vec![symbol_ref("main", NodeKind::Function, "main.rs")],
+            total_callers: 1,
             callees: Vec::new(),
+            total_callees: 0,
             reads: Vec::new(),
+            total_reads: 0,
             read_by: Vec::new(),
+            total_read_by: 0,
             invalidation_sources: Vec::new(),
+            total_invalidation_sources: 0,
             contains: Vec::new(),
+            total_contains: 0,
             contains_tree: Vec::new(),
             contained_by: Vec::new(),
+            total_contained_by: 0,
             implementors: Vec::new(),
+            total_implementors: 0,
             implements: Vec::new(),
+            total_implements: 0,
             type_refs: Vec::new(),
+            total_type_refs: 0,
         };
 
         let plain = render_context_with_options(&result, RenderOptions::plain());
@@ -2385,6 +2718,7 @@ mod tests {
                 operation: Some("UPSERT".to_string()),
                 target: Some("persist".to_string()),
             }],
+            total_nodes: 1,
             edges: vec![DataflowEdge {
                 source: "main.rs::handler".to_string(),
                 target: "effect::persist".to_string(),
@@ -2394,6 +2728,7 @@ mod tests {
                 async_boundary: Some(true),
                 provenance: vec![],
             }],
+            total_edges: 1,
             entry_ref: symbol_ref("handler", NodeKind::Function, "main.rs"),
             summary: DataflowSummary {
                 symbols: 0,
@@ -2429,6 +2764,7 @@ mod tests {
                 operation: None,
                 target: None,
             }],
+            total_nodes: 1,
             edges: vec![DataflowEdge {
                 source: "main.rs::handler".to_string(),
                 target: "helper.rs::load".to_string(),
@@ -2438,6 +2774,7 @@ mod tests {
                 async_boundary: None,
                 provenance: vec![],
             }],
+            total_edges: 1,
             entry_ref: symbol_ref("handler", NodeKind::Function, "main.rs"),
             summary: DataflowSummary {
                 symbols: 1,

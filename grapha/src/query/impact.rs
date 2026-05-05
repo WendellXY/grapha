@@ -4,7 +4,24 @@ use serde::Serialize;
 
 use grapha_core::graph::{EdgeKind, Graph, Node, NodeKind, Visibility};
 
-use super::{QueryResolveError, SymbolRef};
+use super::{QueryResolveError, SymbolRef, truncate_with_total};
+
+/// Per-bucket caps for [`query_impact_with_options`].
+///
+/// The default leaves the result vectors unbounded; the CLI overrides this with
+/// the user-supplied `--limit` so each of `depth_1`, `depth_2`, and
+/// `depth_3_plus` is capped independently.
+#[derive(Debug, Clone)]
+pub struct ImpactQueryOptions {
+    pub limit: usize,
+}
+
+impl Default for ImpactQueryOptions {
+    fn default() -> Self {
+        // Internal callers stay unbounded.
+        Self { limit: usize::MAX }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ImpactTreeNode {
@@ -33,8 +50,11 @@ pub struct ImpactResult {
     pub source: String,
     pub summary: ImpactSummary,
     pub depth_1: Vec<SymbolRef>,
+    pub total_depth_1: usize,
     pub depth_2: Vec<SymbolRef>,
+    pub total_depth_2: usize,
     pub depth_3_plus: Vec<SymbolRef>,
+    pub total_depth_3_plus: usize,
     pub total_affected: usize,
     #[serde(skip)]
     pub(crate) source_ref: SymbolRef,
@@ -135,6 +155,15 @@ pub fn query_impact(
     graph: &Graph,
     symbol: &str,
     max_depth: usize,
+) -> Result<ImpactResult, QueryResolveError> {
+    query_impact_with_options(graph, symbol, max_depth, &ImpactQueryOptions::default())
+}
+
+pub fn query_impact_with_options(
+    graph: &Graph,
+    symbol: &str,
+    max_depth: usize,
+    options: &ImpactQueryOptions,
 ) -> Result<ImpactResult, QueryResolveError> {
     let node = crate::query::resolve_node(graph, symbol)?;
 
@@ -241,18 +270,50 @@ pub fn query_impact(
         children.sort_unstable_by_key(|node_id| node_sort_key(node_id, &node_index));
     }
     let source_ref = to_symbol_ref(node);
-    let tree = build_impact_tree(&node.id, &node_index, &children_by_parent);
+    let mut tree = build_impact_tree(&node.id, &node_index, &children_by_parent);
+
+    let limit = options.limit;
+    let total_depth_1 = truncate_with_total(&mut depth_1, limit);
+    let total_depth_2 = truncate_with_total(&mut depth_2, limit);
+    let total_depth_3_plus = truncate_with_total(&mut depth_3_plus, limit);
+
+    // Prune the tree so tree-mode rendering only sees nodes that survived
+    // per-bucket truncation. The source node always stays.
+    let kept_ids: HashSet<&str> = depth_1
+        .iter()
+        .chain(depth_2.iter())
+        .chain(depth_3_plus.iter())
+        .map(|symbol| symbol.id.as_str())
+        .collect();
+    prune_impact_tree(&mut tree, &kept_ids);
 
     Ok(ImpactResult {
         source: node.id.clone(),
         summary,
         depth_1,
+        total_depth_1,
         depth_2,
+        total_depth_2,
         depth_3_plus,
+        total_depth_3_plus,
         total_affected: total,
         source_ref,
         tree,
     })
+}
+
+/// Recursively drop tree children whose symbol ID is not in `kept_ids`.
+///
+/// The root of the tree is the queried symbol itself and is always retained;
+/// only descendants are pruned. This keeps `result.tree` consistent with the
+/// truncated `depth_1`/`depth_2`/`depth_3_plus` vectors so tree-mode and
+/// brief-mode rendering agree on which dependents survived `--limit`.
+fn prune_impact_tree(node: &mut ImpactTreeNode, kept_ids: &HashSet<&str>) {
+    node.children
+        .retain(|child| kept_ids.contains(child.symbol.id.as_str()));
+    for child in &mut node.children {
+        prune_impact_tree(child, kept_ids);
+    }
 }
 
 #[cfg(test)]
@@ -817,5 +878,166 @@ mod tests {
         assert_eq!(result.summary.top_direct_modules[0].count, 2);
         assert_eq!(result.summary.public_dependent_count, 1);
         assert_eq!(result.summary.internal_dependent_count, 2);
+    }
+
+    #[test]
+    fn impact_truncates_each_depth_bucket() {
+        let mk = |id: &str| Node {
+            id: id.into(),
+            kind: NodeKind::Function,
+            name: id.into(),
+            file: "test.rs".into(),
+            span: Span {
+                start: [0, 0],
+                end: [1, 0],
+            },
+            visibility: Visibility::Public,
+            metadata: StdHashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+            snippet: None,
+            repo: None,
+        };
+        let calls = |source: &str, target: &str| Edge {
+            source: source.into(),
+            target: target.into(),
+            kind: EdgeKind::Calls,
+            confidence: 0.9,
+            direction: None,
+            operation: None,
+            condition: None,
+            async_boundary: None,
+            provenance: Vec::new(),
+            repo: None,
+        };
+
+        // Three direct callers at depth_1 of `target`.
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![mk("target"), mk("d1_a"), mk("d1_b"), mk("d1_c")],
+            edges: vec![
+                calls("d1_a", "target"),
+                calls("d1_b", "target"),
+                calls("d1_c", "target"),
+            ],
+        };
+
+        // Baseline: unbounded so we can assert total_affected stays put.
+        let unbounded =
+            query_impact_with_options(&graph, "target", 5, &ImpactQueryOptions::default()).unwrap();
+        assert_eq!(unbounded.depth_1.len(), 3);
+        assert_eq!(unbounded.total_depth_1, 3);
+        assert_eq!(unbounded.total_affected, 3);
+
+        let truncated =
+            query_impact_with_options(&graph, "target", 5, &ImpactQueryOptions { limit: 1 })
+                .unwrap();
+        assert_eq!(truncated.depth_1.len(), 1, "depth_1 should be truncated");
+        assert_eq!(truncated.total_depth_1, 3);
+        // total_affected is the union pre-truncation count and must not change
+        // when --limit shrinks the visible vectors.
+        assert_eq!(
+            truncated.total_affected, unbounded.total_affected,
+            "total_affected must reflect the pre-truncation union"
+        );
+    }
+
+    #[test]
+    fn impact_tree_pruned_to_kept_depth_buckets() {
+        // 5 direct callers of `target`. With `--limit=2` the per-bucket vectors
+        // are capped at 2; the tree must be pruned to mirror the surviving set.
+        let mk = |id: &str| Node {
+            id: id.into(),
+            kind: NodeKind::Function,
+            name: id.into(),
+            file: "test.rs".into(),
+            span: Span {
+                start: [0, 0],
+                end: [1, 0],
+            },
+            visibility: Visibility::Public,
+            metadata: StdHashMap::new(),
+            role: None,
+            signature: None,
+            doc_comment: None,
+            module: None,
+            snippet: None,
+            repo: None,
+        };
+        let calls = |source: &str, target: &str| Edge {
+            source: source.into(),
+            target: target.into(),
+            kind: EdgeKind::Calls,
+            confidence: 0.9,
+            direction: None,
+            operation: None,
+            condition: None,
+            async_boundary: None,
+            provenance: Vec::new(),
+            repo: None,
+        };
+
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                mk("target"),
+                mk("d1_a"),
+                mk("d1_b"),
+                mk("d1_c"),
+                mk("d1_d"),
+                mk("d1_e"),
+            ],
+            edges: vec![
+                calls("d1_a", "target"),
+                calls("d1_b", "target"),
+                calls("d1_c", "target"),
+                calls("d1_d", "target"),
+                calls("d1_e", "target"),
+            ],
+        };
+
+        // Unbounded baseline: all 5 children present in tree and depth_1.
+        let unbounded =
+            query_impact_with_options(&graph, "target", 3, &ImpactQueryOptions::default()).unwrap();
+        assert_eq!(unbounded.depth_1.len(), 5);
+        assert_eq!(
+            unbounded.tree.children.len(),
+            5,
+            "tree should preserve all 5 direct children when unbounded"
+        );
+
+        let truncated =
+            query_impact_with_options(&graph, "target", 3, &ImpactQueryOptions { limit: 2 })
+                .unwrap();
+        assert_eq!(
+            truncated.depth_1.len(),
+            2,
+            "depth_1 should be capped at limit=2"
+        );
+        assert_eq!(
+            truncated.tree.children.len(),
+            2,
+            "tree must be pruned to match per-bucket truncation"
+        );
+        // Source/root always stays.
+        assert_eq!(truncated.tree.symbol.id, "target");
+
+        // Every kept child in the tree must also be in depth_1.
+        let kept_depth_1_ids: HashSet<&str> = truncated
+            .depth_1
+            .iter()
+            .map(|symbol| symbol.id.as_str())
+            .collect();
+        for child in &truncated.tree.children {
+            assert!(
+                kept_depth_1_ids.contains(child.symbol.id.as_str()),
+                "tree child {} not present in depth_1 after truncation",
+                child.symbol.id,
+            );
+        }
+        // Pre-truncation total preserved.
+        assert_eq!(truncated.total_depth_1, 5);
     }
 }

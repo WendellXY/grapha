@@ -260,12 +260,16 @@ pub(crate) fn handle_symbol_command(
             path,
             format,
             fields,
+            limit,
         } => {
             let field_set = resolve_field_set(&fields, &path);
             let render_options = render_options.with_fields(field_set);
             let graph = load_graph(&path)?;
-            let mut result =
-                resolve_query_result(query::context::query_context(&graph, &symbol), "symbol")?;
+            let context_options = query::context::ContextQueryOptions { limit };
+            let mut result = resolve_query_result(
+                query::context::query_context_with_options(&graph, &symbol, &context_options),
+                "symbol",
+            )?;
             if field_set.annotation {
                 let annotations =
                     annotations::AnnotationStore::for_project_root(&path).load_index()?;
@@ -296,12 +300,14 @@ pub(crate) fn handle_symbol_command(
             path,
             format,
             fields,
+            limit,
         } => {
             let field_set = resolve_field_set(&fields, &path);
             let render_options = render_options.with_fields(field_set);
             let graph = load_graph(&path)?;
+            let impact_options = query::impact::ImpactQueryOptions { limit };
             let result = resolve_query_result(
-                query::impact::query_impact(&graph, &symbol, depth),
+                query::impact::query_impact_with_options(&graph, &symbol, depth, &impact_options),
                 "symbol",
             )?;
             match format {
@@ -377,12 +383,19 @@ pub(crate) fn handle_flow_command(
             path,
             format,
             fields,
+            limit,
         } => match direction {
             crate::TraceDirection::Forward => {
                 let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
                 let graph = load_graph(&path)?;
+                let trace_options = query::trace::TraceQueryOptions { limit };
                 let result = resolve_query_result(
-                    query::trace::query_trace(&graph, &symbol, depth.unwrap_or(10)),
+                    query::trace::query_trace_with_options(
+                        &graph,
+                        &symbol,
+                        depth.unwrap_or(10),
+                        &trace_options,
+                    ),
                     "symbol",
                 )?;
                 match format {
@@ -406,8 +419,14 @@ pub(crate) fn handle_flow_command(
             crate::TraceDirection::Reverse => {
                 let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
                 let graph = load_graph(&path)?;
+                let reverse_options = query::reverse::ReverseQueryOptions { limit };
                 let result = resolve_query_result(
-                    query::reverse::query_reverse(&graph, &symbol, depth),
+                    query::reverse::query_reverse_with_options(
+                        &graph,
+                        &symbol,
+                        depth,
+                        &reverse_options,
+                    ),
                     "symbol",
                 )?;
                 match format {
@@ -435,14 +454,23 @@ pub(crate) fn handle_flow_command(
             path,
             format,
             fields,
+            limit,
         } => {
             let render_options = render_options.with_fields(resolve_field_set(&fields, &path));
+            let dataflow_options = query::dataflow::DataflowQueryOptions { limit };
             handle_resolved_graph_query(
                 &path,
                 format,
                 render_options,
                 "symbol",
-                |graph| query::dataflow::query_dataflow(graph, &symbol, depth),
+                |graph| {
+                    query::dataflow::query_dataflow_with_options(
+                        graph,
+                        &symbol,
+                        depth,
+                        &dataflow_options,
+                    )
+                },
                 render::render_dataflow_with_options,
             )
         }
@@ -453,21 +481,34 @@ pub(crate) fn handle_flow_command(
             path,
             format,
             fields,
+            limit,
         } => {
             let field_set = resolve_field_set(&fields, &path);
             let render_options = render_options.with_fields(field_set);
+            let origin_options = query::origin::OriginQueryOptions { limit };
             handle_resolved_graph_query(
                 &path,
                 format,
                 render_options,
                 "symbol",
                 |graph| {
-                    let result =
-                        query::origin::query_origin_with_path(graph, &symbol, depth, Some(&path))?;
+                    let result = query::origin::query_origin_with_path_and_options(
+                        graph,
+                        &symbol,
+                        depth,
+                        Some(&path),
+                        &origin_options,
+                    )?;
+                    // Order matters: filter first so `--limit` operates on the
+                    // user-visible, post-filter origin set; otherwise
+                    // `--terminal-kind=network --limit=20` could return < 20
+                    // network origins because non-network origins were
+                    // truncated out first.
                     let result = query::origin::filter_origin_result_by_terminal_kind(
                         result,
                         terminal_kind.map(OriginTerminalFilter::as_str),
                     );
+                    let result = query::origin::apply_origin_limit(result, &origin_options);
                     Ok(query::origin::project_origin_result(result, field_set))
                 },
                 render::render_origin_with_options,
@@ -492,7 +533,7 @@ pub(crate) fn handle_flow_command(
                         &query::entries::EntriesQueryOptions {
                             module,
                             file,
-                            limit,
+                            limit: Some(limit),
                         },
                     )
                 },
@@ -760,9 +801,11 @@ pub(crate) fn handle_repo_command(command: crate::RepoCommands) -> anyhow::Resul
             let status = crate::index_status::load_index_status(&path, &path.join(".grapha"))?;
             print_json(&status)
         }
-        crate::RepoCommands::Changes { scope, path } => {
+        crate::RepoCommands::Changes { scope, path, limit } => {
             let graph = load_graph(&path)?;
-            let report = changes::detect_changes(&path, &graph, &scope)?;
+            let change_options = changes::ChangeQueryOptions { limit };
+            let report =
+                changes::detect_changes_with_options(&path, &graph, &scope, &change_options)?;
             print_json(&report)
         }
         crate::RepoCommands::Map { module, path } => {

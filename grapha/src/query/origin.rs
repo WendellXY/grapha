@@ -13,11 +13,35 @@ use ignore::WalkBuilder;
 use super::flow::{is_dataflow_edge, terminal_kind_to_string};
 use super::{QueryResolveError, SymbolRef, normalize_symbol_name, strip_accessor_prefix};
 
+/// Cap for the `origins` vector returned by [`query_origin_with_options`].
+///
+/// The default leaves results unbounded (matching prior behavior); the CLI
+/// overrides this with the user-supplied `--limit`. `total_origins` always
+/// reflects the pre-truncation count so callers can detect truncation.
+#[derive(Debug, Clone)]
+pub struct OriginQueryOptions {
+    pub limit: usize,
+}
+
+impl Default for OriginQueryOptions {
+    fn default() -> Self {
+        // Internal callers stay unbounded.
+        Self { limit: usize::MAX }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct OriginResult {
     pub symbol: String,
     pub origins: Vec<OriginPath>,
+    /// Pre-`--limit` count of origins (after `--terminal-kind` filtering, if
+    /// any). Use this to detect whether the `--limit` flag truncated the
+    /// caller-visible `origins` vector. Distinct from [`Self::truncated`],
+    /// which signals the BFS exploration cap.
     pub total_origins: usize,
+    /// Set when the internal BFS exploration cap was hit
+    /// (`max_explored_states` or `max_origins`). Orthogonal to the
+    /// `--limit` flag and [`Self::total_origins`].
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
     #[serde(skip)]
@@ -683,22 +707,45 @@ fn resolve_endpoint_evidence(
     endpoint
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn query_origin(
     graph: &Graph,
     symbol: &str,
     max_depth: usize,
 ) -> Result<OriginResult, QueryResolveError> {
+    // Internal callers stay unbounded.
     query_origin_with_limits(graph, symbol, max_depth, None, 20_000, 200)
+        .map(|result| apply_origin_limit(result, &OriginQueryOptions::default()))
 }
 
-pub fn query_origin_with_path(
+/// Build the unbounded origin result for `symbol`.
+///
+/// `--limit` is intentionally NOT applied here — the dispatcher must apply
+/// [`apply_origin_limit`] AFTER any post-query filters (e.g.
+/// [`filter_origin_result_by_terminal_kind`]) so that filter-then-truncate
+/// returns the correct number of post-filter origins instead of pre-filter
+/// origins that may be entirely discarded by the filter.
+///
+/// `OriginResult.total_origins` is set to the pre-filter origin count by this
+/// function. Filters may overwrite it to the post-filter count.
+pub fn query_origin_with_path_and_options(
     graph: &Graph,
     symbol: &str,
     max_depth: usize,
     project_root: Option<&Path>,
+    _options: &OriginQueryOptions,
 ) -> Result<OriginResult, QueryResolveError> {
     query_origin_with_limits(graph, symbol, max_depth, project_root, 20_000, 200)
+}
+
+/// Truncate `result.origins` to `options.limit` without mutating
+/// `result.total_origins`, so callers retain the pre-truncation count.
+///
+/// Apply this LAST in the pipeline (after [`filter_origin_result_by_terminal_kind`])
+/// so the limit operates on the filtered, user-visible set.
+pub fn apply_origin_limit(mut result: OriginResult, options: &OriginQueryOptions) -> OriginResult {
+    result.origins.truncate(options.limit);
+    result
 }
 
 fn query_origin_with_limits(
@@ -2348,6 +2395,161 @@ mod tests {
                 .origins
                 .iter()
                 .all(|candidate| candidate.api.name != "_updateUser(info:)")
+        );
+    }
+
+    #[test]
+    fn origin_truncates_origins() {
+        let graph = Graph {
+            version: "0.1.0".into(),
+            nodes: vec![
+                node("root", "rootProperty", NodeKind::Property, None),
+                node(
+                    "fetch_a",
+                    "fetchA",
+                    NodeKind::Function,
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Network,
+                    }),
+                ),
+                node(
+                    "fetch_b",
+                    "fetchB",
+                    NodeKind::Function,
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Network,
+                    }),
+                ),
+                node(
+                    "fetch_c",
+                    "fetchC",
+                    NodeKind::Function,
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Network,
+                    }),
+                ),
+            ],
+            edges: vec![
+                edge("root", "fetch_a", EdgeKind::Reads),
+                edge("root", "fetch_b", EdgeKind::Reads),
+                edge("root", "fetch_c", EdgeKind::Reads),
+            ],
+        };
+
+        let unbounded = query_origin(&graph, "rootProperty", 10).unwrap();
+        assert_eq!(unbounded.origins.len(), 3);
+        assert_eq!(unbounded.total_origins, 3);
+        // The internal-traversal `truncated` flag tracks the BFS exploration
+        // cap (max_explored_states / max_origins) and must remain false here
+        // because the fixture is small.
+        assert!(
+            !unbounded.truncated,
+            "unbounded query on a small fixture should not set the BFS-cap truncation flag"
+        );
+
+        // `query_origin_with_path_and_options` is intentionally unbounded; the
+        // dispatcher applies `apply_origin_limit` after any post-query filter
+        // so `--terminal-kind=... --limit=N` truncates the filtered set.
+        let opts = OriginQueryOptions { limit: 1 };
+        let unfiltered =
+            query_origin_with_path_and_options(&graph, "rootProperty", 10, None, &opts).unwrap();
+        assert_eq!(unfiltered.origins.len(), 3);
+        assert_eq!(unfiltered.total_origins, 3);
+
+        let truncated = apply_origin_limit(unfiltered, &opts);
+        assert_eq!(
+            truncated.origins.len(),
+            1,
+            "origins should be truncated by --limit"
+        );
+        assert_eq!(
+            truncated.total_origins, 3,
+            "total_origins must remain the pre-truncation count after `apply_origin_limit`"
+        );
+        // The `truncated: bool` field is the internal-traversal cap, distinct
+        // from `--limit` truncation, and must keep its prior false value here.
+        assert!(
+            !truncated.truncated,
+            "--limit truncation must not flip the internal-traversal `truncated` flag"
+        );
+    }
+
+    #[test]
+    fn origin_terminal_kind_filter_then_limit_returns_filtered_count() {
+        // Mix of network and persistence origins. With `--terminal-kind=network
+        // --limit=2`, the user must see up to 2 network origins (not "<= 2 of
+        // any kind, then filtered to network").
+        let graph = Graph {
+            version: "0.1.0".into(),
+            nodes: vec![
+                node("root", "rootProperty", NodeKind::Property, None),
+                node(
+                    "net_a",
+                    "fetchA",
+                    NodeKind::Function,
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Network,
+                    }),
+                ),
+                node(
+                    "net_b",
+                    "fetchB",
+                    NodeKind::Function,
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Network,
+                    }),
+                ),
+                node(
+                    "net_c",
+                    "fetchC",
+                    NodeKind::Function,
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Network,
+                    }),
+                ),
+                node(
+                    "persist_x",
+                    "savePersist",
+                    NodeKind::Function,
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Persistence,
+                    }),
+                ),
+            ],
+            edges: vec![
+                edge("root", "net_a", EdgeKind::Reads),
+                edge("root", "net_b", EdgeKind::Reads),
+                edge("root", "net_c", EdgeKind::Reads),
+                edge("root", "persist_x", EdgeKind::Reads),
+            ],
+        };
+
+        let opts = OriginQueryOptions { limit: 2 };
+        let result =
+            query_origin_with_path_and_options(&graph, "rootProperty", 10, None, &opts).unwrap();
+        let result = filter_origin_result_by_terminal_kind(result, Some("network"));
+        // After filter, total_origins reflects the post-filter count (3 network
+        // origins), independent of the upcoming `--limit` truncation.
+        assert_eq!(
+            result.total_origins, 3,
+            "total_origins must reflect post-filter, pre-truncation network count"
+        );
+        let result = apply_origin_limit(result, &opts);
+        assert_eq!(
+            result.origins.len(),
+            2,
+            "limit must truncate the filtered (network-only) set, not pre-filter origins"
+        );
+        assert!(
+            result
+                .origins
+                .iter()
+                .all(|origin| origin.terminal_kind == "network"),
+            "every kept origin must be a network origin"
+        );
+        assert_eq!(
+            result.total_origins, 3,
+            "total_origins must stay at the post-filter count after `apply_origin_limit`"
         );
     }
 }

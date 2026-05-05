@@ -636,7 +636,7 @@ fn impact_brief_format_works() {
             "summary: total=1, depth_1=1, depth_2=0, depth_3_plus=0",
         ))
         .stdout(predicate::str::contains(
-            "depth_1(1): main [function] (main.rs)",
+            "depth_1 (1): main [function] (main.rs)",
         ))
         .stdout(predicate::str::contains("\"source\"").not());
 }

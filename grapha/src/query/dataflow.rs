@@ -9,6 +9,24 @@ use grapha_core::graph::{
 use super::flow::{is_dataflow_edge, terminal_kind_to_string};
 use super::{QueryResolveError, SymbolRef, normalize_symbol_name};
 
+/// Cap for the `nodes` and `edges` vectors returned by
+/// [`query_dataflow_with_options`].
+///
+/// The default leaves results unbounded; the CLI overrides this with the
+/// user-supplied `--limit`. `total_nodes` and `total_edges` always reflect the
+/// pre-truncation count so callers can detect truncation.
+#[derive(Debug, Clone)]
+pub struct DataflowQueryOptions {
+    pub limit: usize,
+}
+
+impl Default for DataflowQueryOptions {
+    fn default() -> Self {
+        // Internal callers stay unbounded.
+        Self { limit: usize::MAX }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataflowNodeKind {
@@ -73,7 +91,9 @@ pub struct DataflowSummary {
 pub struct DataflowResult {
     pub entry: String,
     pub nodes: Vec<DataflowNode>,
+    pub total_nodes: usize,
     pub edges: Vec<DataflowEdge>,
+    pub total_edges: usize,
     pub summary: DataflowSummary,
     #[serde(skip)]
     pub(crate) entry_ref: SymbolRef,
@@ -385,10 +405,20 @@ fn semantic_edges_from_effects(
     }
 }
 
+#[cfg(test)]
 pub fn query_dataflow(
     graph: &Graph,
     entry: &str,
     max_depth: usize,
+) -> Result<DataflowResult, QueryResolveError> {
+    query_dataflow_with_options(graph, entry, max_depth, &DataflowQueryOptions::default())
+}
+
+pub fn query_dataflow_with_options(
+    graph: &Graph,
+    entry: &str,
+    max_depth: usize,
+    options: &DataflowQueryOptions,
 ) -> Result<DataflowResult, QueryResolveError> {
     let entry_node = crate::query::resolve_node(graph, entry)?;
 
@@ -581,10 +611,32 @@ pub fn query_dataflow(
             .count(),
     };
 
+    let limit = options.limit;
+    // Truncate `edges` to the user-supplied cap, then prune `nodes` down to
+    // only the IDs referenced by surviving edges (plus the entry node, which
+    // always stays). This guarantees the returned subgraph is internally
+    // consistent: every edge's `source`/`target` resolves to a node in
+    // `nodes`. `total_nodes` and `total_edges` continue to report the
+    // pre-truncation counts so callers can detect that --limit reshaped the
+    // result.
+    let total_edges = edges.len();
+    let total_nodes = nodes.len();
+    edges.truncate(limit);
+
+    let mut referenced_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    referenced_ids.insert(entry_node.id.as_str());
+    for edge in &edges {
+        referenced_ids.insert(edge.source.as_str());
+        referenced_ids.insert(edge.target.as_str());
+    }
+    nodes.retain(|node| referenced_ids.contains(node.id.as_str()));
+
     Ok(DataflowResult {
         entry: entry_node.id.clone(),
         nodes,
+        total_nodes,
         edges,
+        total_edges,
         summary,
         entry_ref: node_ref(entry_node),
     })
@@ -813,5 +865,191 @@ mod tests {
             .expect("should derive a write edge");
         assert_eq!(semantic_edge.conditions.len(), 2);
         assert_eq!(semantic_edge.provenance.len(), 2);
+    }
+
+    #[test]
+    fn dataflow_truncates_to_consistent_subgraph() {
+        // Entry plus three distinct terminals, each producing its own effect
+        // node (different `target`) and its own semantic edge.
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                make_node("entry", Some(NodeRole::EntryPoint)),
+                make_node(
+                    "persist_a",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Persistence,
+                    }),
+                ),
+                make_node(
+                    "persist_b",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Persistence,
+                    }),
+                ),
+                make_node(
+                    "persist_c",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Persistence,
+                    }),
+                ),
+            ],
+            edges: vec![
+                {
+                    let mut edge = make_edge("entry", "persist_a", EdgeKind::Calls);
+                    edge.direction = Some(FlowDirection::Write);
+                    edge.operation = Some("save_a".to_string());
+                    edge
+                },
+                {
+                    let mut edge = make_edge("entry", "persist_b", EdgeKind::Calls);
+                    edge.direction = Some(FlowDirection::Write);
+                    edge.operation = Some("save_b".to_string());
+                    edge
+                },
+                {
+                    let mut edge = make_edge("entry", "persist_c", EdgeKind::Calls);
+                    edge.direction = Some(FlowDirection::Write);
+                    edge.operation = Some("save_c".to_string());
+                    edge
+                },
+            ],
+        };
+
+        let unbounded =
+            query_dataflow_with_options(&graph, "entry", 10, &DataflowQueryOptions::default())
+                .unwrap();
+        // 1 entry + 3 effect nodes = 4 semantic nodes; 3 write edges.
+        assert!(
+            unbounded.nodes.len() >= 3,
+            "fixture must yield >= 3 nodes, got {}",
+            unbounded.nodes.len()
+        );
+        assert!(
+            unbounded.edges.len() >= 3,
+            "fixture must yield >= 3 edges, got {}",
+            unbounded.edges.len()
+        );
+        let unbounded_node_total = unbounded.nodes.len();
+        let unbounded_edge_total = unbounded.edges.len();
+        assert_eq!(unbounded.total_nodes, unbounded_node_total);
+        assert_eq!(unbounded.total_edges, unbounded_edge_total);
+
+        let truncated =
+            query_dataflow_with_options(&graph, "entry", 10, &DataflowQueryOptions { limit: 1 })
+                .unwrap();
+        // `--limit` caps `edges` directly. After capping, `nodes` is filtered
+        // to only those referenced by a surviving edge plus the entry node.
+        // For this fixture: 1 surviving write edge (entry -> effect::*) keeps
+        // the entry node and exactly one effect node => 2 nodes.
+        assert_eq!(truncated.edges.len(), 1, "edges should be truncated");
+        assert_eq!(
+            truncated.nodes.len(),
+            2,
+            "nodes should be the consistent subgraph: entry + endpoints of the surviving edge"
+        );
+        // The surviving edge's endpoints must both exist in `nodes`.
+        let kept_ids: std::collections::HashSet<&str> =
+            truncated.nodes.iter().map(|n| n.id.as_str()).collect();
+        let edge = &truncated.edges[0];
+        assert!(
+            kept_ids.contains(edge.source.as_str()),
+            "edge.source must be present in nodes"
+        );
+        assert!(
+            kept_ids.contains(edge.target.as_str()),
+            "edge.target must be present in nodes"
+        );
+        // The entry node always stays.
+        assert!(
+            kept_ids.contains("entry"),
+            "entry node must always be retained"
+        );
+        // Pre-truncation counts must still be reported.
+        assert_eq!(truncated.total_nodes, unbounded_node_total);
+        assert_eq!(truncated.total_edges, unbounded_edge_total);
+    }
+
+    #[test]
+    fn dataflow_limit_zero_keeps_entry_only() {
+        // Same fixture shape as `dataflow_truncates_to_consistent_subgraph`:
+        // entry plus three distinct write-effect terminals.
+        let graph = Graph {
+            version: "0.1.0".to_string(),
+            nodes: vec![
+                make_node("entry", Some(NodeRole::EntryPoint)),
+                make_node(
+                    "persist_a",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Persistence,
+                    }),
+                ),
+                make_node(
+                    "persist_b",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Persistence,
+                    }),
+                ),
+                make_node(
+                    "persist_c",
+                    Some(NodeRole::Terminal {
+                        kind: TerminalKind::Persistence,
+                    }),
+                ),
+            ],
+            edges: vec![
+                {
+                    let mut edge = make_edge("entry", "persist_a", EdgeKind::Calls);
+                    edge.direction = Some(FlowDirection::Write);
+                    edge.operation = Some("save_a".to_string());
+                    edge
+                },
+                {
+                    let mut edge = make_edge("entry", "persist_b", EdgeKind::Calls);
+                    edge.direction = Some(FlowDirection::Write);
+                    edge.operation = Some("save_b".to_string());
+                    edge
+                },
+                {
+                    let mut edge = make_edge("entry", "persist_c", EdgeKind::Calls);
+                    edge.direction = Some(FlowDirection::Write);
+                    edge.operation = Some("save_c".to_string());
+                    edge
+                },
+            ],
+        };
+
+        let unbounded =
+            query_dataflow_with_options(&graph, "entry", 10, &DataflowQueryOptions::default())
+                .unwrap();
+        let unbounded_node_total = unbounded.nodes.len();
+        let unbounded_edge_total = unbounded.edges.len();
+        assert!(
+            unbounded_edge_total >= 3,
+            "fixture must yield >= 3 edges, got {unbounded_edge_total}"
+        );
+
+        let zero =
+            query_dataflow_with_options(&graph, "entry", 10, &DataflowQueryOptions { limit: 0 })
+                .unwrap();
+        // With --limit=0 we keep no edges and therefore only the always-retained
+        // entry node.
+        assert!(
+            zero.edges.is_empty(),
+            "edges must be empty under --limit=0, got {}",
+            zero.edges.len()
+        );
+        assert_eq!(
+            zero.nodes.len(),
+            1,
+            "only the entry node should survive under --limit=0"
+        );
+        assert_eq!(
+            zero.nodes[0].id, "entry",
+            "the surviving node must be the entry"
+        );
+        // Pre-truncation counts must still be reported.
+        assert_eq!(zero.total_nodes, unbounded_node_total);
+        assert_eq!(zero.total_edges, unbounded_edge_total);
     }
 }
