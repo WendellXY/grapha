@@ -1,3 +1,4 @@
+mod annotation_sync;
 mod annotations;
 mod app;
 mod assets;
@@ -220,6 +221,11 @@ enum Commands {
         #[arg(long)]
         watch: bool,
     },
+    /// Serve and sync the local-first annotation store
+    Annotation {
+        #[command(subcommand)]
+        command: AnnotationCommands,
+    },
     /// Query symbol relationships and search indexed symbols
     Symbol {
         #[command(subcommand)]
@@ -250,6 +256,37 @@ enum Commands {
     Repo {
         #[command(subcommand)]
         command: RepoCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum AnnotationCommands {
+    /// Launch the Grapha HTTP service with annotation API routes enabled
+    Serve {
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+        /// Port to listen on
+        #[arg(long, default_value = "8080")]
+        port: u16,
+        /// Watch for file changes and auto-update the graph
+        #[arg(long)]
+        watch: bool,
+    },
+    /// Bidirectionally sync annotations with a Grapha annotation service
+    Sync {
+        /// Annotation service base URL, e.g. http://192.168.1.10:8080
+        #[arg(long)]
+        server: String,
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// List locally stored annotations for this project identity
+    List {
+        /// Project directory
+        #[arg(short, long, default_value = ".")]
+        path: PathBuf,
     },
 }
 
@@ -778,6 +815,7 @@ fn main() -> anyhow::Result<()> {
             mcp,
             watch,
         } => app::serve::handle_serve(path, port, mcp, watch)?,
+        Commands::Annotation { command } => app::annotation::handle_annotation_command(command)?,
         Commands::Symbol { command } => app::query::handle_symbol_command(command, render_options)?,
         Commands::Flow { command } => app::query::handle_flow_command(command, render_options)?,
         Commands::L10n { command } => app::query::handle_l10n_command(command, render_options)?,

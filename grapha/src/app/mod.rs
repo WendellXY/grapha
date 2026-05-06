@@ -1,3 +1,4 @@
+pub(crate) mod annotation;
 pub(crate) mod index;
 pub(crate) mod migrate;
 pub(crate) mod pipeline;

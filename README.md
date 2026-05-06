@@ -159,6 +159,18 @@ grapha symbol complexity <symbol>          # property/method/dependency counts, 
 grapha symbol file <path>                  # list declarations in a file
 ```
 
+### Annotations
+
+```bash
+grapha annotation serve -p . --port 8080               # LAN HTTP service with annotation APIs
+grapha annotation list -p .                            # local annotation records + project identity
+grapha annotation sync --server http://HOST:8080 -p .  # pull, merge, and push annotations
+```
+
+Annotation records carry a project id plus branch. The project id comes from
+`[repo].name`, Git remote/common-dir identity, or the project path fallback;
+set `[repo].name` for stable sync across non-Git copies.
+
 ### Dataflow
 
 ```bash
@@ -189,7 +201,7 @@ grapha repo history list [--kind test] [--file PATH] [--module M] [--symbol QUER
 grapha index <path> [--format sqlite|json] [--store-dir DIR] [--full-rebuild] [--timing]
 grapha migrate [-p PATH] [--from OTHER_WORKTREE_OR_STORE] [--force]
 grapha analyze <path> [--compact] [--filter fn,struct]
-grapha serve [-p PATH] [--mcp] [--watch] [--port N]
+grapha serve [-p PATH] [--mcp] [--watch] [--port N]    # HTTP binds 0.0.0.0 for LAN access
 ```
 
 ### Localization & Assets
