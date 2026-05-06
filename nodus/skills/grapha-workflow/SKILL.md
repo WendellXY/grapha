@@ -21,12 +21,20 @@ Use grapha's code intelligence to navigate, understand, and assess codebases bef
 3. **Check impact before changes:** `grapha symbol impact <symbol>` to understand blast radius
 4. **Assess complexity:** `grapha symbol complexity <type>` to check structural health of a type
 5. **Orient in large projects:** `grapha repo modules` for per-module metrics, `grapha repo map` for file layout
+6. **Preserve agent knowledge:** `grapha symbol annotate <symbol> "<note>" --by <agent>` to store durable symbol notes
 
 ## Quality assessment
 
 - `grapha repo smells` — scan the full graph for code smells (god types, deep nesting, wide invalidation, excessive fan-out)
 - `grapha repo smells --module Room` — scope to a single module
 - `grapha symbol complexity <type>` — detailed metrics for a specific type (properties, dependencies, init params, invalidation sources)
+
+## Annotation service and sync
+
+- `grapha annotation serve -p . --port 8080` — deploy the local HTTP annotation service; the Grapha HTTP server binds for LAN access
+- `grapha annotation list -p .` — inspect local annotation records and their project/branch identity
+- `grapha annotation sync --server http://HOST:8080 -p .` — pull, merge, and push annotations against a remote Grapha annotation service
+- Annotation records are scoped by project id and branch, while retaining fallback behavior for legacy/shared records. Set `[repo].name` in `grapha.toml` when syncing non-Git copies that should share one project identity.
 
 ## Dataflow tracing
 
@@ -43,3 +51,4 @@ Use grapha's code intelligence to navigate, understand, and assess codebases bef
 - Use `--fuzzy` if unsure of exact spelling
 - Use `file.swift::symbol` to disambiguate when multiple symbols share a name
 - After significant code changes, run `grapha index .` to keep the graph fresh and refresh stored snippets
+- Before relying on shared annotation knowledge from another machine, run `grapha annotation sync --server http://HOST:8080 -p .`

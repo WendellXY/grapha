@@ -9,3 +9,6 @@
 - Use `grapha repo map` to orient in unfamiliar modules before diving into files
 - When searching for a symbol, start with `grapha symbol search` — it's faster and more precise than grep for symbol-level queries
 - Use `grapha symbol search --file ...` and `--role ...` before broadening to fuzzy search when a symbol name is too common
+- Use `grapha symbol annotate` for durable symbol notes that should survive future sessions
+- Use `grapha annotation serve`, `grapha annotation list`, and `grapha annotation sync --server http://HOST:8080` when sharing annotation knowledge across local machines
+- Prefer setting `[repo].name` in `grapha.toml` before syncing non-Git project copies that should share the same annotation identity
