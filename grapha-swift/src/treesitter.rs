@@ -111,6 +111,34 @@ mod tests {
     }
 
     #[test]
+    fn extracts_static_and_async_swift_metadata() {
+        let result = extract(
+            r#"
+            struct Worker {
+                static func build() async {}
+                class var shared: Worker { Worker() }
+            }
+            "#,
+        );
+
+        let build = find_node(&result, "build");
+        assert_eq!(
+            build.metadata.get("static").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            build.metadata.get("async").map(String::as_str),
+            Some("true")
+        );
+
+        let shared = find_node(&result, "shared");
+        assert_eq!(
+            shared.metadata.get("static").map(String::as_str),
+            Some("true")
+        );
+    }
+
+    #[test]
     fn overloaded_initializers_get_distinct_ids() {
         let result = extract(
             r#"

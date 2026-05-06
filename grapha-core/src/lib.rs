@@ -10,6 +10,7 @@ pub mod plugin;
 pub mod resolve;
 pub mod selector;
 pub mod semantic;
+pub mod tree_sitter;
 
 pub use classify::*;
 pub use discover::discover_files;
@@ -27,3 +28,4 @@ pub use plugin::{FileContext, GraphPass, LanguagePlugin, LanguageRegistry, Proje
 pub use resolve::*;
 pub use selector::*;
 pub use semantic::*;
+pub use tree_sitter::*;

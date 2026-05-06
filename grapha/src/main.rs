@@ -19,6 +19,7 @@ mod localization;
 mod maintenance;
 mod mcp;
 mod migration;
+mod polyglot_plugin;
 mod progress;
 mod query;
 mod recall;

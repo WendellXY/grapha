@@ -4,7 +4,7 @@
 
 **极速**代码智能引擎，让 AI 智能体以编译器级精度理解代码库。
 
-Grapha 从源码构建符号级依赖图——不靠正则猜测，而是直接读取编译器的索引。Swift 通过二进制 FFI 直连 Xcode 预编译的 Index Store，拿到 100% 类型解析的符号图，再用 tree-sitter 补充视图结构、文档、国际化和资源引用信息。Rust 则用 tree-sitter 结合 Cargo 工作空间发现。最终产出一张可查询的图，附带置信度评分的边、数据流追踪、影响分析、代码味道检测和业务概念查找——CLI 和 MCP 双模式，为 AI 智能体集成而生。
+Grapha 从源码构建符号级依赖图——不靠正则猜测，而是读取当前语言能提供的最强结构信息。Swift 通过二进制 FFI 直连 Xcode 预编译的 Index Store，拿到 100% 类型解析的符号图，再用 tree-sitter 补充视图结构、文档、国际化和资源引用信息。Rust 则用 tree-sitter 结合 Cargo 工作空间发现。其他常见语言走通用的 best-effort tree-sitter 提取，覆盖符号、包含关系、导入和基于名称的调用。最终产出一张可查询的图，附带置信度评分的边、数据流追踪、影响分析、代码味道检测和业务概念查找——CLI 和 MCP 双模式，为 AI 智能体集成而生。
 
 > **1,991 个 Swift 文件 — 13.1 万节点 — 78.4 万边 — 8.7 秒。** 零拷贝二进制 FFI，无锁并行提取，热路径零 serde。
 
@@ -281,8 +281,11 @@ nodus add wenext/grapha --adapter claude
 |------|----------|----------|
 | **Swift** | Index Store + tree-sitter | 编译器级（USR） |
 | **Rust** | tree-sitter | 基于名称 |
+| TypeScript / TSX / JavaScript | best-effort tree-sitter | 基于名称 |
+| Python / Go / Java / C / C++ / C# | best-effort tree-sitter | 基于名称 |
+| PHP / Ruby / Kotlin / Dart / Pascal | best-effort tree-sitter | 基于名称 |
 
-按语言分 crate 的架构支持以瀑布模式添加新语言：编译器索引 → 语法解析器 → tree-sitter 兜底。
+Swift 和 Rust 仍是第一等提取器。其他语言共享一条通用 tree-sitter 路径，提供有用的图覆盖，但不伪装成编译器级语义。
 
 ## 开发
 

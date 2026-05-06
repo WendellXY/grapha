@@ -5,7 +5,9 @@ use std::time::Instant;
 use anyhow::Context;
 use grapha_core::Classifier;
 
-use crate::{cache, classify, compress, config, filter, progress, rust_plugin, snippet};
+use crate::{
+    cache, classify, compress, config, filter, polyglot_plugin, progress, rust_plugin, snippet,
+};
 
 pub(crate) struct PipelineOutput {
     pub(crate) graph: grapha_core::graph::Graph,
@@ -17,6 +19,7 @@ fn builtin_registry() -> anyhow::Result<grapha_core::LanguageRegistry> {
     let mut registry = grapha_core::LanguageRegistry::new();
     rust_plugin::register_builtin(&mut registry)?;
     grapha_swift::register_builtin(&mut registry)?;
+    polyglot_plugin::register_builtin(&mut registry)?;
     Ok(registry)
 }
 

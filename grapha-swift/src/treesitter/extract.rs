@@ -146,6 +146,29 @@ fn emit_contains_edge(
     }
 }
 
+fn swift_declaration_metadata(node: tree_sitter::Node, source: &[u8]) -> HashMap<String, String> {
+    let Ok(raw) = node.utf8_text(source) else {
+        return HashMap::new();
+    };
+    let signature = raw.split('{').next().unwrap_or(raw);
+    let tokens = signature
+        .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>();
+
+    let mut metadata = HashMap::new();
+    if tokens.contains(&"async") {
+        metadata.insert("async".to_string(), "true".to_string());
+    }
+    if tokens.contains(&"static")
+        || (matches!(node.kind(), "function_declaration" | "property_declaration")
+            && tokens.contains(&"class"))
+    {
+        metadata.insert("static".to_string(), "true".to_string());
+    }
+    metadata
+}
+
 /// Extract struct or class declaration.
 fn extract_struct_or_class(
     node: tree_sitter::Node,
@@ -192,7 +215,7 @@ fn extract_struct_or_class(
         file: file.into(),
         span: make_span(node),
         visibility,
-        metadata: HashMap::new(),
+        metadata: swift_declaration_metadata(node, source),
         role,
         signature: None,
         doc_comment: extract_swift_doc_comment(node, source),
@@ -293,7 +316,7 @@ fn extract_property_as_entry_point(
         file: file.into(),
         span: make_span(node),
         visibility,
-        metadata: HashMap::new(),
+        metadata: swift_declaration_metadata(node, source),
         role: Some(NodeRole::EntryPoint),
         signature: None,
         doc_comment: extract_swift_doc_comment(node, source),
@@ -359,7 +382,7 @@ fn extract_function_with_entry_hint(
         file: file.into(),
         span: make_span(node),
         visibility,
-        metadata: HashMap::new(),
+        metadata: swift_declaration_metadata(node, source),
         role,
         signature,
         doc_comment,
@@ -424,7 +447,7 @@ fn extract_enum(
         file: file.into(),
         span: make_span(node),
         visibility,
-        metadata: HashMap::new(),
+        metadata: swift_declaration_metadata(node, source),
         role: None,
         signature: None,
         doc_comment: extract_swift_doc_comment(node, source),
@@ -518,7 +541,7 @@ fn extract_extension(
         file: file.into(),
         span: make_span(node),
         visibility: Visibility::Crate,
-        metadata: HashMap::new(),
+        metadata: swift_declaration_metadata(node, source),
         role: None,
         signature: None,
         doc_comment: extract_swift_doc_comment(node, source),
@@ -564,7 +587,7 @@ fn extract_protocol(
         file: file.into(),
         span: make_span(node),
         visibility,
-        metadata: HashMap::new(),
+        metadata: swift_declaration_metadata(node, source),
         role: None,
         signature: None,
         doc_comment: extract_swift_doc_comment(node, source),
@@ -619,7 +642,7 @@ fn extract_function(
         file: file.into(),
         span: make_span(node),
         visibility,
-        metadata: HashMap::new(),
+        metadata: swift_declaration_metadata(node, source),
         role: None,
         signature,
         doc_comment,
@@ -689,7 +712,7 @@ fn extract_property(
         file: file.into(),
         span: make_span(node),
         visibility,
-        metadata: HashMap::new(),
+        metadata: swift_declaration_metadata(node, source),
         role: None,
         signature: None,
         doc_comment: extract_swift_doc_comment(node, source),
@@ -826,7 +849,7 @@ fn extract_typealias(
         file: file.into(),
         span: make_span(node),
         visibility,
-        metadata: HashMap::new(),
+        metadata: swift_declaration_metadata(node, source),
         role: None,
         signature: None,
         doc_comment: extract_swift_doc_comment(node, source),

@@ -4,7 +4,7 @@
 
 **Blazingly fast** code intelligence that gives AI agents compiler-grade understanding of your codebase.
 
-Grapha builds a symbol-level dependency graph from source code — not by guessing with regex, but by reading the compiler's own index. For Swift, it taps directly into Xcode's pre-built index store via binary FFI for 100% type-resolved symbols, then enriches with tree-sitter for view structure, docs, localization, and asset references. For Rust, it uses tree-sitter with Cargo workspace awareness. The result is a queryable graph with confidence-scored edges, dataflow tracing, impact analysis, code smell detection, and business-concept lookup — available as both a CLI and an MCP server for AI agent integration.
+Grapha builds a symbol-level dependency graph from source code — not by guessing with regex, but by reading the strongest source of structure available. For Swift, it taps directly into Xcode's pre-built index store via binary FFI for 100% type-resolved symbols, then enriches with tree-sitter for view structure, docs, localization, and asset references. For Rust, it uses tree-sitter with Cargo workspace awareness. Other common languages use best-effort tree-sitter extraction for symbols, containment, imports, and name-based calls. The result is a queryable graph with confidence-scored edges, dataflow tracing, impact analysis, code smell detection, and business-concept lookup — available as both a CLI and an MCP server for AI agent integration.
 
 > **1,991 Swift files — 131K nodes — 784K edges — 8.7 seconds.** Zero-copy binary FFI. Lock-free parallel extraction. No serde on the hot path.
 
@@ -299,8 +299,11 @@ Installs skills, rules, and slash commands (`/index`, `/search`, `/impact`, `/co
 |----------|-----------|----------------|
 | **Swift** | Index store + tree-sitter | Compiler-grade (USR) |
 | **Rust** | tree-sitter | Name-based |
+| TypeScript / TSX / JavaScript | best-effort tree-sitter | Name-based |
+| Python / Go / Java / C / C++ / C# | best-effort tree-sitter | Name-based |
+| PHP / Ruby / Kotlin / Dart / Pascal | best-effort tree-sitter | Name-based |
 
-The per-language crate architecture supports adding new languages with the same waterfall pattern: compiler index → syntax parser → tree-sitter fallback.
+Swift and Rust remain first-class extractors. The additional languages share one generic tree-sitter path so they can provide useful graph coverage without pretending to have compiler-grade semantics.
 
 ## Development
 
