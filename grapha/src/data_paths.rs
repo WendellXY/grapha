@@ -2,6 +2,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use git2::Repository;
+use serde::Serialize;
 
 const FNV_OFFSET: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
@@ -23,6 +24,53 @@ pub fn annotation_db_path_with_data_root(project_root: &Path, data_root: &Path) 
         .join("repos")
         .join(repo_id_for_project_root(project_root))
         .join("annotations.db")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProjectIdentity {
+    pub project_id: String,
+    pub branch: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_oid: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_ref: Option<String>,
+}
+
+pub fn project_identity(project_root: &Path) -> ProjectIdentity {
+    let project_id = repo_id_for_project_root(project_root);
+    let Ok(repo) = Repository::discover(project_root) else {
+        return ProjectIdentity {
+            project_id,
+            branch: "default".to_string(),
+            head_oid: None,
+            head_ref: None,
+        };
+    };
+
+    let head = repo.head().ok();
+    let head_oid = head
+        .as_ref()
+        .and_then(|head| head.target())
+        .map(|oid| oid.to_string());
+    let head_ref = head
+        .as_ref()
+        .and_then(|head| head.shorthand())
+        .map(str::to_string);
+    let branch = head_ref
+        .clone()
+        .or_else(|| {
+            head_oid
+                .as_deref()
+                .map(|oid| format!("detached-{}", &oid[..12]))
+        })
+        .unwrap_or_else(|| "unborn".to_string());
+
+    ProjectIdentity {
+        project_id,
+        branch,
+        head_oid,
+        head_ref,
+    }
 }
 
 pub fn repo_id_for_project_root(project_root: &Path) -> String {
