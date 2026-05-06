@@ -166,6 +166,115 @@ pub async fn get_search(
     }))
 }
 
+#[derive(Deserialize)]
+pub struct AnnotationUpsertRequest {
+    pub symbol: String,
+    pub annotation: String,
+    pub created_by: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct AnnotationSyncRequest {
+    pub annotations: Vec<crate::annotations::SymbolAnnotationRecord>,
+}
+
+fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
+    (
+        status,
+        Json(serde_json::json!({
+            "error": message.into()
+        })),
+    )
+        .into_response()
+}
+
+pub async fn list_annotations(State(state): State<Arc<AppState>>) -> Response {
+    let store = crate::annotations::AnnotationStore::for_project_root(&state.project_path);
+    match store.list_records() {
+        Ok(records) => {
+            let total = records.len();
+            Json(serde_json::json!({
+                "project": crate::data_paths::project_identity(&state.project_path),
+                "annotations": records,
+                "total": total
+            }))
+            .into_response()
+        }
+        Err(error) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to load annotations: {error}"),
+        ),
+    }
+}
+
+pub async fn get_annotation(
+    State(state): State<Arc<AppState>>,
+    Path(symbol): Path<String>,
+) -> Response {
+    let decoded = urlencoding::decode(&symbol).unwrap_or_default();
+    let node = match query::resolve_node(&state.graph, &decoded) {
+        Ok(node) => node,
+        Err(error) => return query_response::<serde_json::Value>(Err(error)),
+    };
+
+    match crate::annotations::AnnotationStore::for_project_root(&state.project_path)
+        .get_for_node(node)
+    {
+        Ok(Some(annotation)) => Json(annotation).into_response(),
+        Ok(None) => error_response(
+            StatusCode::NOT_FOUND,
+            format!("no annotation stored for symbol: {decoded}"),
+        ),
+        Err(error) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to load annotation: {error}"),
+        ),
+    }
+}
+
+pub async fn post_annotation(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<AnnotationUpsertRequest>,
+) -> Response {
+    let annotation = payload.annotation.trim();
+    if annotation.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "annotation text cannot be empty");
+    }
+
+    let node = match query::resolve_node(&state.graph, &payload.symbol) {
+        Ok(node) => node,
+        Err(error) => return query_response::<serde_json::Value>(Err(error)),
+    };
+
+    match crate::annotations::AnnotationStore::for_project_root(&state.project_path)
+        .upsert_for_node(node, annotation, payload.created_by.as_deref())
+    {
+        Ok(annotation) => Json(annotation).into_response(),
+        Err(error) => error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("failed to save annotation: {error}"),
+        ),
+    }
+}
+
+pub async fn sync_annotations(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<AnnotationSyncRequest>,
+) -> Response {
+    let store = crate::annotations::AnnotationStore::for_project_root(&state.project_path);
+    match store.merge_records(&payload.annotations) {
+        Ok(merged) => Json(serde_json::json!({
+            "merged": merged,
+            "received": payload.annotations.len()
+        }))
+        .into_response(),
+        Err(error) => error_response(
+            StatusCode::BAD_REQUEST,
+            format!("failed to merge annotations: {error}"),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -38,6 +38,15 @@ pub async fn run(
         .route("/api/reverse/{symbol}", get(api::get_reverse))
         .route("/api/status", get(api::get_index_status))
         .route("/api/search", get(api::get_search))
+        .route(
+            "/api/annotations",
+            get(api::list_annotations).post(api::post_annotation),
+        )
+        .route(
+            "/api/annotations/sync",
+            axum::routing::post(api::sync_annotations),
+        )
+        .route("/api/annotations/{symbol}", get(api::get_annotation))
         .with_state(state)
         .layer(tower_http::cors::CorsLayer::permissive());
 
