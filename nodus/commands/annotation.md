@@ -9,4 +9,6 @@ Use Grapha's annotation commands based on the requested action:
 - To deploy the local LAN annotation service: `grapha annotation serve -p . --port 8080`
 - To sync with another local Grapha annotation service: `grapha annotation sync --server http://HOST:8080 -p .`
 
+Record an annotation when the note is compact, factual, and likely to save future agents from rereading files: ownership, business meaning, invariants, migration context, or non-obvious dependencies are good candidates. Avoid recording guesses, obvious restatements of the symbol name, or temporary task scratch.
+
 After syncing, use `grapha symbol context "<symbol>" --fields annotation` or `grapha symbol search "<query>" --fields annotation` to verify that the expected knowledge is available.
